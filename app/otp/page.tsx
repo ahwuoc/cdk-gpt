@@ -261,6 +261,10 @@ export default function OtpPage() {
       {/* Main Container */}
       <div className="flex-1 max-w-[1600px] w-full mx-auto px-6 lg:px-8 py-8 relative z-10 grid grid-cols-1 xl:grid-cols-12 gap-8">
 
+        <div className="xl:col-span-12 w-full">
+          <ChatGPTUsageGuidelines />
+        </div>
+
         {/* Left Column: Input and cached list */}
         <section className="xl:col-span-7 space-y-6 flex flex-col">
           <div className="space-y-2">
@@ -650,10 +654,6 @@ export default function OtpPage() {
           </Card>
         </section>
 
-        {/* ChatGPT Usage Guidelines spanned full-width at bottom */}
-        <div className="xl:col-span-12 w-full mt-2">
-          <ChatGPTUsageGuidelines />
-        </div>
       </div>
 
       {/* Footer copyright */}
