@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { 
-  Mail, RefreshCw, Key, ArrowRight, ShieldCheck, 
-  Clipboard, Check, HelpCircle, Users, Trash2, 
-  Play, CheckCircle2, XCircle, AlertTriangle, Save 
+import {
+  Mail, RefreshCw, Key, ArrowRight, ShieldCheck,
+  Clipboard, Check, HelpCircle, Users, Trash2,
+  Play, CheckCircle2, XCircle, AlertTriangle, Save,
+  Globe, EyeOff, Zap
 } from "lucide-react";
 import { getOtpPublicAction } from "../otp-actions";
 import { Button } from "@/components/ui/button";
@@ -29,22 +30,21 @@ export default function OtpPage() {
   const [rawInput, setRawInput] = useState("");
   const [accounts, setAccounts] = useState<ParsedAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
-  
+
   const [isScanningAll, setIsScanningAll] = useState(false);
   const [copiedOtp, setCopiedOtp] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState<boolean>(false);
   const [isLoadedFromCache, setIsLoadedFromCache] = useState(false);
 
-  // Load from local storage cache on mount
   useEffect(() => {
     try {
       const cachedRaw = localStorage.getItem("otp_raw_input");
       const cachedAccounts = localStorage.getItem("otp_accounts");
-      
+
       if (cachedRaw) {
         setRawInput(cachedRaw);
       }
-      
+
       if (cachedAccounts) {
         const parsed = JSON.parse(cachedAccounts);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -118,11 +118,11 @@ export default function OtpPage() {
           prev.map((a) =>
             a.id === id
               ? {
-                  ...a,
-                  status: "success",
-                  otp: otpMsg ? otpMsg.otp : "Không có OTP",
-                  messages: result.messages,
-                }
+                ...a,
+                status: "success",
+                otp: otpMsg ? otpMsg.otp : "Không có OTP",
+                messages: result.messages,
+              }
               : a
           )
         );
@@ -131,10 +131,10 @@ export default function OtpPage() {
           prev.map((a) =>
             a.id === id
               ? {
-                  ...a,
-                  status: "error",
-                  errorMsg: result.message || "Tài khoản sai cấu hình hoặc bị Microsoft chặn.",
-                }
+                ...a,
+                status: "error",
+                errorMsg: result.message || "Tài khoản sai cấu hình hoặc bị Microsoft chặn.",
+              }
               : a
           )
         );
@@ -144,17 +144,16 @@ export default function OtpPage() {
         prev.map((a) =>
           a.id === id
             ? {
-                ...a,
-                status: "error",
-                errorMsg: err.message || "Không thể kết nối đến máy chủ API.",
-              }
+              ...a,
+              status: "error",
+              errorMsg: err.message || "Không thể kết nối đến máy chủ API.",
+            }
             : a
         )
       );
     }
   };
 
-  // Scan all accounts sequentially with small delay
   const scanAllAccounts = async () => {
     if (isScanningAll || accounts.length === 0) return;
     setIsScanningAll(true);
@@ -260,7 +259,7 @@ export default function OtpPage() {
 
       {/* Main Container */}
       <div className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 relative z-10 grid grid-cols-1 xl:grid-cols-12 gap-8">
-        
+
         {/* Left Column: Input and cached list */}
         <section className="xl:col-span-7 space-y-6 flex flex-col">
           <div className="space-y-2">
@@ -370,11 +369,10 @@ export default function OtpPage() {
                       <div
                         key={acc.id}
                         onClick={() => setSelectedAccountId(acc.id)}
-                        className={`flex flex-col sm:flex-row items-stretch sm:items-center justify-between p-3.5 gap-3 cursor-pointer text-left transition-colors ${
-                          isSelected
+                        className={`flex flex-col sm:flex-row items-stretch sm:items-center justify-between p-3.5 gap-3 cursor-pointer text-left transition-colors ${isSelected
                             ? "bg-amber-500/[0.04] border-l-2 border-amber-500"
                             : "hover:bg-slate-900/40 border-l-2 border-transparent"
-                        }`}
+                          }`}
                       >
                         <div className="min-w-0 flex-1 space-y-1 pr-2">
                           <div className="flex items-center gap-2">
@@ -447,7 +445,7 @@ export default function OtpPage() {
                               )}
                             </>
                           )}
-                          
+
                           <Button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -467,6 +465,72 @@ export default function OtpPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Safe Usage Principles Card */}
+          <Card className="border-slate-800/80 bg-slate-900/40 backdrop-blur-lg relative overflow-hidden shadow-2xl">
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500 to-amber-500" />
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-bold flex items-center gap-2 text-slate-200">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                Nguyên Tắc Sử Dụng Tài Khoản ChatGPT Plus Trial Bền Vững
+              </CardTitle>
+              <CardDescription className="text-xs text-slate-400 mt-1">
+                Lưu ý quan trọng từ các chuyên gia MMO giúp tăng độ tin cậy (trust) cho tài khoản, hạn chế tối đa bị hệ thống OpenAI quét khóa (die) hàng loạt.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 text-xs text-slate-300">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                
+                <div className="bg-slate-950/40 border border-slate-900 p-3.5 rounded-xl space-y-1.5 hover:border-slate-800/80 transition-colors">
+                  <div className="flex items-center gap-2 font-bold text-amber-400">
+                    <Globe className="h-4 w-4 shrink-0" />
+                    <span>1. IP Dân Cư Sạch (Clean Proxy)</span>
+                  </div>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Tuyệt đối không dùng các VPN miễn phí hoặc Proxy dùng chung chất lượng kém vì OpenAI quét dải IP rất gắt. Nên ưu tiên Proxy dân cư sạch hoặc các VPN trả phí uy tín (Mỹ, Singapore, EU) để đăng nhập.
+                  </p>
+                </div>
+
+                <div className="bg-slate-950/40 border border-slate-900 p-3.5 rounded-xl space-y-1.5 hover:border-slate-800/80 transition-colors">
+                  <div className="flex items-center gap-2 font-bold text-amber-400">
+                    <EyeOff className="h-4 w-4 shrink-0" />
+                    <span>2. Trình Duyệt Cách Ly (Anti-detect)</span>
+                  </div>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Sử dụng các trình duyệt ẩn danh chuyên dụng (GPM, AdsPower, Multilogin) hoặc ít nhất tạo các Profile riêng trên Chrome/Edge. Dọn sạch Cookies/Cache trước khi đăng nhập tài khoản khác để tránh liên đới thiết bị.
+                  </p>
+                </div>
+
+                <div className="bg-slate-950/40 border border-slate-900 p-3.5 rounded-xl space-y-1.5 hover:border-slate-800/80 transition-colors">
+                  <div className="flex items-center gap-2 font-bold text-amber-400">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    <span>3. Không Đăng Nhập Dồn Dập</span>
+                  </div>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Hạn chế đăng nhập một tài khoản trên nhiều thiết bị ở các quốc gia khác nhau trong thời gian ngắn (độ trễ địa lý). Không thay đổi mật khẩu hoặc email liên tục ngay sau khi nhận tài khoản.
+                  </p>
+                </div>
+
+                <div className="bg-slate-950/40 border border-slate-900 p-3.5 rounded-xl space-y-1.5 hover:border-slate-800/80 transition-colors">
+                  <div className="flex items-center gap-2 font-bold text-amber-400">
+                    <Zap className="h-4 w-4 shrink-0" />
+                    <span>4. Hạn Chế Tần Suất Cao (Rate Limit)</span>
+                  </div>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Không gửi câu hỏi dồn dập quá nhanh hoặc treo các công cụ auto-bot tự động gọi API hàng ngàn lần qua tài khoản Trial. Cơ chế tự động của OpenAI sẽ tự quét khóa (die) các tài khoản có hành vi bất thường.
+                  </p>
+                </div>
+
+              </div>
+
+              <div className="bg-emerald-950/20 border border-emerald-500/10 p-3 rounded-xl text-emerald-400 font-medium flex items-start gap-2 text-[11px] leading-relaxed">
+                <span className="shrink-0 text-emerald-500 text-sm font-black">💡</span>
+                <span>
+                  <strong>Lời khuyên hữu ích:</strong> Sau khi đăng nhập thành công, hãy thực hiện một vài cuộc hội thoại tự nhiên, ngắn trước khi đưa vào khai thác chuyên sâu để tài khoản có thời gian tích lũy độ trust ban đầu.
+                </span>
+              </div>
+            </CardContent>
+          </Card>
         </section>
 
         {/* Right Column: Detailed Messages Panel */}
@@ -534,7 +598,7 @@ export default function OtpPage() {
                 </div>
               ) : (
                 <div className="space-y-6 flex-1 flex flex-col">
-                  
+
                   {/* Highlight parsed OTP code if present */}
                   {currentAccount.otp && currentAccount.otp !== "Không có OTP" && (
                     <div className="rounded-2xl border border-slate-800 bg-[#0f2333] p-5 text-slate-100 shadow-xl overflow-hidden relative">
@@ -593,7 +657,7 @@ export default function OtpPage() {
                               </Badge>
                             )}
                           </div>
-                          
+
                           {msg.message && (
                             <p className="text-[11px] text-slate-400 line-clamp-2 bg-slate-950/40 p-2 rounded-lg font-normal border border-slate-900">
                               {msg.message.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim()}
