@@ -19,6 +19,21 @@ export function ChatGPTUsageGuidelines() {
       </CardHeader>
       <CardContent className="space-y-5 text-xs text-slate-300">
         
+        {/* OpenAI Deactivated Notice Box */}
+        <div className="bg-red-950/20 border border-red-500/20 rounded-xl p-3.5 space-y-2 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-2xl pointer-events-none" />
+          <div className="text-red-400 font-extrabold text-[11px] uppercase tracking-wide flex items-center gap-1.5">
+            <ShieldAlert className="h-4 w-4 text-red-400 shrink-0 animate-pulse" />
+            CẢNH BÁO THÔNG BÁO BỊ QUÉT KHÓA (DEACTIVATED):
+          </div>
+          <div className="bg-slate-950 border border-slate-900 p-2.5 rounded-lg font-mono text-[10px] text-red-300/90 select-all leading-normal">
+            "Access deactivated. Hello, OpenAI's terms and policies restrict the use of our services in a number of areas. We have identified activity in ChatGPT that is not permitted under our policies. We are deactivating your access to our services."
+          </div>
+          <p className="text-slate-400 leading-relaxed text-[11px] mt-1.5">
+            ⚠️ <strong>ĐÂY LÀ GÌ?</strong> Đây chính là thông báo điển hình khi hệ thống AI bảo mật của OpenAI quét phát hiện thiết bị dùng <strong>Proxy/VPN bẩn</strong>, hoặc mang tài khoản mới đi <strong>vã code/Codex</strong> liên tục với tần suất lớn ngay từ lúc vừa đăng nhập. Tuân thủ nghiêm ngặt cẩm nang warm-up bên dưới là cách duy nhất để tránh thông báo này!
+          </p>
+        </div>
+
         {/* Core Principles Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           
