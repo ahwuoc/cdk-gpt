@@ -523,11 +523,44 @@ export default function OtpPage() {
 
               </div>
 
-              <div className="bg-emerald-950/20 border border-emerald-500/10 p-3 rounded-xl text-emerald-400 font-medium flex items-start gap-2 text-[11px] leading-relaxed">
-                <span className="shrink-0 text-emerald-500 text-sm font-black">💡</span>
-                <span>
-                  <strong>Lời khuyên hữu ích:</strong> Sau khi đăng nhập thành công, hãy thực hiện một vài cuộc hội thoại tự nhiên, ngắn trước khi đưa vào khai thác chuyên sâu để tài khoản có thời gian tích lũy độ trust ban đầu.
-                </span>
+              <div className="border-t border-slate-800/80 pt-4 mt-2 space-y-3">
+                <div className="text-amber-400 font-extrabold text-[12px] uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="flex h-2 w-2 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </span>
+                  LƯU Ý CỐT LÕI ĐỂ TĂNG ĐỘ TRUST & TRÁNH OPENAI QUÉT DIE
+                </div>
+                
+                <div className="bg-amber-950/20 border border-amber-500/10 rounded-xl p-3.5 space-y-2.5 text-[11px] leading-relaxed text-slate-300">
+                  <p>
+                    Để tài khoản <strong>ChatGPT Plus Trial</strong> đạt độ tin cậy cao nhất trên máy chủ OpenAI, bạn cần thực hiện đúng quy trình <strong>"Warm-up" (Làm ấm)</strong> tài khoản ngay sau khi mua:
+                  </p>
+                  
+                  <ul className="space-y-2 list-none pl-0">
+                    <li className="flex items-start gap-2">
+                      <span className="text-amber-500 font-bold shrink-0">✦ Bước 1:</span>
+                      <span><strong>Làm ấm trình duyệt (Browser Warmup):</strong> Trước khi mở OpenAI, hãy dùng Profile trình duyệt mới truy cập một vài trang tin tức lớn hoặc tìm kiếm Google ngẫu nhiên để tạo lịch sử web (history) tự nhiên.</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-amber-500 font-bold shrink-0">✦ Bước 2:</span>
+                      <span><strong>Cuộc hội thoại đầu tiên thân thiện:</strong> Tuyệt đối không dán các Prompt cực dài hay yêu cầu code phức tạp ngay. Hãy gửi lời chào nhẹ nhàng: <em>"Chào bạn, hôm nay thế nào?"</em> hoặc các câu hỏi ngắn để hệ thống nhận diện bạn là người dùng thật.</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-amber-500 font-bold shrink-0">✦ Bước 3:</span>
+                      <span><strong>Không thay đổi mật khẩu/email dồn dập:</strong> Hệ thống AI của OpenAI rất nhạy cảm với việc IP thay đổi đột ngột kết hợp đổi thông tin đăng nhập cấp tốc. Hãy sử dụng ổn định tài khoản tối thiểu <strong>24 giờ</strong> rồi mới tiến hành thay đổi thông tin.</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-amber-500 font-bold shrink-0">✦ Bước 4:</span>
+                      <span><strong>Tần suất hoạt động tự nhiên:</strong> Giữ khoảng cách tối thiểu 10-15 giây giữa các câu hỏi trong 5 phút đầu tiên, tránh copy-paste lượng lớn nội dung dồn dập dễ bị bot bảo mật tự động gắn cờ spam.</span>
+                    </li>
+                  </ul>
+                  
+                  <div className="bg-emerald-950/20 border border-emerald-500/10 p-2.5 rounded-lg text-emerald-400 font-bold flex items-center gap-1.5 text-[10px]">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                    <span>Tuân thủ đầy đủ 4 bước trên giúp nâng cao độ trust của tài khoản lên đến 95% và tránh quét die tự động!</span>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
