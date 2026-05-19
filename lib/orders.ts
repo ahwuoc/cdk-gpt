@@ -2,9 +2,7 @@ import { ObjectId, type WithId } from "mongodb";
 import type { OrderDocument, OrderStatus, OrderView } from "@/types/order";
 import { getDatabase } from "./mongodb";
 
-import { SHOP_PRICE } from "./config";
-
-const ORDER_PRICE = SHOP_PRICE;
+import { getShopPrice } from "./settings";
 
 const collectionName = "orders";
 
@@ -41,16 +39,22 @@ export async function createOrder(input: {
   buyerUsername: string;
   buyerContact: string;
   quantity?: number;
+  unitPrice?: number;
 }) {
   const collection = await getOrdersCollection();
   const now = new Date();
   const quantity = input.quantity ?? 1;
-  const totalPrice = ORDER_PRICE * quantity;
+
+  let resolvedPrice = input.unitPrice;
+  if (resolvedPrice === undefined) {
+    resolvedPrice = await getShopPrice();
+  }
+  const totalPrice = resolvedPrice * quantity;
 
   const result = await collection.insertOne({
     buyerUsername: input.buyerUsername,
     buyerContact: input.buyerContact.trim(),
-    unitPrice: ORDER_PRICE,
+    unitPrice: resolvedPrice,
     quantity,
     totalPrice,
     status: "pending",
@@ -96,7 +100,6 @@ export async function assignOrderAccounts(
       $set: {
         status: "assigned",
         accounts,
-        // Also set legacy fields for compatibility
         accountId: accounts[0]?.id,
         accountEmail: accounts[0]?.email,
         assignedAt: now,

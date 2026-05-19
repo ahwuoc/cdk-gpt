@@ -7,14 +7,13 @@ import {
   findAdminUserByUsername,
   getAdminUserBalance,
 } from "@/lib/admin-users";
-import { SHOP_PRICE } from "@/lib/config";
+import { getShopPrice } from "@/lib/settings";
 import { ShopPurchaseForm } from "@/components/shop-purchase-form";
 import { SubmitButton } from "@/app/submit-button";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const PRICE = SHOP_PRICE;
 const PRODUCT_IMAGE = "https://taphoammo.com/uploads/products/1772524493_69a693cd3d7e0.webp?v=1776537222";
 
 function formatPrice(value: number) {
@@ -23,10 +22,11 @@ function formatPrice(value: number) {
 
 export default async function ShopPage() {
   const session = await getCurrentSession();
-  const [sellableCount, completedOrders, currentUser] = await Promise.all([
+  const [sellableCount, completedOrders, currentUser, price] = await Promise.all([
     countSellableAccounts(),
     countOrdersByStatus("completed"),
     session ? findAdminUserByUsername(session.username) : Promise.resolve(null),
+    getShopPrice(),
   ]);
   const currentBalance = getAdminUserBalance(currentUser);
   return (
@@ -83,7 +83,7 @@ export default async function ShopPage() {
 
         {/* Price & stock */}
         <div className="flex items-baseline gap-4 mb-8">
-          <span className="text-3xl font-bold text-gray-900">{formatPrice(PRICE)}</span>
+          <span className="text-3xl font-bold text-gray-900">{formatPrice(price)}</span>
           <span className="text-sm text-gray-400">/ 1 tài khoản</span>
           <span className={`ml-auto text-sm font-medium ${sellableCount > 0 ? "text-emerald-600" : "text-red-500"}`}>
             {sellableCount > 0 ? `Còn ${sellableCount} tài khoản` : "Hết hàng"}
@@ -96,7 +96,7 @@ export default async function ShopPage() {
             isLoggedIn
             sellableCount={sellableCount}
             currentBalance={currentBalance}
-            unitPrice={PRICE}
+            unitPrice={price}
           />
         ) : (
           <Link href="/login" className="mb-6 flex h-14 w-full items-center justify-center rounded-2xl bg-gray-900 font-bold text-white transition-all shadow-xl shadow-gray-200 hover:bg-gray-800">

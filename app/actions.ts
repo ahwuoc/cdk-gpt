@@ -52,6 +52,7 @@ import {
 } from "@/lib/orders";
 import { SHOP_PRICE } from "@/lib/config";
 import { logTransaction } from "@/lib/transactions";
+import { getShopPrice, setShopPrice } from "@/lib/settings";
 function readRequiredField(formData: FormData, key: string): string {
   const value = formData.get(key);
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -139,12 +140,14 @@ export async function createOrderAction(formData: FormData) {
   const parsedQuantity =
     typeof quantityStr === "string" ? Number.parseInt(quantityStr, 10) : Number.NaN;
   const quantity = Number.isInteger(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1;
-  const totalPrice = SHOP_PRICE * quantity;
+  
+  const shopPrice = await getShopPrice();
+  const totalPrice = shopPrice * quantity;
 
   const currentUser = await findAdminUserByUsername(session.username);
   const currentBalance = getAdminUserBalance(currentUser);
   const maxAffordableQuantity =
-    SHOP_PRICE > 0 ? Math.floor(currentBalance / SHOP_PRICE) : 0;
+    shopPrice > 0 ? Math.floor(currentBalance / shopPrice) : 0;
 
   if (quantity > maxAffordableQuantity) {
     await redirectToShop(
@@ -185,6 +188,7 @@ export async function createOrderAction(formData: FormData) {
     buyerUsername: session.username,
     buyerContact: "Shop Purchase",
     quantity,
+    unitPrice: shopPrice,
   });
 
   const reservedAccounts: { id: string; email: string }[] = [];
@@ -670,5 +674,28 @@ export async function getMessagesAction(email: string) {
       return { success: false, message: "Lỗi: API phản hồi quá chậm (Timeout 15s)" };
     }
     return { success: false, message: `Lỗi kết nối: ${error.message}` };
+  }
+}
+
+export async function updateShopPriceAction(formData: FormData) {
+  await requireAdmin();
+
+  const priceStr = formData.get("shopPrice");
+  if (typeof priceStr !== "string") {
+    throw new Error("Dữ liệu giá không hợp lệ");
+  }
+
+  const price = parseInt(priceStr, 10);
+  if (isNaN(price) || price < 0) {
+    await redirectWithMessage("error", "Giá bán phải là số nguyên dương");
+  }
+
+  const success = await setShopPrice(price);
+  if (success) {
+    revalidatePath("/admin");
+    revalidatePath("/shop");
+    await redirectWithMessage("success", "Đã cập nhật giá bán tài khoản ChatGPT Plus");
+  } else {
+    await redirectWithMessage("error", "Lỗi lưu cấu hình giá bán vào cơ sở dữ liệu");
   }
 }

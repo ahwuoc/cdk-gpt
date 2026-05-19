@@ -3,6 +3,7 @@ import {
   logoutAction,
   updateBalanceAction,
   updateAccountSaleStatusAction,
+  updateShopPriceAction,
 } from "../actions";
 import { SubmitButton } from "../submit-button";
 import { ImportModal } from "@/components/import-modal";
@@ -12,6 +13,7 @@ import { UpdateSaleStatusButton } from "@/components/update-sale-status-button";
 import { RevokeAccountButton } from "@/components/revoke-account-button";
 import { DeleteAccountButton } from "@/components/delete-account-button";
 import { requireAdmin } from "@/lib/auth";
+import { getShopPrice } from "@/lib/settings";
 import {
   countSellableAccounts,
   countSoldAccounts,
@@ -65,12 +67,13 @@ export default async function AdminPage(props: {
   const searchParams = await props.searchParams;
   await requireAdmin();
 
-  const [accounts, users, orders, sellableCount, soldCount] = await Promise.all([
+  const [accounts, users, orders, sellableCount, soldCount, shopPrice] = await Promise.all([
     listAccounts(),
     listAdminUsers(),
     listOrders(),
     countSellableAccounts(),
     countSoldAccounts(),
+    getShopPrice(),
   ]);
 
   const currentTab = searchParams.tab || 'all';
@@ -81,7 +84,7 @@ export default async function AdminPage(props: {
   });
 
   const totalUserBalance = users.reduce((sum, user) => sum + (user.balance || 0), 0);
-  const totalRevenue = orders.filter(o => o.status === 'completed').length * 10000;
+  const totalRevenue = orders.filter(o => o.status === 'completed').reduce((sum, o) => sum + (o.totalPrice || 0), 0);
 
   const stats = {
     totalAccounts: accounts.length,
@@ -348,6 +351,39 @@ export default async function AdminPage(props: {
           </div>
 
           <aside className="space-y-8">
+            {/* Cấu hình giá bán */}
+            <Card className="border-none shadow-[0_8px_30px_rgb(0,0,0,0.04)] bg-white overflow-hidden rounded-3xl">
+              <div className="h-1 bg-amber-500 w-full" />
+              <CardHeader className="border-b border-slate-50 px-6 py-5">
+                <CardTitle className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <Wallet className="h-5 w-5 text-amber-500" /> Cấu hình Giá Bán
+                </CardTitle>
+                <CardDescription>Cập nhật giá bán tài khoản ChatGPT Plus</CardDescription>
+              </CardHeader>
+              <CardContent className="px-6 pb-6 pt-5">
+                <form action={updateShopPriceAction} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Giá bán hiện tại (MongoDB)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        name="shopPrice"
+                        defaultValue={shopPrice}
+                        required
+                        min="0"
+                        placeholder="Ví dụ: 10000"
+                        className="w-full h-11 px-4 rounded-xl border border-slate-200 font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">VND</span>
+                    </div>
+                  </div>
+                  <SubmitButton className="w-full h-11 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl active:scale-95 shadow-md shadow-amber-100">
+                    LƯU GIÁ MỚI
+                  </SubmitButton>
+                </form>
+              </CardContent>
+            </Card>
+
             <Card className="border-none shadow-[0_8px_30px_rgb(0,0,0,0.04)] bg-white overflow-hidden rounded-3xl">
               <CardHeader className="flex flex-row items-center justify-between border-b border-slate-50 px-6 py-5">
                 <div>
