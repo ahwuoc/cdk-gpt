@@ -371,8 +371,8 @@ export default function OtpPage() {
                         key={acc.id}
                         onClick={() => setSelectedAccountId(acc.id)}
                         className={`flex flex-col sm:flex-row items-stretch sm:items-center justify-between p-3.5 gap-3 cursor-pointer text-left transition-colors ${isSelected
-                            ? "bg-amber-500/[0.04] border-l-2 border-amber-500"
-                            : "hover:bg-slate-900/40 border-l-2 border-transparent"
+                          ? "bg-amber-500/[0.04] border-l-2 border-amber-500"
+                          : "hover:bg-slate-900/40 border-l-2 border-transparent"
                           }`}
                       >
                         <div className="min-w-0 flex-1 space-y-1 pr-2">
@@ -466,8 +466,6 @@ export default function OtpPage() {
               </CardContent>
             </Card>
           )}
-
-          <ChatGPTUsageGuidelines />
         </section>
 
         {/* Right Column: Detailed Messages Panel */}
@@ -535,6 +533,42 @@ export default function OtpPage() {
                 </div>
               ) : (
                 <div className="space-y-6 flex-1 flex flex-col">
+
+                  {(() => {
+                    const isDeactivated = currentAccount.messages?.some(msg =>
+                      msg.subject?.toLowerCase().includes("deactivated") ||
+                      msg.message?.toLowerCase().includes("deactivated")
+                    );
+
+                    if (!isDeactivated) return null;
+
+                    const deactivatedMsg = currentAccount.messages.find(msg =>
+                      msg.subject?.toLowerCase().includes("deactivated") ||
+                      msg.message?.toLowerCase().includes("deactivated")
+                    );
+
+                    return (
+                      <div className="rounded-2xl border border-red-500/25 bg-red-950/20 p-5 text-slate-100 shadow-xl overflow-hidden relative border-l-4 border-l-red-500 animate-in fade-in slide-in-from-top-4 duration-300">
+                        <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-2xl pointer-events-none" />
+                        <div className="flex items-start gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/25 flex items-center justify-center shrink-0">
+                            <AlertTriangle className="h-5 w-5 text-red-400 animate-pulse" />
+                          </div>
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-black uppercase tracking-wider text-red-400 flex items-center gap-1.5">
+                              ⚠️ CẢNH BÁO: TÀI KHOẢN ĐÃ BỊ OPENAI KHÓA (DIE ACC)
+                            </h4>
+                            <p className="text-[11px] text-slate-300 leading-relaxed font-semibold">
+                              Phát hiện thư quét bảo mật của OpenAI gửi tới tài khoản này: <strong className="text-red-300">"Access deactivated"</strong>.
+                            </p>
+                            <div className="bg-slate-950/70 p-2.5 rounded border border-slate-900 text-[10px] text-slate-400 font-mono mt-1 break-all line-clamp-2">
+                              {deactivatedMsg?.subject || "OpenAI - Access Deactivated"}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Highlight parsed OTP code if present */}
                   {currentAccount.otp && currentAccount.otp !== "Không có OTP" && (
@@ -615,6 +649,11 @@ export default function OtpPage() {
             </div>
           </Card>
         </section>
+
+        {/* ChatGPT Usage Guidelines spanned full-width at bottom */}
+        <div className="xl:col-span-12 w-full mt-2">
+          <ChatGPTUsageGuidelines />
+        </div>
       </div>
 
       {/* Footer copyright */}
