@@ -237,7 +237,7 @@ export default function OtpPage() {
 
       {/* Navigation */}
       <header className="border-b border-slate-800/80 bg-slate-900/40 backdrop-blur-md relative z-10">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="max-w-[1600px] w-full mx-auto px-6 lg:px-8 py-4 flex items-center justify-between">
           <Link href="/shop" className="flex items-center gap-2 group">
             <div className="w-9 h-9 bg-gradient-to-tr from-amber-500 to-amber-600 rounded-xl flex items-center justify-center shadow-lg shadow-amber-500/20 group-hover:scale-105 transition-transform duration-200">
               <Mail className="h-5 w-5 text-slate-950" />
@@ -259,7 +259,7 @@ export default function OtpPage() {
       </header>
 
       {/* Main Container */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 relative z-10 grid grid-cols-1 xl:grid-cols-12 gap-8">
+      <div className="flex-1 max-w-[1600px] w-full mx-auto px-6 lg:px-8 py-8 relative z-10 grid grid-cols-1 xl:grid-cols-12 gap-8">
 
         {/* Left Column: Input and cached list */}
         <section className="xl:col-span-7 space-y-6 flex flex-col">
