@@ -120,6 +120,13 @@ export default async function AdminPage(props: {
               Xem shop
             </Link>
             <Link
+              href="/convert"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-5 text-sm font-semibold text-emerald-700 transition-all hover:bg-emerald-100 active:scale-95"
+            >
+              <ExternalLink className="h-4 w-4" />
+              9router Tool
+            </Link>
+            <Link
               href="/orders"
               className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-5 text-sm font-semibold text-white transition-all hover:bg-slate-800 active:scale-95 shadow-lg shadow-slate-200"
             >
