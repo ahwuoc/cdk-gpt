@@ -340,8 +340,8 @@ function convertSession(record: any, options: { now?: Date; sourceName?: string;
   );
   const exportedAt = normalizeTimestamp(options.now || new Date());
   const expiresIn = getExpiresIn(expiresAt, options.now || new Date());
-  const sourceName = firstNonEmpty(options.sourceName, "pasted-json");
-  const name = firstNonEmpty(email, sourceName, "ChatGPT Account");
+  const sourceName = firstNonEmpty(options.sourceName, "pasted-json") || "pasted-json";
+  const name = firstNonEmpty(email, sourceName, "ChatGPT Account") || "ChatGPT Account";
 
   const priority = Number.isFinite(Number(record.priority)) ? Number(record.priority) : 9;
   const isActive = typeof record.isActive === "boolean" ? record.isActive : !Boolean(record.disabled);
@@ -659,8 +659,8 @@ export default function SessionConverterPage() {
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDrop}
               className={`relative flex-1 flex flex-col min-h-[300px] rounded-2xl border-2 border-dashed transition-all duration-300 overflow-hidden ${isDragging
-                  ? "border-amber-500 bg-amber-50/30 scale-[1.01] shadow-lg shadow-amber-500/5"
-                  : "border-stone-200 bg-stone-50/20 group-hover:border-stone-300"
+                ? "border-amber-500 bg-amber-50/30 scale-[1.01] shadow-lg shadow-amber-500/5"
+                : "border-stone-200 bg-stone-50/20 group-hover:border-stone-300"
                 }`}
             >
               <textarea
