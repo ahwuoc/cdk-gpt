@@ -72,21 +72,25 @@ const stepDescriptions: Record<string, ReactNode> = {
 };
 
 const stepImages: Record<string, { src: string; alt: string }> = {
+  "1. Đăng nhập ChatGPT": {
+    src: "/docs/image.png",
+    alt: "Đăng nhập ChatGPT",
+  },
   "2. Lấy dữ liệu Session": {
-    src: "/docs/chatgpt-session-example.png",
-    alt: "Minh hoạ trang ChatGPT session dùng dữ liệu mẫu",
+    src: "/docs/image copy.png",
+    alt: "Lấy Session JSON",
   },
   "3. Chuyển đổi định dạng tại 9router Tool": {
-    src: "/docs/9router-tool-convert.png",
-    alt: "Minh hoạ trang 9router Tool dán session và tạo ZIP import",
+    src: "/docs/image copy 2.png",
+    alt: "Chuyển đổi qua Tool",
   },
   "5. Import tự động vào 9router": {
-    src: "/docs/9router-import-btn.png",
-    alt: "Vị trí nút Import JSON trong ứng dụng 9router",
+    src: "/docs/image copy 3.png",
+    alt: "Nút Import JSON",
   },
   "6. Áp dụng cấu hình (Apply / Manual Config)": {
-    src: "/docs/9router-manual-config.png",
-    alt: "Hướng dẫn click Apply hoặc Manual Config",
+    src: "/docs/image copy 4.png",
+    alt: "Áp dụng cấu hình",
   },
 };
 
