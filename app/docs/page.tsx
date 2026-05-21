@@ -26,17 +26,12 @@ const steps = [
       "Giải nén file ZIP vừa tải về. Đảm bảo 9router đang TẮT. Chạy file 'Run-Import-Windows.bat' (nếu dùng Windows) hoặc 'Run-Import-Mac-Linux.sh' (nếu dùng Mac/Linux). Các tài khoản sẽ được tự động nạp thẳng vào 9router!",
   },
   {
-    title: "5. Mở Quản lý Providers trên app 9router",
+    title: "5. Mở trang CLI Tools",
     description:
-      "Mở app 9router trên máy tính. Ở thanh menu bên trái, chọn 'Providers' -> Bấm vào 'OpenAI Codex' để kiểm tra xem tài khoản đã được nạp thành công chưa.",
+      "Mở app 9router trên máy tính (chạy lệnh 9router start). Chọn mục 'CLI Tools' ở menu bên trái. Tìm và bấm vào hộp 'OpenAI Codex CLI / App'.",
   },
   {
-    title: "6. Mở trang CLI Tools",
-    description:
-      "Sau khi kiểm tra xong, chọn mục 'CLI Tools' ở menu bên trái. Tìm và bấm vào hộp 'OpenAI Codex CLI / App'.",
-  },
-  {
-    title: "7. Áp dụng cấu hình tự động",
+    title: "6. Áp dụng cấu hình tự động",
     description:
       "Nhấn 'Select Model' để chọn model muốn dùng, sau đó nhấn nút 'Apply' màu cam. 9router sẽ tự động cài đặt mọi thứ vào máy bạn!",
   },
@@ -71,17 +66,12 @@ const stepDescriptions: Record<string, ReactNode> = {
       Giải nén file ZIP. Đảm bảo bạn <strong>đã tắt ứng dụng 9router</strong>. Nháy đúp vào file <strong>Run-Import-Windows.bat</strong> (với Windows) hoặc chạy lệnh <strong>Run-Import-Mac-Linux.sh</strong> (với Mac/Linux). Tool sẽ tự động đưa cấu hình vào Database.
     </>
   ),
-  "5. Mở Quản lý Providers trên app 9router": (
+  "5. Mở trang CLI Tools": (
     <>
-      Mở ứng dụng 9router chính thức của bạn (chạy lệnh <code>9router start</code>). Ở thanh menu bên trái, chọn <strong>Providers</strong> rồi tìm mục <strong>OpenAI Codex</strong>. Bạn sẽ thấy các tài khoản đã được import sẵn!
+      Mở ứng dụng 9router chính thức của bạn (chạy lệnh <code>9router start</code>). Nhìn sang thanh menu bên trái, tìm và bấm vào mục <strong>CLI Tools</strong>. Bấm chọn <strong>OpenAI Codex CLI / App</strong>.
     </>
   ),
-  "6. Mở trang CLI Tools": (
-    <>
-      Nhìn sang thanh menu bên trái, tìm và bấm vào mục <strong>CLI Tools</strong>. Tại đây bạn sẽ thấy danh sách các công cụ. Bấm chọn <strong>OpenAI Codex CLI / App</strong>.
-    </>
-  ),
-  "7. Áp dụng cấu hình tự động": (
+  "6. Áp dụng cấu hình tự động": (
     <>
       Bấm <strong>Select Model</strong> để chọn loại AI. Sau đó nhấn nút <strong>Apply (Màu cam)</strong>. 9router sẽ tự động ghi đè file cấu hình vào hệ thống của bạn!
     </>
@@ -101,15 +91,11 @@ const stepImages: Record<string, { src: string; alt: string }> = {
     src: "/docs/9router-import-script.png",
     alt: "Chạy file script tự động nạp",
   },
-  "5. Mở Quản lý Providers trên app 9router": {
-    src: "/docs/9router-providers.png",
-    alt: "Giao diện Providers OpenAI Codex",
-  },
-  "6. Mở trang CLI Tools": {
+  "5. Mở trang CLI Tools": {
     src: "/docs/9router-cli-tools.png",
     alt: "Trang CLI Tools",
   },
-  "7. Áp dụng cấu hình tự động": {
+  "6. Áp dụng cấu hình tự động": {
     src: "/docs/9router-apply.png",
     alt: "Nhấn nút Apply màu cam",
   },
