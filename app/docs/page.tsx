@@ -97,6 +97,10 @@ const stepImages: Record<string, { src: string; alt: string }> = {
     src: "/docs/9router-convert-tool.png",
     alt: "Trang web Session Converter",
   },
+  "4. Nạp cấu hình tự động vào 9router": {
+    src: "/docs/9router-import-script.png",
+    alt: "Chạy file script tự động nạp",
+  },
   "5. Mở Quản lý Providers trên app 9router": {
     src: "/docs/9router-providers.png",
     alt: "Giao diện Providers OpenAI Codex",
