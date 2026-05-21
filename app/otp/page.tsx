@@ -334,6 +334,16 @@ export default function OtpPage() {
             </Badge>
           </div>
 
+          <div className="rounded-xl border border-red-500/50 bg-red-50 px-5 py-4 text-sm shadow-sm">
+            <div className="flex items-center gap-3 font-black text-red-700 uppercase tracking-wide">
+              <AlertTriangle className="h-5 w-5 animate-pulse" />
+              Lưu ý quan trọng cho người dùng 9Router / Codex
+            </div>
+            <p className="mt-2 font-medium text-red-900/90 leading-relaxed">
+              Nếu bạn đang cần lấy Session/OTP để dùng cho <strong>OpenAI Codex</strong> hoặc <strong>9Router</strong>, bạn KHÔNG CẦN và KHÔNG NÊN dùng công cụ này. Thay vào đó, hãy làm theo đúng <Link href="/docs" className="underline font-extrabold text-red-700 hover:text-red-600 transition-colors">Hướng dẫn tự động tại trang Docs</Link> để xuất và nhập file cấu hình JSON trực tiếp!
+            </p>
+          </div>
+
           <div className="rounded-xl border border-stone-200 bg-white/70 px-5 py-4 text-sm text-stone-700 shadow-sm">
             <p className="text-sm font-semibold text-stone-900">Định dạng nhập liệu</p>
             <p className="mt-1 font-mono text-sm text-stone-600">
@@ -454,8 +464,8 @@ export default function OtpPage() {
                           key={acc.id}
                           onClick={() => setSelectedAccountId(acc.id)}
                           className={`cursor-pointer border-l-4 px-4 py-4 transition-colors ${isSelected
-                              ? "border-l-amber-500 bg-amber-50/80"
-                              : "border-l-transparent hover:bg-stone-50"
+                            ? "border-l-amber-500 bg-amber-50/80"
+                            : "border-l-transparent hover:bg-stone-50"
                             }`}
                         >
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
