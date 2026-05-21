@@ -11,27 +11,32 @@ const steps = [
   {
     title: "2. Lấy dữ liệu Session",
     description:
-      "Mở một tab mới, truy cập link https://chatgpt.com/api/auth/session. Bôi đen và copy toàn bộ nội dung chữ (JSON) hiển thị trên màn hình.",
+      "Mở một tab mới, truy cập link https://chatgpt.com/api/auth/session. Bôi đen toàn bộ nội dung hiển thị trên màn hình và copy.",
   },
   {
     title: "3. Chuyển đổi định dạng tại 9router Tool",
     description:
-      "Mở trang 9router Tool trên web của chúng tôi, dán nội dung vừa copy vào ô dữ liệu. Nhấn nút chuyển đổi và tải về file JSON chứa danh sách tài khoản.",
+      "Mở trang 9router Tool trên web của chúng tôi, dán nội dung vừa copy vào ô 'Dữ liệu Web Session'. Nhấn nút 'Tải xuống' để lưu file JSON chuẩn của 9router.",
   },
   {
-    title: "4. Mở app 9router (Bản Fork)",
+    title: "4. Mở Quản lý Providers trên app 9router",
     description:
-      "Mở phần mềm 9router mà bạn đã tải về cài đặt trên máy. Chờ cho đến khi giao diện Dashboard hiện lên trên trình duyệt (thường ở địa chỉ localhost:20128).",
+      "Mở app 9router (Bản Fork) trên máy tính. Ở thanh menu bên trái, chọn 'Providers' -> Bấm vào 'OpenAI Codex'.",
   },
   {
-    title: "5. Import tự động vào 9router",
+    title: "5. Import file JSON vào 9router",
     description:
-      "Trong giao diện 9router, ở thanh menu bên trái, chọn 'Providers' -> Bấm vào 'OpenAI Codex'. Tại đây, hãy tìm và nhấn nút 'Import JSON', sau đó chọn file JSON mà bạn đã tải về ở Bước 3. Tài khoản sẽ tự động được thêm vào hệ thống!",
+      "Nhấn vào nút 'Import JSON', một bảng phụ hiện ra, hãy bấm nút 'Choose JSON File' và chọn file JSON bạn vừa tải về ở Bước 3. Tài khoản sẽ tự động được nạp!",
   },
   {
-    title: "6. Áp dụng cấu hình (Apply / Manual Config)",
+    title: "6. Mở trang CLI Tools",
     description:
-      "Sau khi Import, ngay tại trang OpenAI Codex đó: chọn 'Endpoint' và 'Model' tương ứng, sau đó nhấn nút 'Apply' để phần mềm TỰ ĐỘNG cập nhật cấu hình vào máy bạn. Hoặc bạn có thể bấm 'Manual Config' để tự xem và copy.",
+      "Sau khi import xong, chọn mục 'CLI Tools' ở menu bên trái. Tìm và bấm vào hộp 'OpenAI Codex CLI / App'.",
+  },
+  {
+    title: "7. Áp dụng cấu hình tự động",
+    description:
+      "Nhấn 'Select Model' để chọn model muốn dùng, sau đó nhấn nút 'Apply' màu cam. 9router sẽ tự động cài đặt mọi thứ vào máy bạn!",
   },
 ];
 
@@ -47,7 +52,7 @@ const stepDescriptions: Record<string, ReactNode> = {
       >
         link lấy session
       </a>
-      , sau đó <strong>bôi đen toàn bộ</strong> và copy nội dung JSON hiển thị trên màn hình (Ctrl+A rồi Ctrl+C).
+      , sau đó <strong>bôi đen toàn bộ</strong> và copy nội dung chữ hiển thị trên màn hình.
     </>
   ),
   "3. Chuyển đổi định dạng tại 9router Tool": (
@@ -56,41 +61,55 @@ const stepDescriptions: Record<string, ReactNode> = {
       <Link href="/convert" className="font-extrabold text-emerald-600 hover:underline">
         9router Tool
       </Link>
-      , dán đoạn JSON vừa copy vào ô. Bấm chuyển đổi để lấy ra file chuẩn của 9router.
+      , dán đoạn JSON vừa copy vào ô bên trái. Sau đó bấm nút <strong>Tải xuống</strong> ở ô bên phải để lấy file JSON.
     </>
   ),
-  "5. Import tự động vào 9router": (
+  "4. Mở Quản lý Providers trên app 9router": (
     <>
-      Vào mục <strong>Providers</strong> &gt; <strong>OpenAI Codex</strong>. Nhấn nút <strong>Import JSON</strong> (Nút có biểu tượng tệp tin tải lên) và chọn file bạn vừa tạo.
+      Mở ứng dụng 9router của bạn. Ở thanh menu bên trái, chọn <strong>Providers</strong> rồi tìm mục <strong>OpenAI Codex</strong>.
     </>
   ),
-  "6. Áp dụng cấu hình (Apply / Manual Config)": (
+  "5. Import file JSON vào 9router": (
     <>
-      Chọn cấu hình (Model, Endpoint) và nhấn nút <strong>Apply (Màu cam)</strong>. 9router sẽ tự động ghi đè file cấu hình hệ thống của bạn! Không cần làm thủ công nữa.
+      Nhấn vào nút <strong>Import JSON</strong> (biểu tượng tải lên). Một bảng phụ sẽ hiện ra, hãy chọn <strong>Choose JSON File</strong> và tải lên file bạn vừa lấy ở bước trước.
+    </>
+  ),
+  "6. Mở trang CLI Tools": (
+    <>
+      Nhìn sang thanh menu bên trái, tìm và bấm vào mục <strong>CLI Tools</strong>. Tại đây bạn sẽ thấy danh sách các công cụ. Bấm chọn <strong>OpenAI Codex CLI / App</strong>.
+    </>
+  ),
+  "7. Áp dụng cấu hình tự động": (
+    <>
+      Bấm <strong>Select Model</strong> để chọn loại AI. Sau đó nhấn nút <strong>Apply (Màu cam)</strong>. 9router sẽ tự động ghi đè file cấu hình vào hệ thống của bạn!
     </>
   ),
 };
 
 const stepImages: Record<string, { src: string; alt: string }> = {
-  "1. Đăng nhập ChatGPT": {
-    src: "/docs/image.png",
-    alt: "Đăng nhập ChatGPT",
-  },
   "2. Lấy dữ liệu Session": {
-    src: "/docs/image copy.png",
-    alt: "Lấy Session JSON",
+    src: "/docs/chatgpt-session.png",
+    alt: "Trang JSON Session ChatGPT",
   },
   "3. Chuyển đổi định dạng tại 9router Tool": {
-    src: "/docs/image copy 2.png",
-    alt: "Chuyển đổi qua Tool",
+    src: "/docs/9router-convert-tool.png",
+    alt: "Trang web Convert Tool",
   },
-  "5. Import tự động vào 9router": {
-    src: "/docs/image copy 3.png",
-    alt: "Nút Import JSON",
+  "4. Mở Quản lý Providers trên app 9router": {
+    src: "/docs/9router-providers.png",
+    alt: "Giao diện Providers OpenAI Codex",
   },
-  "6. Áp dụng cấu hình (Apply / Manual Config)": {
-    src: "/docs/image copy 4.png",
-    alt: "Áp dụng cấu hình",
+  "5. Import file JSON vào 9router": {
+    src: "/docs/9router-import.png",
+    alt: "Bảng Import JSON",
+  },
+  "6. Mở trang CLI Tools": {
+    src: "/docs/9router-cli-tools.png",
+    alt: "Trang CLI Tools",
+  },
+  "7. Áp dụng cấu hình tự động": {
+    src: "/docs/9router-apply.png",
+    alt: "Nhấn nút Apply màu cam",
   },
 };
 
@@ -144,9 +163,9 @@ export default function DocsPage() {
             Hướng dẫn dùng ChatGPT + 9router
           </h1>
           <p className="max-w-2xl text-base leading-7 text-gray-600">
-            Trang này hướng dẫn nhanh cách lấy dữ liệu session từ ChatGPT, chuyển đổi sang định dạng 9router và import bằng bộ công cụ offline.
+            Trang này hướng dẫn nhanh cách cấu hình và import dữ liệu phiên làm việc vào 9router để tự động hóa quá trình sử dụng các Model AI.
             <br /><br />
-            <strong>Lưu ý:</strong> Đây là bản 9router đã được fork và bổ sung thêm chức năng. Bạn có thể tải bản cài đặt mới nhất bên dưới.
+            <strong>Lưu ý:</strong> Đây là bản 9router đã được fork và bổ sung thêm tính năng Import tự động. Bạn có thể tải bản cài đặt mới nhất bên dưới.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link
