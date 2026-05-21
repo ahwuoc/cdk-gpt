@@ -127,6 +127,8 @@ export default function DocsPage() {
           </h1>
           <p className="max-w-2xl text-base leading-7 text-gray-600">
             Trang này hướng dẫn nhanh cách lấy dữ liệu session từ ChatGPT, chuyển đổi sang định dạng 9router và import bằng bộ công cụ offline.
+            <br /><br />
+            <strong>Lưu ý:</strong> Đây là bản 9router đã được fork và bổ sung thêm chức năng. Bạn có thể tải bản cài đặt mới nhất bên dưới.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link
@@ -142,6 +144,14 @@ export default function DocsPage() {
               className="rounded-2xl border border-amber-200 bg-white px-5 py-3 text-sm font-extrabold text-amber-800 transition hover:bg-amber-50"
             >
               Mở link lấy session
+            </a>
+            <a
+              href="https://github.com/ahwuoc/fork-9router/releases/latest"
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-extrabold text-emerald-800 transition hover:bg-emerald-100"
+            >
+              Tải 9router (Bản Fork)
             </a>
           </div>
         </section>
