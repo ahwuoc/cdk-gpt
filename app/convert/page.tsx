@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import React, { useState, useEffect, useRef } from "react";
 import {
   FileText,
@@ -998,6 +999,14 @@ Write-Host "Done! Successfully imported $importedCount accounts into 9router dat
 
       {/* Header Panel - Re-styled for premium visual layout */}
       <header className="mb-12 text-center relative max-w-3xl mx-auto">
+        <div className="mb-6 flex justify-center gap-4 text-sm font-bold">
+          <Link href="/shop" className="text-stone-500 hover:text-stone-900">
+            Shop
+          </Link>
+          <Link href="/docs" className="text-amber-700 hover:text-amber-500">
+            Docs
+          </Link>
+        </div>
         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-800 text-xs font-bold mb-4 shadow-sm animate-pulse">
           <Sparkles className="w-3.5 h-3.5" />
           Giải pháp xuất cấu hình tự động

@@ -38,6 +38,7 @@ export default async function ShopPage() {
           <div className="flex items-center gap-4">
             <Link href="/otp" className="text-sm font-semibold text-amber-600 hover:underline">Lấy OTP</Link>
             <Link href="/convert" className="text-sm font-semibold text-emerald-600 hover:underline">9router Tool</Link>
+            <Link href="/docs" className="text-sm font-semibold text-gray-600 hover:underline">Docs</Link>
             {session ? (
               <>
                 <span className="text-sm text-gray-500">{session.username}</span>
