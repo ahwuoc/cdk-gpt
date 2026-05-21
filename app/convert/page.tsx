@@ -20,6 +20,7 @@ import {
   Terminal
 } from "lucide-react";
 import { toast } from "sonner";
+import JSZip from "jszip";
 
 // --- Typings ---
 interface ChatGPTUser {
@@ -564,21 +565,253 @@ export default function SessionConverterPage() {
     }
   };
 
-  const handleDownload = () => {
+  const handleDownload = async (platform: "windows" | "mac" | "linux") => {
     if (!outputText) return;
     const first = converted[0];
     const base = sanitizeFileToken(first?.email || first?.name || "9router");
-    const fileName = `${base}.9router.${getTimestampToken()}.json`;
-    const blob = new Blob([outputText], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = fileName;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast.success(`Đã tải xuống ${fileName}!`);
+
+    try {
+      const zip = new JSZip();
+
+      // 1. Add the JSON file
+      zip.file("accounts.json", outputText);
+
+      if (platform === "windows") {
+        // 2. Add Windows PowerShell Script
+        const ps1Content = `# Import-9RouterAccounts.ps1
+# A clean, native PowerShell script to import accounts into 9router SQLite database
+# Uses Windows built-in winsqlite3.dll (no external dependencies, no installation needed)
+
+param (
+    [string]$JsonPath = "accounts.json",
+    [string]$DbPath = "$env:APPDATA\\9router\\db\\data.sqlite"
+)
+
+Write-Host "==============================================" -ForegroundColor Green
+Write-Host "      9Router Account Importer Script" -ForegroundColor Green
+Write-Host "==============================================" -ForegroundColor Green
+Write-Host "NOTE: Please make sure 9Router app is CLOSED" -ForegroundColor Yellow
+Write-Host "before running this script to avoid database locks." -ForegroundColor Yellow
+Write-Host "==============================================" -ForegroundColor Green
+Write-Host ""
+
+$typeDefinition = @"
+using System;
+using System.Runtime.InteropServices;
+public class WinSQLite3 {
+    [DllImport("winsqlite3.dll", EntryPoint = "sqlite3_open", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Open(string filename, out IntPtr db);
+    [DllImport("winsqlite3.dll", EntryPoint = "sqlite3_close", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Close(IntPtr db);
+    [DllImport("winsqlite3.dll", EntryPoint = "sqlite3_exec", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int Exec(IntPtr db, string sql, IntPtr callback, IntPtr errmsgArg, out IntPtr errmsg);
+}
+"@
+
+try { Add-Type -TypeDefinition $typeDefinition -ErrorAction SilentlyContinue } catch { }
+
+$resolvedDbPath = [System.IO.Path]::GetFullPath([System.Environment]::ExpandEnvironmentVariables($DbPath))
+if (-not (Test-Path $resolvedDbPath)) {
+    Write-Error "Database not found at: $resolvedDbPath"
+    exit 1
+}
+
+$inputFile = ""
+if (Test-Path $JsonPath) { $inputFile = [System.IO.Path]::GetFullPath($JsonPath) }
+else {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $localJson = Join-Path $scriptDir "accounts.json"
+    if (Test-Path $localJson) { $inputFile = $localJson }
+    else { Write-Error "No accounts.json file found!"; exit 1 }
+}
+
+$content = Get-Content -Raw -Path $inputFile
+$parsed = ConvertFrom-Json $content
+$accounts = @()
+foreach ($item in $parsed) {
+    if ($item -is [string]) { $accounts += [PSCustomObject]@{ accessToken = $item } }
+    else { $accounts += $item }
+}
+
+function Escape-SqlVal($val) {
+    if ($null -eq $val) { return "NULL" }
+    if ($val -is [bool]) { return [int]$val }
+    if ($val -is [int] -or $val -is [double] -or $val -is [long]) { return $val }
+    $str = $val.ToString().Replace("'", "''")
+    return "'$str'"
+}
+
+$db = [IntPtr]::Zero
+if ([WinSQLite3]::Open($resolvedDbPath, [ref]$db) -ne 0) { Write-Error "Failed to open database."; exit 1 }
+
+$importedCount = 0
+try {
+    foreach ($acc in $accounts) {
+        if (-not $acc.accessToken) { continue }
+        $id = if ($acc.id) { $acc.id } else { [Guid]::NewGuid().ToString() }
+        $provider = if ($acc.provider) { $acc.provider } else { "codex" }
+        $authType = if ($acc.authType) { $acc.authType } else { "oauth" }
+        $email = if ($acc.email) { $acc.email } else { "imported@example.com" }
+        $name = if ($acc.name) { $acc.name } else { $email }
+        $priority = if ($null -ne $acc.priority) { $acc.priority } else { 9 }
+        $isActive = if ($null -ne $acc.isActive) { $acc.isActive } else { $true }
+        
+        $dataObj = @{ accessToken = $acc.accessToken; testStatus = if ($acc.testStatus) { $acc.testStatus } else { "active" } }
+        if ($acc.refreshToken) { $dataObj.refreshToken = $acc.refreshToken }
+        if ($acc.expiresAt) { $dataObj.expiresAt = $acc.expiresAt }
+        if ($acc.expiresIn) { $dataObj.expiresIn = $acc.expiresIn }
+        if ($acc.providerSpecificData) { $dataObj.providerSpecificData = $acc.providerSpecificData }
+        $dataJson = ConvertTo-Json $dataObj -Compress
+
+        $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        $createdAt = if ($acc.createdAt) { $acc.createdAt } else { $now }
+        $updatedAt = if ($acc.updatedAt) { $acc.updatedAt } else { $now }
+
+        $sql = "INSERT OR REPLACE INTO providerConnections (id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES ($(Escape-SqlVal $id), $(Escape-SqlVal $provider), $(Escape-SqlVal $authType), $(Escape-SqlVal $name), $(Escape-SqlVal $email), $(Escape-SqlVal $priority), $(Escape-SqlVal $isActive), $(Escape-SqlVal $dataJson), $(Escape-SqlVal $createdAt), $(Escape-SqlVal $updatedAt));"
+        
+        $errmsg = [IntPtr]::Zero
+        if ([WinSQLite3]::Exec($db, $sql, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$errmsg) -eq 0) {
+            Write-Host "Successfully imported: $email" -ForegroundColor Green
+            $importedCount++
+        } else {
+            Write-Host "Failed to import: $email" -ForegroundColor Red
+        }
+    }
+} finally { [WinSQLite3]::Close($db) | Out-Null }
+
+Write-Host "Done! Imported $importedCount accounts." -ForegroundColor Green
+`;
+        zip.file("Import-Windows.ps1", ps1Content);
+
+        // 3. Add Windows Batch Script
+        const batContent = `@echo off
+title 9Router Account Importer
+echo ==============================================
+echo       9Router Account Importer Tool
+echo ==============================================
+echo.
+echo NOTE: Please make sure 9Router app is CLOSED
+echo before running this script to avoid database locks.
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Import-Windows.ps1"
+echo.
+pause
+`;
+        zip.file("Run-Import-Windows.bat", batContent);
+      } else {
+        const pyContent = `#!/usr/bin/env python3
+import json, sqlite3, sys, os, uuid, base64
+from datetime import datetime, timezone
+
+def decode_jwt(token):
+    try:
+        parts = token.split('.')
+        if len(parts) < 2: return None
+        payload = parts[1] + '=' * (4 - len(parts[1]) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload).decode('utf-8'))
+    except: return None
+
+def main():
+    print("==============================================")
+    print("      9Router Account Importer Script")
+    print("==============================================")
+    
+    db_path = os.path.expanduser("${platform === 'mac' ? '~/Library/Application Support/9router/db/data.sqlite' : '~/.9router/db/data.sqlite'}")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    json_path = os.path.join(script_dir, "accounts.json")
+    
+    if not os.path.exists(json_path):
+        print(f"Error: {json_path} not found.")
+        sys.exit(1)
+    if not os.path.exists(db_path):
+        print(f"Error: Database not found at {db_path}")
+        sys.exit(1)
+        
+    with open(json_path, 'r') as f:
+        accounts = json.load(f)
+        
+    if not accounts:
+        sys.exit(0)
+        
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    imported = 0
+    
+    for acc in accounts:
+        if not acc.get("accessToken"): continue
+            
+        acc_id = acc.get("id") or str(uuid.uuid4())
+        provider = acc.get("provider", "codex")
+        auth_type = acc.get("authType", "oauth")
+        email = acc.get("email", f"imported-account-{imported}@example.com")
+        name = acc.get("name", email)
+        priority = acc.get("priority", 9)
+        is_active = acc.get("isActive", True)
+        
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        created_at = acc.get("createdAt", now_str)
+        updated_at = acc.get("updatedAt", now_str)
+        
+        data_obj = { "accessToken": acc.get("accessToken"), "testStatus": acc.get("testStatus", "active") }
+        for k in ["refreshToken", "expiresAt", "expiresIn"]:
+            if acc.get(k): data_obj[k] = acc.get(k)
+            
+        data_obj["providerSpecificData"] = acc.get("providerSpecificData", { "chatgptAccountId": acc_id, "chatgptPlanType": "plus" })
+            
+        try:
+            c.execute("INSERT OR REPLACE INTO providerConnections (id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (acc_id, provider, auth_type, name, email, priority, is_active, json.dumps(data_obj), created_at, updated_at))
+            print(f"Successfully imported: {email}")
+            imported += 1
+        except Exception as e:
+            print(f"Failed to import {email}: {e}")
+            
+    conn.commit()
+    conn.close()
+    print(f"\\nDone! Successfully imported {imported} accounts.")
+
+if __name__ == "__main__":
+    main()
+`;
+        zip.file("import-unix.py", pyContent);
+
+        // 5. Add Mac/Linux Bash Script
+        const shContent = `#!/bin/bash
+echo "=============================================="
+echo "      9Router Account Importer Script"
+echo "=============================================="
+echo "NOTE: Please make sure 9Router app is CLOSED."
+echo ""
+if ! command -v python3 &> /dev/null; then
+    echo "Python 3 could not be found. Please install Python 3."
+    exit 1
+fi
+DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
+python3 "$DIR/import-unix.py"
+echo ""
+read -p "Press Enter to exit..."
+`;
+        zip.file("Run-Import-Unix.sh", shContent, { unixPermissions: "755" });
+      }
+
+      // Generate the zip and trigger download
+      const content = await zip.generateAsync({ type: "blob" });
+      const fileName = `${base}.9router.${platform}.${getTimestampToken()}.zip`;
+
+      const url = URL.createObjectURL(content);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      toast.success(`Đã tải xuống ZIP công cụ import ${fileName}!`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Có lỗi xảy ra khi tạo tệp ZIP!");
+    }
   };
 
   return (
@@ -777,20 +1010,34 @@ export default function SessionConverterPage() {
                 />
 
                 {outputText && (
-                  <div className="absolute bottom-4 right-4 flex items-center gap-2.5">
+                  <div className="absolute bottom-4 right-4 flex flex-wrap items-center justify-end gap-2">
                     <button
                       onClick={handleCopy}
-                      className="bg-stone-800/90 hover:bg-stone-750 border border-stone-700/80 hover:border-amber-500/40 text-stone-200 hover:text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"
+                      className="bg-stone-800/90 hover:bg-stone-750 border border-stone-700/80 hover:border-amber-500/40 text-stone-200 hover:text-white px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-lg hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"
                     >
-                      <Copy className="w-3.5 h-3.5" />
-                      Sao chép
+                      <Copy className="w-3 h-3" />
+                      Copy
                     </button>
                     <button
-                      onClick={handleDownload}
-                      className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg hover:scale-[1.02] active:scale-[0.98] border border-amber-700/10 transition-all duration-200"
+                      onClick={() => handleDownload("windows")}
+                      className="bg-blue-600/90 hover:bg-blue-500 text-white px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-lg hover:scale-[1.02] active:scale-[0.98] border border-blue-700/20 transition-all duration-200"
                     >
-                      <Download className="w-3.5 h-3.5" />
-                      Tải xuống
+                      <Download className="w-3 h-3" />
+                      Windows
+                    </button>
+                    <button
+                      onClick={() => handleDownload("mac")}
+                      className="bg-zinc-600/90 hover:bg-zinc-500 text-white px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-lg hover:scale-[1.02] active:scale-[0.98] border border-zinc-700/20 transition-all duration-200"
+                    >
+                      <Download className="w-3 h-3" />
+                      MacOS
+                    </button>
+                    <button
+                      onClick={() => handleDownload("linux")}
+                      className="bg-amber-600/90 hover:bg-amber-500 text-white px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-lg hover:scale-[1.02] active:scale-[0.98] border border-amber-700/20 transition-all duration-200"
+                    >
+                      <Download className="w-3 h-3" />
+                      Linux
                     </button>
                   </div>
                 )}

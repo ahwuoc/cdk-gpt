@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ImageLightbox } from "@/components/image-lightbox";
@@ -14,24 +16,24 @@ const steps = [
       "Mở một tab mới, truy cập link https://chatgpt.com/api/auth/session. Bôi đen toàn bộ nội dung hiển thị trên màn hình và copy.",
   },
   {
-    title: "3. Chuyển đổi định dạng tại 9router Tool",
+    title: "3. Chuyển đổi và tải xuống ZIP",
     description:
-      "Mở trang 9router Tool trên web của chúng tôi, dán nội dung vừa copy vào ô 'Dữ liệu Web Session'. Nhấn nút 'Tải xuống' để lưu file JSON chuẩn của 9router.",
+      "Mở trang Session Converter trên web của chúng tôi, dán nội dung vừa copy vào ô 'Dữ liệu Web Session'. Nhấn nút 'Tải xuống' để lấy file ZIP chứa bộ công cụ nạp tự động.",
   },
   {
-    title: "4. Mở Quản lý Providers trên app 9router",
+    title: "4. Nạp cấu hình tự động vào 9router",
     description:
-      "Mở app 9router (Bản Fork) trên máy tính. Ở thanh menu bên trái, chọn 'Providers' -> Bấm vào 'OpenAI Codex'.",
+      "Giải nén file ZIP vừa tải về. Đảm bảo 9router đang TẮT. Chạy file 'Run-Import-Windows.bat' (nếu dùng Windows) hoặc 'Run-Import-Mac-Linux.sh' (nếu dùng Mac/Linux). Các tài khoản sẽ được tự động nạp thẳng vào 9router!",
   },
   {
-    title: "5. Import file JSON vào 9router",
+    title: "5. Mở Quản lý Providers trên app 9router",
     description:
-      "Nhấn vào nút 'Import JSON', một bảng phụ hiện ra, hãy bấm nút 'Choose JSON File' và chọn file JSON bạn vừa tải về ở Bước 3. Tài khoản sẽ tự động được nạp!",
+      "Mở app 9router trên máy tính. Ở thanh menu bên trái, chọn 'Providers' -> Bấm vào 'OpenAI Codex' để kiểm tra xem tài khoản đã được nạp thành công chưa.",
   },
   {
     title: "6. Mở trang CLI Tools",
     description:
-      "Sau khi import xong, chọn mục 'CLI Tools' ở menu bên trái. Tìm và bấm vào hộp 'OpenAI Codex CLI / App'.",
+      "Sau khi kiểm tra xong, chọn mục 'CLI Tools' ở menu bên trái. Tìm và bấm vào hộp 'OpenAI Codex CLI / App'.",
   },
   {
     title: "7. Áp dụng cấu hình tự động",
@@ -55,23 +57,23 @@ const stepDescriptions: Record<string, ReactNode> = {
       , sau đó <strong>bôi đen toàn bộ</strong> và copy nội dung chữ hiển thị trên màn hình.
     </>
   ),
-  "3. Chuyển đổi định dạng tại 9router Tool": (
+  "3. Chuyển đổi và tải xuống ZIP": (
     <>
       Mở trang{" "}
       <Link href="/convert" className="font-extrabold text-emerald-600 hover:underline">
-        9router Tool
+        Session Converter
       </Link>
-      , dán đoạn JSON vừa copy vào ô bên trái. Sau đó bấm nút <strong>Tải xuống</strong> ở ô bên phải để lấy file JSON.
+      , dán đoạn JSON vừa copy vào ô bên trái. Sau đó bấm nút <strong>Tải xuống</strong> ở ô bên phải để lấy file ZIP chứa script chạy tự động.
     </>
   ),
-  "4. Mở Quản lý Providers trên app 9router": (
+  "4. Nạp cấu hình tự động vào 9router": (
     <>
-      Mở ứng dụng 9router của bạn. Ở thanh menu bên trái, chọn <strong>Providers</strong> rồi tìm mục <strong>OpenAI Codex</strong>.
+      Giải nén file ZIP. Đảm bảo bạn <strong>đã tắt ứng dụng 9router</strong>. Nháy đúp vào file <strong>Run-Import-Windows.bat</strong> (với Windows) hoặc chạy lệnh <strong>Run-Import-Mac-Linux.sh</strong> (với Mac/Linux). Tool sẽ tự động đưa cấu hình vào Database.
     </>
   ),
-  "5. Import file JSON vào 9router": (
+  "5. Mở Quản lý Providers trên app 9router": (
     <>
-      Nhấn vào nút <strong>Import JSON</strong> (biểu tượng tải lên). Một bảng phụ sẽ hiện ra, hãy chọn <strong>Choose JSON File</strong> và tải lên file bạn vừa lấy ở bước trước.
+      Mở ứng dụng 9router chính thức của bạn (chạy lệnh <code>9router start</code>). Ở thanh menu bên trái, chọn <strong>Providers</strong> rồi tìm mục <strong>OpenAI Codex</strong>. Bạn sẽ thấy các tài khoản đã được import sẵn!
     </>
   ),
   "6. Mở trang CLI Tools": (
@@ -91,17 +93,13 @@ const stepImages: Record<string, { src: string; alt: string }> = {
     src: "/docs/chatgpt-session.png",
     alt: "Trang JSON Session ChatGPT",
   },
-  "3. Chuyển đổi định dạng tại 9router Tool": {
+  "3. Chuyển đổi và tải xuống ZIP": {
     src: "/docs/9router-convert-tool.png",
-    alt: "Trang web Convert Tool",
+    alt: "Trang web Session Converter",
   },
-  "4. Mở Quản lý Providers trên app 9router": {
+  "5. Mở Quản lý Providers trên app 9router": {
     src: "/docs/9router-providers.png",
     alt: "Giao diện Providers OpenAI Codex",
-  },
-  "5. Import file JSON vào 9router": {
-    src: "/docs/9router-import.png",
-    alt: "Bảng Import JSON",
   },
   "6. Mở trang CLI Tools": {
     src: "/docs/9router-cli-tools.png",
@@ -163,9 +161,9 @@ export default function DocsPage() {
             Hướng dẫn dùng ChatGPT + 9router
           </h1>
           <p className="max-w-2xl text-base leading-7 text-gray-600">
-            Trang này hướng dẫn nhanh cách cấu hình và import dữ liệu phiên làm việc vào 9router để tự động hóa quá trình sử dụng các Model AI.
+            Trang này hướng dẫn nhanh cách cấu hình và tự động nạp dữ liệu phiên làm việc vào ứng dụng 9router chính thức để sử dụng các Model AI thả ga.
             <br /><br />
-            <strong>Lưu ý:</strong> Đây là bản 9router đã được fork và bổ sung thêm tính năng Import tự động. Bạn có thể tải bản cài đặt mới nhất bên dưới.
+            <strong>Lưu ý:</strong> Vui lòng sử dụng phiên bản 9router chính thức cài đặt qua npm để được cập nhật proxy bypass mới nhất, tránh bị khóa API.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link
@@ -182,14 +180,15 @@ export default function DocsPage() {
             >
               Mở link lấy session
             </a>
-            <a
-              href="https://github.com/ahwuoc/fork-9router/releases/latest"
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-extrabold text-emerald-800 transition hover:bg-emerald-100"
-            >
-              Tải 9router (Bản Fork)
-            </a>
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-extrabold text-emerald-800 transition flex items-center">
+              <span>Cài 9router qua npm:</span>
+              <code
+                className="bg-white px-2 py-1 ml-2 rounded text-emerald-900 border border-emerald-200 cursor-pointer hover:bg-emerald-100 active:scale-95 transition"
+                onClick={() => { navigator.clipboard.writeText('npm i -g 9router'); alert('Đã copy lệnh!') }}
+              >
+                npm i -g 9router
+              </code>
+            </div>
           </div>
         </section>
 
@@ -224,7 +223,7 @@ export default function DocsPage() {
           <div className="mt-5 grid gap-5">
             <article className="overflow-hidden rounded-2xl border border-gray-200">
               <div className="border-b border-gray-200 bg-gray-50 px-4 py-3">
-                <code className="text-sm font-black text-gray-900">%USERPROFILE%\.codex\config.toml</code>
+                <code className="text-sm font-black text-gray-900">%USERPROFILE%\\.codex\\config.toml</code>
               </div>
               <pre className="overflow-x-auto bg-gray-950 p-4 text-sm leading-6 text-gray-100">
                 <code>{configTomlExample}</code>
@@ -233,7 +232,7 @@ export default function DocsPage() {
 
             <article className="overflow-hidden rounded-2xl border border-gray-200">
               <div className="border-b border-gray-200 bg-gray-50 px-4 py-3">
-                <code className="text-sm font-black text-gray-900">%USERPROFILE%\.codex\auth.json</code>
+                <code className="text-sm font-black text-gray-900">%USERPROFILE%\\.codex\\auth.json</code>
               </div>
               <pre className="overflow-x-auto bg-gray-950 p-4 text-sm leading-6 text-gray-100">
                 <code>{authJsonExample}</code>
