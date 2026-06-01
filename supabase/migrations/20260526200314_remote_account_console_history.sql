@@ -1,0 +1,2 @@
+-- Already applied on the shared Supabase Cloud project.
+-- Kept here so this repo's migration history matches the remote database.

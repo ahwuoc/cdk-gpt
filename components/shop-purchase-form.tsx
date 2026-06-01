@@ -31,12 +31,12 @@ export function ShopPurchaseForm({
   const canBuy = isLoggedIn && sellableCount > 0 && canAffordSelection;
 
   return (
-    <form action={createOrderAction} className="mb-6 space-y-4">
+    <form action={createOrderAction} className="space-y-4">
       {isLoggedIn && sellableCount > 0 && (
-        <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-4">
-          <div className="flex items-center gap-4">
+        <div className="space-y-4 rounded-2xl border border-gray-100 bg-gray-50 p-4">
+          <div className="flex items-center justify-between gap-4">
             <label htmlFor="quantity" className="text-sm font-bold text-gray-700">
-              Số lượng mua:
+              Số lượng
             </label>
             <input
               id="quantity"
@@ -49,17 +49,15 @@ export function ShopPurchaseForm({
                 const nextValue = Number.parseInt(event.target.value, 10);
                 setQuantity(Number.isNaN(nextValue) ? 1 : nextValue);
               }}
-              className="h-10 w-24 rounded-lg border border-gray-200 bg-white px-3 font-bold text-gray-900 outline-none transition-all focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10"
+              className="h-11 w-24 rounded-xl border border-gray-200 bg-white px-3 text-center font-bold text-gray-900 outline-none transition-all focus:border-gray-900 focus:ring-2 focus:ring-gray-900/10"
             />
-            <span className="text-xs font-medium italic text-gray-400">
-              (Tối đa {sellableCount} nick)
-            </span>
           </div>
 
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-500">Tổng thanh toán</span>
-            <span className="font-bold text-gray-900">{formatPrice(totalPrice)}</span>
+          <div className="flex items-center justify-between rounded-xl bg-white px-4 py-3 text-sm">
+            <span className="font-medium text-gray-500">Tổng thanh toán</span>
+            <span className="text-lg font-black text-gray-900">{formatPrice(totalPrice)}</span>
           </div>
+          <p className="text-xs text-gray-400">Tối đa {sellableCount} tài khoản còn hàng.</p>
 
           {!canAffordSelection && (
             <p className="text-sm text-red-500">

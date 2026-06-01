@@ -1,4 +1,5 @@
 import { listOrdersByUsername } from "@/lib/orders";
+import { getAccountWarrantySummaries } from "@/lib/accounts";
 import { getCurrentSession, requireAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import type { OrderStatus } from "@/types/order";
@@ -43,6 +44,31 @@ const orderStatusVariant: Record<
   refunded: "secondary",
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getWarrantyLabel(summary?: {
+  soldAt: Date | null;
+  warrantyDays: number;
+}) {
+  if (!summary?.soldAt || summary.warrantyDays <= 0) {
+    return null;
+  }
+
+  const expiresAt = summary.soldAt.getTime() + summary.warrantyDays * DAY_MS;
+  const remainingDays = Math.ceil((expiresAt - Date.now()) / DAY_MS);
+  if (remainingDays <= 0) {
+    return {
+      active: false,
+      text: "Hết bảo hành",
+    };
+  }
+
+  return {
+    active: true,
+    text: `Bảo hành còn ${remainingDays} ngày`,
+  };
+}
+
 export default async function MyOrdersPage() {
   await requireAuth();
   const session = await getCurrentSession();
@@ -52,6 +78,11 @@ export default async function MyOrdersPage() {
   }
 
   const orders = await listOrdersByUsername(session.username);
+  const accountIds = orders.flatMap((order) => {
+    if (order.accounts.length > 0) return order.accounts.map((account) => account.id);
+    return order.accountId ? [order.accountId] : [];
+  });
+  const warrantyByAccountId = await getAccountWarrantySummaries(accountIds);
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#f8efe4,transparent_35%),linear-gradient(180deg,#fffdf8_0%,#f5eee3_100%)]">
@@ -140,27 +171,59 @@ export default async function MyOrdersPage() {
                         <TableCell className="px-6 py-4">
                           <div className="flex flex-col gap-3">
                             {order.accounts && order.accounts.length > 0 ? (
-                              order.accounts.map((acc, idx) => (
-                                <div key={idx} className="flex items-center gap-2 text-sm text-stone-600 border-b border-stone-50 pb-2 last:border-0 last:pb-0">
-                                  <span className="font-medium text-stone-900">{acc.email}</span>
-                                  {order.status === 'completed' && (
-                                    <div className="flex items-center gap-2">
-                                      <Badge variant="outline" className="text-[10px] uppercase tracking-wider bg-emerald-50 text-emerald-700 border-emerald-100">
-                                        Sẵn sàng
-                                      </Badge>
-                                      <MessagesModal email={acc.email} />
-                                    </div>
-                                  )}
-                                </div>
-                              ))
+                              order.accounts.map((acc, idx) => {
+                                const warranty = getWarrantyLabel(warrantyByAccountId.get(acc.id));
+                                return (
+                                  <div key={idx} className="flex flex-wrap items-center gap-2 text-sm text-stone-600 border-b border-stone-50 pb-2 last:border-0 last:pb-0">
+                                    <span className="font-medium text-stone-900">{acc.email}</span>
+                                    {order.status === 'completed' && (
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Badge variant="outline" className="text-[10px] uppercase tracking-wider bg-emerald-50 text-emerald-700 border-emerald-100">
+                                          Sẵn sàng
+                                        </Badge>
+                                        {warranty && (
+                                          <Badge
+                                            variant="outline"
+                                            className={`text-[10px] uppercase tracking-wider ${
+                                              warranty.active
+                                                ? "bg-amber-50 text-amber-700 border-amber-100"
+                                                : "bg-stone-50 text-stone-500 border-stone-200"
+                                            }`}
+                                          >
+                                            {warranty.text}
+                                          </Badge>
+                                        )}
+                                        <MessagesModal email={acc.email} />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })
                             ) : order.accountEmail ? (
-                              <div className="flex items-center gap-2 text-sm text-stone-600">
+                              <div className="flex flex-wrap items-center gap-2 text-sm text-stone-600">
                                 <span className="font-medium text-stone-900">{order.accountEmail}</span>
                                 {order.status === 'completed' && (
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex flex-wrap items-center gap-2">
                                     <Badge variant="outline" className="text-[10px] uppercase tracking-wider bg-emerald-50 text-emerald-700 border-emerald-100">
                                       Sẵn sàng
                                     </Badge>
+                                    {(() => {
+                                      const warranty = getWarrantyLabel(
+                                        order.accountId ? warrantyByAccountId.get(order.accountId) : undefined,
+                                      );
+                                      return warranty ? (
+                                        <Badge
+                                          variant="outline"
+                                          className={`text-[10px] uppercase tracking-wider ${
+                                            warranty.active
+                                              ? "bg-amber-50 text-amber-700 border-amber-100"
+                                              : "bg-stone-50 text-stone-500 border-stone-200"
+                                          }`}
+                                        >
+                                          {warranty.text}
+                                        </Badge>
+                                      ) : null;
+                                    })()}
                                     <MessagesModal email={order.accountEmail} />
                                   </div>
                                 )}

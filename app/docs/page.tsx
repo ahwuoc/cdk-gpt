@@ -18,7 +18,7 @@ const steps = [
   {
     title: "3. Chuyển đổi và tải xuống ZIP",
     description:
-      "Mở trang Session Converter trên web của chúng tôi, dán nội dung vừa copy vào ô 'Dữ liệu Web Session'. Nhấn nút 'Tải xuống' để lấy file ZIP chứa bộ công cụ nạp tự động.",
+      "Dùng công cụ import nội bộ đã được cung cấp, dán nội dung session vừa copy và tải file ZIP chứa bộ công cụ nạp tự động.",
   },
   {
     title: "4. Nạp cấu hình tự động vào 9router",
@@ -54,11 +54,7 @@ const stepDescriptions: Record<string, ReactNode> = {
   ),
   "3. Chuyển đổi và tải xuống ZIP": (
     <>
-      Mở trang{" "}
-      <Link href="/convert" className="font-extrabold text-emerald-600 hover:underline">
-        Session Converter
-      </Link>
-      , dán đoạn JSON vừa copy vào ô bên trái. Sau đó bấm nút <strong>Tải xuống</strong> ở ô bên phải để lấy file ZIP chứa script chạy tự động.
+      Dùng công cụ import nội bộ đã được cung cấp, dán đoạn JSON vừa copy vào ô dữ liệu. Sau đó tải file ZIP chứa script chạy tự động.
     </>
   ),
   "4. Nạp cấu hình tự động vào 9router": (
@@ -85,7 +81,7 @@ const stepImages: Record<string, { src: string; alt: string }> = {
   },
   "3. Chuyển đổi và tải xuống ZIP": {
     src: "/docs/9router-convert-tool.png",
-    alt: "Trang web Session Converter",
+    alt: "Công cụ import session",
   },
   "4. Nạp cấu hình tự động vào 9router": {
     src: "/docs/9router-import-script.png",
@@ -137,9 +133,6 @@ export default function DocsPage() {
             <Link href="/shop" className="text-gray-600 hover:text-gray-900">
               Shop
             </Link>
-            <Link href="/convert" className="text-emerald-600 hover:text-emerald-700">
-              9router Tool
-            </Link>
           </div>
         </nav>
 
@@ -156,12 +149,6 @@ export default function DocsPage() {
             <strong>Lưu ý:</strong> Vui lòng sử dụng phiên bản 9router chính thức cài đặt qua npm để được cập nhật proxy bypass mới nhất, tránh bị khóa API.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
-            <Link
-              href="/convert"
-              className="rounded-2xl bg-amber-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-amber-200 transition hover:bg-amber-500"
-            >
-              Mở 9router Tool
-            </Link>
             <a
               href="https://chatgpt.com/api/auth/session"
               target="_blank"

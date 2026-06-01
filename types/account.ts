@@ -3,6 +3,7 @@ export type AccountStatus = "reg-success" | "reg-failed" | "not-registered";
 export type AccountSaleStatus = "available" | "reserved" | "sold";
 
 export type AccountDocument = {
+  id: string;
   email: string;
   accountId: string;
   status: AccountStatus;

@@ -1,6 +1,21 @@
 # reg-chatgpt
 
-Next.js project running with Bun.
+Next.js project running with Bun and Supabase.
+
+## Database
+
+Create the Supabase tables/functions by reviewing and running
+`supabase/schema.sql` manually in the Supabase SQL editor. This project does
+not include an automatic migration because production Supabase projects may
+already contain data.
+
+Then configure:
+
+```bash
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+AUTH_SESSION_SECRET=change-me-to-a-long-random-secret
+```
 
 ## Development
 

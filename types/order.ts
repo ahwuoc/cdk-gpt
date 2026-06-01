@@ -1,6 +1,7 @@
 export type OrderStatus = "pending" | "assigned" | "completed" | "cancelled" | "refunded";
 
 export type OrderDocument = {
+  id: string;
   buyerUsername?: string;
   buyerContact: string;
   unitPrice: number;

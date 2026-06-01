@@ -1,4 +1,3 @@
-import { ObjectId, type WithId } from "mongodb";
 import type {
   AccountDocument,
   AccountSaleStatus,
@@ -6,9 +5,55 @@ import type {
   AccountView,
   CreateAccountInput,
 } from "@/types/account";
-import { getDatabase } from "./mongodb";
+import { parseDate, supabase, toIsoDate } from "./supabase";
+import { getWarrantyDays } from "./settings";
 
-const collectionName = "accounts";
+type AccountRow = {
+  id: string;
+  email: string;
+  chatgpt_account_id: string | null;
+  status: "Pending" | "Success" | "Fail" | "Sold";
+  sold_at: string | null;
+  warranty_days: number | null;
+  batch_name: string | null;
+  is_plus_verified_real: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type SecretRow = {
+  email: string;
+  password: string | null;
+  mail_refresh_token: string | null;
+  chatgpt_access_token: string | null;
+};
+
+type AccountWithSecret = AccountRow & {
+  secret?: SecretRow;
+};
+
+const tableName = "accounts";
+const secretTableName = "account_secrets";
+const SOURCE_WEB_SHOP = "sell_chatgpt_web";
+
+function mapDbStatus(status: AccountRow["status"]): AccountStatus {
+  if (status === "Success" || status === "Sold") return "reg-success";
+  if (status === "Fail") return "reg-failed";
+  return "not-registered";
+}
+
+function mapUiStatus(status: AccountStatus): AccountRow["status"] {
+  if (status === "reg-success") return "Success";
+  if (status === "reg-failed") return "Fail";
+  return "Pending";
+}
+
+function saleStatusFor(row: AccountRow): AccountSaleStatus {
+  if (row.status === "Sold" || row.sold_at) return "sold";
+  if (row.batch_name) return "reserved";
+  if (row.status === "Success" && row.is_plus_verified_real) return "available";
+  return "reserved";
+}
 
 function maskSecret(value: string) {
   if (!value) return "";
@@ -16,9 +61,29 @@ function maskSecret(value: string) {
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
-function mapAccount(document: WithId<AccountDocument>): AccountView {
+function mapAccountDocument(row: AccountWithSecret): AccountDocument {
+  const secret = row.secret;
   return {
-    id: document._id.toHexString(),
+    id: row.id,
+    email: row.email,
+    accountId: row.chatgpt_account_id ?? "",
+    status: mapDbStatus(row.status),
+    saleStatus: saleStatusFor(row),
+    soldOrderId: row.batch_name ?? undefined,
+    soldAt: parseDate(row.sold_at) ?? undefined,
+    password: secret?.password ?? undefined,
+    sessionToken: secret?.mail_refresh_token ?? undefined,
+    mailkp: secret?.chatgpt_access_token ?? undefined,
+    passwordMailkp: undefined,
+    createdAt: parseDate(row.created_at) ?? new Date(),
+    updatedAt: parseDate(row.updated_at) ?? new Date(),
+  };
+}
+
+function mapAccount(row: AccountWithSecret): AccountView {
+  const document = mapAccountDocument(row);
+  return {
+    id: document.id,
     email: document.email,
     accountId: document.accountId,
     status: document.status,
@@ -34,248 +99,349 @@ function mapAccount(document: WithId<AccountDocument>): AccountView {
   };
 }
 
-async function getAccountsCollection() {
-  const database = await getDatabase();
-  return database.collection<AccountDocument>(collectionName);
+async function attachSecrets(rows: AccountRow[]): Promise<AccountWithSecret[]> {
+  if (rows.length === 0) return [];
+  const emails = rows.map((row) => row.email);
+  const { data, error } = await supabase
+    .from(secretTableName)
+    .select("email,password,mail_refresh_token,chatgpt_access_token")
+    .in("email", emails);
+
+  if (error) throw error;
+  const secretsByEmail = new Map(
+    (data ?? []).map((secret) => [(secret as SecretRow).email.toLowerCase(), secret as SecretRow]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    secret: secretsByEmail.get(row.email.toLowerCase()),
+  }));
 }
 
 export async function listAccounts(): Promise<AccountView[]> {
-  const collection = await getAccountsCollection();
-  const accounts = await collection.find({}).sort({ createdAt: -1 }).toArray();
-  return accounts.map(mapAccount as any) as AccountView[];
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
 }
 
 export async function findAccountByEmail(email: string) {
-  const collection = await getAccountsCollection();
-  return collection.findOne({ email: email.trim() });
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("*")
+    .eq("email", email.trim())
+    .maybeSingle();
+
+  if (error) throw error;
+  const [account] = await attachSecrets(data ? [data as AccountRow] : []);
+  return account ? mapAccountDocument(account) : null;
 }
 
 export async function getAccountById(id: string) {
-  const collection = await getAccountsCollection();
-  return collection.findOne({ _id: new ObjectId(id) });
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) throw error;
+  const [account] = await attachSecrets(data ? [data as AccountRow] : []);
+  return account ? mapAccountDocument(account) : null;
 }
 
 export async function getAccountByOrderId(orderId: string) {
-  const collection = await getAccountsCollection();
-  const account = await collection.findOne({ soldOrderId: orderId });
-  return account ? (mapAccount(account as WithId<AccountDocument>)) : null;
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("*")
+    .eq("batch_name", orderId)
+    .maybeSingle();
+
+  if (error) throw error;
+  const [account] = await attachSecrets(data ? [data as AccountRow] : []);
+  return account ? mapAccount(account) : null;
 }
 
 export async function listSellableAccounts() {
-  const collection = await getAccountsCollection();
-  const accounts = await collection.find({
-    status: "reg-success",
-    saleStatus: "available"
-  }).toArray();
-  return accounts.map(mapAccount);
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("*")
+    .eq("status", "Success")
+    .eq("is_plus_verified_real", true)
+    .is("sold_at", null)
+    .is("batch_name", null);
+
+  if (error) throw error;
+  return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
 }
 
 export async function countSellableAccounts() {
-  const collection = await getAccountsCollection();
-  return collection.countDocuments({
-    status: "reg-success",
-    saleStatus: "available"
-  });
+  const { count, error } = await supabase
+    .from(tableName)
+    .select("id", { count: "exact", head: true })
+    .eq("status", "Success")
+    .eq("is_plus_verified_real", true)
+    .is("sold_at", null)
+    .is("batch_name", null);
+
+  if (error) throw error;
+  return count ?? 0;
 }
 
 export async function countSoldAccounts() {
-  const collection = await getAccountsCollection();
-  return collection.countDocuments({
-    saleStatus: "sold",
-  });
+  const { count, error } = await supabase
+    .from(tableName)
+    .select("id", { count: "exact", head: true })
+    .eq("status", "Sold");
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export type AccountWarrantySummary = {
+  id: string;
+  soldAt: Date | null;
+  warrantyDays: number;
+};
+
+export async function getAccountWarrantySummaries(ids: string[]) {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (uniqueIds.length === 0) {
+    return new Map<string, AccountWarrantySummary>();
+  }
+
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("id,sold_at,warranty_days")
+    .in("id", uniqueIds);
+
+  if (error) throw error;
+
+  return new Map(
+    ((data ?? []) as Pick<AccountRow, "id" | "sold_at" | "warranty_days">[]).map((row) => [
+      row.id,
+      {
+        id: row.id,
+        soldAt: parseDate(row.sold_at),
+        warrantyDays: row.warranty_days ?? 0,
+      },
+    ]),
+  );
 }
 
 export async function listAvailableAccountsForSale() {
-  const collection = await getAccountsCollection();
-  const accounts = await collection
-    .find({
-      status: "reg-success",
-      saleStatus: "available"
-    })
-    .sort({ createdAt: 1 })
-    .toArray();
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("*")
+    .eq("status", "Success")
+    .eq("is_plus_verified_real", true)
+    .is("sold_at", null)
+    .is("batch_name", null)
+    .order("created_at", { ascending: true });
 
-  return accounts.map(mapAccount);
+  if (error) throw error;
+  return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
 }
 
 export async function findExistingAccounts(inputs: CreateAccountInput[]): Promise<AccountView[]> {
   if (inputs.length === 0) return [];
-  const collection = await getAccountsCollection();
   const emails = [...new Set(inputs.map((input) => input.email))];
-  const existing = await collection.find({ email: { $in: emails } }).toArray();
-  return existing.map(mapAccount as any) as AccountView[];
+  const { data, error } = await supabase.from(tableName).select("*").in("email", emails);
+
+  if (error) throw error;
+  return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
 }
 
 export async function createAccounts(inputs: CreateAccountInput[]) {
   if (inputs.length === 0) return;
-  const now = new Date();
-  const collection = await getAccountsCollection();
-  await collection.insertMany(
-    inputs.map((input): AccountDocument => ({
+  const now = toIsoDate();
+  const { error } = await supabase.from(tableName).upsert(
+    inputs.map((input) => ({
       email: input.email,
-      accountId: input.accountId,
-      status: input.status,
-      saleStatus: input.status === "reg-success" ? "available" : "reserved",
-      password: input.password,
-      sessionToken: input.sessionToken,
-      mailkp: input.mailkp,
-      passwordMailkp: input.passwordMailkp,
-      createdAt: now,
-      updatedAt: now,
+      chatgpt_account_id: input.accountId,
+      status: mapUiStatus(input.status),
+      is_plus_verified_real: input.status === "reg-success",
+      source: SOURCE_WEB_SHOP,
+      created_at: now,
+      updated_at: now,
     })),
+    { onConflict: "email" },
   );
+
+  if (error) throw error;
+
+  const accounts = await findExistingAccounts(inputs);
+  const accountIdByEmail = new Map(accounts.map((account) => [account.email.toLowerCase(), account.id]));
+  const { error: secretError } = await supabase.from(secretTableName).upsert(
+    inputs.map((input) => ({
+      account_id: accountIdByEmail.get(input.email.toLowerCase()) ?? null,
+      email: input.email,
+      password: input.password ?? null,
+      mail_refresh_token: input.sessionToken ?? null,
+      chatgpt_access_token: input.mailkp ?? null,
+      source: SOURCE_WEB_SHOP,
+      created_at: now,
+      updated_at: now,
+    })),
+    { onConflict: "email" },
+  );
+  if (secretError) throw secretError;
 }
 
 export async function updateAccountStatus(id: string, status: AccountStatus) {
-  const collection = await getAccountsCollection();
-  const updateDoc: any = { status, updatedAt: new Date() };
-  if (status === "reg-success") {
-    updateDoc.saleStatus = "available";
-  } else {
-    updateDoc.saleStatus = "reserved";
-  }
-  await collection.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
+  const { error } = await supabase
+    .from(tableName)
+    .update({
+      status: mapUiStatus(status),
+      is_plus_verified_real: status === "reg-success",
+      sold_at: null,
+      batch_name: null,
+      updated_at: toIsoDate(),
+    })
+    .eq("id", id);
+
+  if (error) throw error;
 }
 
 export async function updateAccountSaleStatus(id: string, saleStatus: AccountSaleStatus) {
-  const collection = await getAccountsCollection();
-  await collection.updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { saleStatus, updatedAt: new Date() } }
-  );
+  const warrantyDays = await getWarrantyDays();
+  const patch =
+    saleStatus === "sold"
+      ? {
+          status: "Sold",
+          sold_at: toIsoDate(),
+          batch_name: "manual",
+          warranty_days: warrantyDays,
+          updated_at: toIsoDate(),
+        }
+      : {
+          status: "Success",
+          sold_at: null,
+          batch_name: saleStatus === "reserved" ? "manual" : null,
+          is_plus_verified_real: true,
+          updated_at: toIsoDate(),
+        };
+  const { error } = await supabase
+    .from(tableName)
+    .update(patch)
+    .eq("id", id);
+
+  if (error) throw error;
 }
 
 export async function deleteAccount(id: string) {
-  const collection = await getAccountsCollection();
-  await collection.deleteOne({ _id: new ObjectId(id) });
+  const { error } = await supabase.from(tableName).delete().eq("id", id);
+  if (error) throw error;
 }
 
 export async function assignAccountToOrder(accountId: string, orderId: string) {
-  const collection = await getAccountsCollection();
-  const result = await collection.updateOne(
-    {
-      _id: new ObjectId(accountId),
-      status: "reg-success",
-      saleStatus: "available"
-    },
-    {
-      $set: {
-        saleStatus: "reserved",
-        soldOrderId: orderId,
-        updatedAt: new Date(),
-      },
-      $unset: { soldAt: "" },
-    },
-  );
-  return result.modifiedCount === 1;
+  const { data, error } = await supabase
+    .from(tableName)
+    .update({
+      batch_name: orderId,
+      sold_at: null,
+      updated_at: toIsoDate(),
+    })
+    .eq("id", accountId)
+    .eq("status", "Success")
+    .eq("is_plus_verified_real", true)
+    .is("sold_at", null)
+    .is("batch_name", null)
+    .select("id");
+
+  if (error) throw error;
+  return (data?.length ?? 0) === 1;
 }
 
 export async function markAccountAsSold(accountId: string, orderId: string) {
-  const collection = await getAccountsCollection();
-  const result = await collection.updateOne(
-    {
-      _id: new ObjectId(accountId),
-      saleStatus: "reserved",
-      soldOrderId: orderId,
-    },
-    {
-      $set: {
-        saleStatus: "sold",
-        soldAt: new Date(),
-        updatedAt: new Date(),
-      },
-    },
-  );
-  return result.modifiedCount === 1;
+  const now = toIsoDate();
+  const warrantyDays = await getWarrantyDays();
+  const { data, error } = await supabase
+    .from(tableName)
+    .update({
+      status: "Sold",
+      sold_at: now,
+      batch_name: orderId,
+      warranty_days: warrantyDays,
+      updated_at: now,
+    })
+    .eq("id", accountId)
+    .eq("batch_name", orderId)
+    .select("id");
+
+  if (error) throw error;
+  return (data?.length ?? 0) === 1;
 }
 
 export async function releaseAccountFromOrder(accountId: string, orderId: string) {
-  const collection = await getAccountsCollection();
-  const result = await collection.updateOne(
-    {
-      _id: new ObjectId(accountId),
-      soldOrderId: orderId,
-      saleStatus: "reserved",
-    },
-    {
-      $set: {
-        saleStatus: "available",
-        updatedAt: new Date(),
-      },
-      $unset: {
-        soldOrderId: "",
-        soldAt: "",
-      },
-    },
-  );
-  return result.modifiedCount === 1;
+  const { data, error } = await supabase
+    .from(tableName)
+    .update({
+      status: "Success",
+      batch_name: null,
+      sold_at: null,
+      updated_at: toIsoDate(),
+    })
+    .eq("id", accountId)
+    .eq("batch_name", orderId)
+    .neq("status", "Sold")
+    .select("id");
+
+  if (error) throw error;
+  return (data?.length ?? 0) === 1;
 }
 
 export async function rollbackAccountOrderAssignment(accountId: string, orderId: string) {
-  const collection = await getAccountsCollection();
-  const result = await collection.updateOne(
-    {
-      _id: new ObjectId(accountId),
-      soldOrderId: orderId,
-      saleStatus: { $in: ["reserved", "sold"] },
-    },
-    {
-      $set: {
-        saleStatus: "available",
-        updatedAt: new Date(),
-      },
-      $unset: {
-        soldOrderId: "",
-        soldAt: "",
-      },
-    },
-  );
-  return result.modifiedCount === 1;
+  const { data, error } = await supabase
+    .from(tableName)
+    .update({
+      status: "Success",
+      batch_name: null,
+      sold_at: null,
+      updated_at: toIsoDate(),
+    })
+    .eq("id", accountId)
+    .eq("batch_name", orderId)
+    .select("id");
+
+  if (error) throw error;
+  return (data?.length ?? 0) === 1;
 }
 
 export async function revokeAccount(accountId: string) {
-  const collection = await getAccountsCollection();
-  const account = await collection.findOne({ _id: new ObjectId(accountId), saleStatus: "sold" });
-  if (!account) return null;
+  const account = await getAccountById(accountId);
+  if (!account || account.saleStatus !== "sold") return null;
 
-  const soldOrderId = account.soldOrderId;
+  const { data, error } = await supabase
+    .from(tableName)
+    .update({
+      status: "Success",
+      batch_name: null,
+      sold_at: null,
+      updated_at: toIsoDate(),
+    })
+    .eq("id", accountId)
+    .eq("status", "Sold")
+    .select("id");
 
-  const result = await collection.updateOne(
-    { _id: new ObjectId(accountId), saleStatus: "sold" },
-    {
-      $set: {
-        saleStatus: "available",
-        updatedAt: new Date(),
-      },
-      $unset: {
-        soldOrderId: "",
-        soldAt: "",
-      },
-    }
-  );
-
-  return result.modifiedCount === 1 ? soldOrderId : null;
+  if (error) throw error;
+  return (data?.length ?? 0) === 1 ? account.soldOrderId : null;
 }
 
 export async function revokeAccountsByOrderId(orderId: string) {
-  const collection = await getAccountsCollection();
-  const now = new Date();
-  const result = await collection.updateMany(
-    {
-      soldOrderId: orderId,
-      saleStatus: "sold",
-    },
-    {
-      $set: {
-        saleStatus: "available",
-        updatedAt: now,
-      },
-      $unset: {
-        soldOrderId: "",
-        soldAt: "",
-      },
-    },
-  );
+  const { data, error } = await supabase
+    .from(tableName)
+    .update({
+      status: "Success",
+      batch_name: null,
+      sold_at: null,
+      updated_at: toIsoDate(),
+    })
+    .eq("batch_name", orderId)
+    .eq("status", "Sold")
+    .select("id");
 
-  return result.modifiedCount;
+  if (error) throw error;
+  return data?.length ?? 0;
 }

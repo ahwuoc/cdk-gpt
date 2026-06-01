@@ -52,7 +52,9 @@ import {
 } from "@/lib/orders";
 import { SHOP_PRICE } from "@/lib/config";
 import { logTransaction } from "@/lib/transactions";
-import { getShopPrice, setShopPrice } from "@/lib/settings";
+import { getSetting, getShopPrice, setSetting, setShopPrice, setWarrantyDays } from "@/lib/settings";
+import { fetchCakeTransactions, normalizeDepositCode } from "@/lib/bank-api";
+import { buildDepositCode } from "@/lib/deposit";
 function readRequiredField(formData: FormData, key: string): string {
   const value = formData.get(key);
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -80,6 +82,11 @@ async function redirectToRegister(message: string) {
 async function redirectToShop(message: string) {
   await setFlashMessage("error", message);
   redirect("/shop");
+}
+
+async function redirectToDeposit(type: "success" | "error", message: string) {
+  await setFlashMessage(type, message);
+  redirect("/deposit");
 }
 
 async function redirectToOrders(type: "success" | "error", message: string) {
@@ -697,5 +704,93 @@ export async function updateShopPriceAction(formData: FormData) {
     await redirectWithMessage("success", "Đã cập nhật giá bán tài khoản ChatGPT Plus");
   } else {
     await redirectWithMessage("error", "Lỗi lưu cấu hình giá bán vào cơ sở dữ liệu");
+  }
+}
+
+export async function checkDepositAction() {
+  const session = await getCurrentSession();
+  if (!session) redirect(buildLoginRedirectUrl("/deposit"));
+
+  const user = await findAdminUserByUsername(session.username);
+  if (!user) {
+    await redirectToDeposit("error", "Không tìm thấy tài khoản người dùng");
+    return;
+  }
+
+  const depositCode = buildDepositCode(user);
+  const normalizedCode = normalizeDepositCode(depositCode);
+  const processedIds = await getSetting<string[]>("bank_processed_transactions", []);
+  const processedSet = new Set(processedIds);
+  const transactions = await fetchCakeTransactions();
+  const matches = transactions.filter((transaction) => {
+    if (processedSet.has(transaction.id)) return false;
+    return normalizeDepositCode(transaction.description).includes(normalizedCode);
+  });
+  const eligibleMatches = matches.filter((transaction) => transaction.amount >= 10000);
+
+  if (eligibleMatches.length === 0) {
+    console.info("No matching deposit transaction", {
+      depositCode,
+      fetchedTransactions: transactions.length,
+      latestDescriptions: transactions.slice(0, 5).map((transaction) => ({
+        id: transaction.id,
+        amount: transaction.amount,
+        type: transaction.type,
+        description: transaction.description,
+      })),
+    });
+    if (matches.length > 0) {
+      await redirectToDeposit("error", "Giao dịch nạp tối thiểu là 10.000đ");
+    }
+    await redirectToDeposit("error", `Chưa tìm thấy giao dịch mới với nội dung ${depositCode}`);
+  }
+
+  const totalAmount = eligibleMatches.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const balanceBefore = getAdminUserBalance(user);
+  const balanceAfter = balanceBefore + totalAmount;
+  const updated = await updateAdminUserBalance(session.username, balanceAfter);
+  if (!updated) {
+    await redirectToDeposit("error", "Không thể cập nhật số dư");
+  }
+
+  await logTransaction({
+    username: session.username,
+    type: "credit",
+    amount: totalAmount,
+    balanceBefore,
+    balanceAfter,
+    note: `Nạp tiền bank: ${matches.map((item) => item.id).join(", ")}`,
+  });
+  await setSetting("bank_processed_transactions", [
+    ...processedIds,
+    ...eligibleMatches.map((item) => item.id),
+  ].slice(-1000));
+
+  revalidatePath("/deposit");
+  revalidatePath("/shop");
+  revalidatePath("/admin/users");
+  await redirectToDeposit("success", `Đã cộng ${totalAmount.toLocaleString("vi-VN")}đ vào số dư`);
+}
+
+export async function updateWarrantyDaysAction(formData: FormData) {
+  await requireAdmin();
+
+  const daysStr = formData.get("warrantyDays");
+  if (typeof daysStr !== "string") {
+    throw new Error("Dữ liệu bảo hành không hợp lệ");
+  }
+
+  const days = parseInt(daysStr, 10);
+  if (isNaN(days) || days < 0) {
+    await redirectWithMessage("error", "Số ngày bảo hành phải là số nguyên không âm");
+  }
+
+  const success = await setWarrantyDays(days);
+  if (success) {
+    revalidatePath("/admin");
+    revalidatePath("/my-orders");
+    await redirectWithMessage("success", "Đã cập nhật thời gian bảo hành");
+  } else {
+    await redirectWithMessage("error", "Lỗi lưu cấu hình bảo hành vào cơ sở dữ liệu");
   }
 }

@@ -1,29 +1,32 @@
-import { getDatabase } from "./mongodb";
+import { supabase, toIsoDate } from "./supabase";
+
+const tableName = "shop_settings";
 
 export async function getSetting<T>(key: string, defaultValue: T): Promise<T> {
   try {
-    const db = await getDatabase();
-    const settingsColl = db.collection("settings");
-    const setting = await settingsColl.findOne({ key });
-    if (setting) {
-      return setting.value as T;
-    }
-    return defaultValue;
+    const { data, error } = await supabase
+      .from(tableName)
+      .select("value")
+      .eq("key", key)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data ? (data.value as T) : defaultValue;
   } catch (error) {
     console.error(`Error getting setting ${key}:`, error);
     return defaultValue;
   }
 }
 
-export async function setSetting(key: string, value: any): Promise<boolean> {
+export async function setSetting(key: string, value: unknown): Promise<boolean> {
   try {
-    const db = await getDatabase();
-    const settingsColl = db.collection("settings");
-    await settingsColl.updateOne(
-      { key },
-      { $set: { key, value, updatedAt: new Date() } },
-      { upsert: true }
-    );
+    const { error } = await supabase.from(tableName).upsert({
+      key,
+      value,
+      updated_at: toIsoDate(),
+    });
+
+    if (error) throw error;
     return true;
   } catch (error) {
     console.error(`Error setting ${key}:`, error);
@@ -37,4 +40,12 @@ export async function getShopPrice(): Promise<number> {
 
 export async function setShopPrice(price: number): Promise<boolean> {
   return setSetting("shop_price", price);
+}
+
+export async function getWarrantyDays(): Promise<number> {
+  return getSetting<number>("warranty_days", 3);
+}
+
+export async function setWarrantyDays(days: number): Promise<boolean> {
+  return setSetting("warranty_days", days);
 }
