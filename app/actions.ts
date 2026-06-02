@@ -146,7 +146,7 @@ export async function createOrderAction(formData: FormData) {
   const parsedQuantity =
     typeof quantityStr === "string" ? Number.parseInt(quantityStr, 10) : Number.NaN;
   const quantity = Number.isInteger(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1;
-  
+
   const shopPrice = await getShopPrice();
   const totalPrice = shopPrice * quantity;
 
@@ -401,18 +401,19 @@ export async function revokeAccountAction(formData: FormData) {
       const refundAmount = order.totalPrice;
       const buyer = await findAdminUserByUsername(order.buyerUsername);
       const currentBalance = getAdminUserBalance(buyer);
-      const newBalance = currentBalance + refundAmount;
-      await updateAdminUserBalance(order.buyerUsername, newBalance);
+      const refunded = await refundAdminUserBalance(order.buyerUsername, refundAmount);
 
-      // Log the refund transaction
-      await logTransaction({
-        username: order.buyerUsername,
-        type: "refund",
-        amount: refundAmount,
-        balanceBefore: currentBalance,
-        balanceAfter: newBalance,
-        note: `Hoàn tiền tự động do thu hồi ${revokedCount}/${effectiveCount} tài khoản của đơn #${soldOrderId.slice(-8).toUpperCase()}`,
-      });
+      if (refunded) {
+        const newBalance = currentBalance + refundAmount;
+        await logTransaction({
+          username: order.buyerUsername,
+          type: "refund",
+          amount: refundAmount,
+          balanceBefore: currentBalance,
+          balanceAfter: newBalance,
+          note: `Hoàn tiền tự động do thu hồi ${revokedCount}/${effectiveCount} tài khoản của đơn #${soldOrderId.slice(-8).toUpperCase()}`,
+        });
+      }
     }
 
     revalidatePath("/admin");
