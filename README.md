@@ -1,4 +1,4 @@
-# reg-chatgpt
+# reg-chatgpt - Sell ChatGPT Application
 
 Next.js project running with Bun and Supabase.
 
