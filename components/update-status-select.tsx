@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { updateAccountStatusAction } from "@/app/actions";
 import { TrendingUp, AlertCircle, Check, X } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -14,9 +15,14 @@ interface UpdateStatusSelectProps {
 }
 
 export function UpdateStatusSelect({ id, currentStatus, email }: UpdateStatusSelectProps) {
+  const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [pendingStatus, setPendingStatus] = useState<AccountStatus>(currentStatus);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    setPendingStatus(currentStatus);
+  }, [currentStatus]);
 
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newStatus = e.target.value as AccountStatus;
@@ -35,6 +41,7 @@ export function UpdateStatusSelect({ id, currentStatus, email }: UpdateStatusSel
       const result = await updateAccountStatusAction(formData);
       if (result?.success) {
         toast.success(result.message);
+        router.refresh();
       }
       setIsOpen(false);
     } catch (error) {

@@ -341,7 +341,9 @@ export async function updateAccountStatusAction(formData: FormData) {
 
   await updateAccountStatus(id, status);
   revalidatePath("/admin");
+  revalidatePath("/admin/accounts");
   revalidatePath("/orders");
+  revalidatePath("/admin/orders");
   revalidatePath("/shop");
   return { success: true, message: "Đã cập nhật trạng thái tài khoản" };
 }
@@ -353,6 +355,7 @@ export async function updateAccountSaleStatusAction(formData: FormData) {
 
   await updateAccountSaleStatus(id, saleStatus);
   revalidatePath("/admin");
+  revalidatePath("/admin/accounts");
   revalidatePath("/shop");
   return { success: true, message: "Đã cập nhật trạng thái đăng bán" };
 }
@@ -362,6 +365,7 @@ export async function deleteAccountAction(formData: FormData) {
   const id = readRequiredField(formData, "id");
   await deleteAccount(id);
   revalidatePath("/admin");
+  revalidatePath("/admin/accounts");
   revalidatePath("/shop");
   return { success: true, message: "Đã xóa tài khoản khỏi hệ thống" };
 }
