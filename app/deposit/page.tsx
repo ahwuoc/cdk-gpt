@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ChevronLeft, CreditCard, QrCode, RefreshCw, Wallet, Download } from "lucide-react";
-import { checkDepositAction, logoutAction } from "@/app/actions";
+import { logoutAction } from "@/app/actions";
 import { SubmitButton } from "@/app/submit-button";
 import { getCurrentSession, requireAuth } from "@/lib/auth";
 import { findAdminUserByUsername, getAdminUserBalance } from "@/lib/admin-users";
@@ -9,6 +9,7 @@ import { listTransactionsByUsername } from "@/lib/transactions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DepositAutoCheck } from "@/components/deposit-auto-check";
+import { DepositManualCheck } from "@/components/deposit-manual-check";
 import { CopyableField, CopyableContentBox } from "@/components/deposit-copy-fields";
 
 export const dynamic = "force-dynamic";
@@ -242,13 +243,8 @@ export default async function DepositPage() {
               </CardContent>
             </Card>
 
-            {/* Check Deposit Form */}
-            <form action={checkDepositAction} className="w-full">
-              <SubmitButton className="h-14 w-full rounded-2xl bg-primary text-primary-foreground font-extrabold text-base md:text-lg hover:bg-primary/95 shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2.5 hover:scale-[1.01] active:scale-[0.99] font-sans cursor-pointer">
-                <RefreshCw className="h-5 w-5" />
-                Kiểm tra giao dịch ngay
-              </SubmitButton>
-            </form>
+            {/* Check Deposit Button */}
+            <DepositManualCheck />
 
             {/* History card */}
             <Card className="border-stone-200/80 bg-white/95 shadow-md rounded-2xl overflow-hidden transition-all duration-300 hover:shadow-lg">

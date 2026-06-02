@@ -53,8 +53,7 @@ import {
 import { SHOP_PRICE } from "@/lib/config";
 import { logTransaction } from "@/lib/transactions";
 import { getSetting, getShopPrice, setSetting, setShopPrice, setWarrantyDays } from "@/lib/settings";
-import { fetchCakeTransactions, normalizeDepositCode } from "@/lib/bank-api";
-import { buildDepositCode } from "@/lib/deposit";
+
 function readRequiredField(formData: FormData, key: string): string {
   const value = formData.get(key);
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -711,70 +710,7 @@ export async function updateShopPriceAction(formData: FormData) {
   }
 }
 
-export async function checkDepositAction() {
-  const session = await getCurrentSession();
-  if (!session) redirect(buildLoginRedirectUrl("/deposit"));
 
-  const user = await findAdminUserByUsername(session.username);
-  if (!user) {
-    await redirectToDeposit("error", "Không tìm thấy tài khoản người dùng");
-    return;
-  }
-
-  const depositCode = buildDepositCode(user);
-  const normalizedCode = normalizeDepositCode(depositCode);
-  const processedIds = await getSetting<string[]>("bank_processed_transactions", []);
-  const processedSet = new Set(processedIds);
-  const transactions = await fetchCakeTransactions();
-  const matches = transactions.filter((transaction) => {
-    if (processedSet.has(transaction.id)) return false;
-    return normalizeDepositCode(transaction.description).includes(normalizedCode);
-  });
-  const eligibleMatches = matches.filter((transaction) => transaction.amount >= 10000);
-
-  if (eligibleMatches.length === 0) {
-    console.info("No matching deposit transaction", {
-      depositCode,
-      fetchedTransactions: transactions.length,
-      latestDescriptions: transactions.slice(0, 5).map((transaction) => ({
-        id: transaction.id,
-        amount: transaction.amount,
-        type: transaction.type,
-        description: transaction.description,
-      })),
-    });
-    if (matches.length > 0) {
-      await redirectToDeposit("error", "Giao dịch nạp tối thiểu là 10.000đ");
-    }
-    await redirectToDeposit("error", `Chưa tìm thấy giao dịch mới với nội dung ${depositCode}`);
-  }
-
-  const totalAmount = eligibleMatches.reduce((sum, transaction) => sum + transaction.amount, 0);
-  const balanceBefore = getAdminUserBalance(user);
-  const balanceAfter = balanceBefore + totalAmount;
-  const updated = await updateAdminUserBalance(session.username, balanceAfter);
-  if (!updated) {
-    await redirectToDeposit("error", "Không thể cập nhật số dư");
-  }
-
-  await logTransaction({
-    username: session.username,
-    type: "credit",
-    amount: totalAmount,
-    balanceBefore,
-    balanceAfter,
-    note: `Nạp tiền bank: ${matches.map((item) => item.id).join(", ")}`,
-  });
-  await setSetting("bank_processed_transactions", [
-    ...processedIds,
-    ...eligibleMatches.map((item) => item.id),
-  ].slice(-1000));
-
-  revalidatePath("/deposit");
-  revalidatePath("/shop");
-  revalidatePath("/admin/users");
-  await redirectToDeposit("success", `Đã cộng ${totalAmount.toLocaleString("vi-VN")}đ vào số dư`);
-}
 
 export async function updateWarrantyDaysAction(formData: FormData) {
   await requireAdmin();
