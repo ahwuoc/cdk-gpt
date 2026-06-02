@@ -9,6 +9,9 @@ import {
 import { getShopPrice } from "@/lib/settings";
 import { ShopPurchaseForm } from "@/components/shop-purchase-form";
 import { SubmitButton } from "@/app/submit-button";
+import { getRecentPurchases } from "@/lib/orders";
+import { RecentPurchases } from "@/components/recent-purchases";
+
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -27,12 +30,13 @@ function maskEmail(email: string) {
 
 export default async function ShopPage() {
   const session = await getCurrentSession();
-  const [sellableCount, availableAccounts, soldCount, currentUser, price] = await Promise.all([
+  const [sellableCount, availableAccounts, soldCount, currentUser, price, recentPurchases] = await Promise.all([
     countSellableAccounts(),
     listAvailableAccountsForSale(),
     countSoldAccounts(),
     session ? findAdminUserByUsername(session.username) : Promise.resolve(null),
     getShopPrice(),
+    getRecentPurchases(10),
   ]);
   const currentBalance = getAdminUserBalance(currentUser);
   const safeSoldCount = Math.max(0, soldCount);
@@ -156,6 +160,8 @@ export default async function ShopPage() {
                 Số dư chưa đủ. Bấm để nạp tiền.
               </Link>
             )}
+
+            <RecentPurchases initialPurchases={recentPurchases} unitPrice={price} />
           </aside>
         </section>
 

@@ -221,3 +221,32 @@ export async function refundOrder(orderId: string) {
   if (error) throw error;
   return (data?.length ?? 0) === 1;
 }
+
+export type RecentPurchase = {
+  id: string;
+  buyerUsername: string | null;
+  quantity: number;
+  totalPrice: number;
+  status: OrderStatus;
+  createdAt: Date;
+};
+
+export async function getRecentPurchases(limit = 10): Promise<RecentPurchase[]> {
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("id, buyer_username, quantity, total_price, status, created_at")
+    .in("status", ["assigned", "completed"])
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    buyerUsername: row.buyer_username ?? null,
+    quantity: row.quantity,
+    totalPrice: Number(row.total_price),
+    status: row.status as OrderStatus,
+    createdAt: parseDate(row.created_at) ?? new Date(),
+  }));
+}
+
