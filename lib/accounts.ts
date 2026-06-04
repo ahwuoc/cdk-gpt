@@ -34,6 +34,7 @@ type AccountWithSecret = AccountRow & {
 
 const tableName = "accounts";
 const secretTableName = "account_secrets";
+const ordersTableName = "shop_orders";
 const SOURCE_WEB_SHOP = "sell_chatgpt_web";
 
 function mapDbStatus(status: AccountRow["status"]): AccountStatus {
@@ -117,6 +118,45 @@ async function attachSecrets(rows: AccountRow[]): Promise<AccountWithSecret[]> {
   }));
 }
 
+function collectOrderAccountIds(order: {
+  account_id: string | null;
+  accounts: unknown;
+}) {
+  const ids = new Set<string>();
+  if (order.account_id) ids.add(order.account_id);
+  const accounts = Array.isArray(order.accounts) ? order.accounts : [];
+  for (const account of accounts) {
+    if (!account || typeof account !== "object") continue;
+    const id = "id" in account ? account.id : null;
+    if (typeof id === "string") ids.add(id);
+  }
+  return ids;
+}
+
+async function filterAccountsNotInActiveOrders(rows: AccountRow[]) {
+  if (rows.length === 0) return rows;
+
+  const candidateIds = new Set(rows.map((row) => row.id));
+  const { data, error } = await supabase
+    .from(ordersTableName)
+    .select("account_id,accounts")
+    .in("status", ["assigned", "completed"]);
+
+  if (error) throw error;
+
+  const lockedAccountIds = new Set<string>();
+  for (const order of (data ?? []) as {
+    account_id: string | null;
+    accounts: unknown;
+  }[]) {
+    for (const id of collectOrderAccountIds(order)) {
+      if (candidateIds.has(id)) lockedAccountIds.add(id);
+    }
+  }
+
+  return rows.filter((row) => !lockedAccountIds.has(row.id));
+}
+
 export async function listAccounts(): Promise<AccountView[]> {
   const { data, error } = await supabase
     .from(tableName)
@@ -173,20 +213,21 @@ export async function listSellableAccounts() {
     .is("batch_name", null);
 
   if (error) throw error;
-  return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
+  const rows = await filterAccountsNotInActiveOrders((data ?? []) as AccountRow[]);
+  return (await attachSecrets(rows)).map(mapAccount);
 }
 
 export async function countSellableAccounts() {
-  const { count, error } = await supabase
+  const { data, error } = await supabase
     .from(tableName)
-    .select("id", { count: "exact", head: true })
+    .select("*")
     .eq("status", "Success")
     .eq("is_plus_verified_real", true)
     .is("sold_at", null)
     .is("batch_name", null);
 
   if (error) throw error;
-  return count ?? 0;
+  return (await filterAccountsNotInActiveOrders((data ?? []) as AccountRow[])).length;
 }
 
 export async function countSoldAccounts() {
@@ -241,7 +282,8 @@ export async function listAvailableAccountsForSale() {
     .order("created_at", { ascending: true });
 
   if (error) throw error;
-  return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
+  const rows = await filterAccountsNotInActiveOrders((data ?? []) as AccountRow[]);
+  return (await attachSecrets(rows)).map(mapAccount);
 }
 
 export async function findExistingAccounts(inputs: CreateAccountInput[]): Promise<AccountView[]> {
@@ -290,6 +332,11 @@ export async function createAccounts(inputs: CreateAccountInput[]) {
 }
 
 export async function updateAccountStatus(id: string, status: AccountStatus) {
+  const account = await getAccountById(id);
+  if (account?.saleStatus === "sold") {
+    throw new Error("Tài khoản đã bán không thể đổi trạng thái reg");
+  }
+
   const { error } = await supabase
     .from(tableName)
     .update({
@@ -305,6 +352,11 @@ export async function updateAccountStatus(id: string, status: AccountStatus) {
 }
 
 export async function updateAccountSaleStatus(id: string, saleStatus: AccountSaleStatus) {
+  const account = await getAccountById(id);
+  if (account?.saleStatus === "sold" && saleStatus !== "sold") {
+    throw new Error("Tài khoản đã bán chỉ có thể mở lại bằng thao tác thu hồi");
+  }
+
   const warrantyDays = await getWarrantyDays();
   const patch =
     saleStatus === "sold"
