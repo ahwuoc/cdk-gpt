@@ -47,6 +47,7 @@ export default async function ShopPage() {
         <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <Link href="/shop" className="text-lg font-black text-gray-900">GPT Shop</Link>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <Link href="/otp" className="rounded-full bg-sky-50 px-3 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100">Lấy OTP</Link>
             {session ? (
               <>
                 <div className="hidden items-center gap-2 rounded-full bg-gray-50 px-3 py-2 text-sm sm:flex">

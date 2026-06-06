@@ -1,5 +1,7 @@
 "use server";
 
+import { findAccountByEmail } from "@/lib/accounts";
+
 export async function getOtpPublicAction(
   email: string,
   pass: string,
@@ -12,14 +14,31 @@ export async function getOtpPublicAction(
   if (!pass || !pass.trim()) {
     return { success: false, message: "Vui lòng nhập Mật khẩu" };
   }
-  if (!refreshToken || !refreshToken.trim()) {
-    return { success: false, message: "Vui lòng nhập Refresh Token" };
-  }
-  if (!clientId || !clientId.trim()) {
-    return { success: false, message: "Vui lòng nhập Client ID" };
-  }
 
   try {
+    let effectiveRefreshToken = refreshToken.trim();
+    let effectiveClientId = clientId.trim();
+
+    if (!effectiveRefreshToken || !effectiveClientId) {
+      const account = await findAccountByEmail(email);
+      if (!account) {
+        return { success: false, message: "Không tìm thấy tài khoản trong DB để tự lấy token." };
+      }
+      if (account.password && account.password !== pass.trim()) {
+        return { success: false, message: "Mật khẩu không khớp với tài khoản trong DB." };
+      }
+
+      effectiveRefreshToken = account.sessionToken || "";
+      effectiveClientId = account.accountId || "";
+    }
+
+    if (!effectiveRefreshToken) {
+      return { success: false, message: "Tài khoản trong DB chưa có Refresh Token." };
+    }
+    if (!effectiveClientId) {
+      return { success: false, message: "Tài khoản trong DB chưa có Client ID." };
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
 
@@ -29,8 +48,8 @@ export async function getOtpPublicAction(
       body: JSON.stringify({
         email: email.trim(),
         pass: pass.trim(),
-        refresh_token: refreshToken.trim(),
-        client_id: clientId.trim(),
+        refresh_token: effectiveRefreshToken,
+        client_id: effectiveClientId,
         list_mail: "all",
       }),
       signal: controller.signal,
