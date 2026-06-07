@@ -1,7 +1,7 @@
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 
-export const defaultAliasDomain = "gptsieure.bond";
+export const defaultAliasDomain = "gptsieure.site";
 
 export function generateCatchAllAlias(domain = defaultAliasDomain) {
   const normalizedDomain = domain.trim().toLowerCase().replace(/^@/, "");

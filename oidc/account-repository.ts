@@ -4,7 +4,7 @@ import type { AccountAlias, AccountRepository, CreateAliasInput, HumanUser } fro
 const demoHumanUsers: HumanUser[] = [
   {
     id: "user_demo_1",
-    email: "owner@example.com",
+    email: "owner@gptsieure.site",
     displayName: "Demo Owner",
   },
 ];
@@ -13,7 +13,7 @@ const demoAliases: AccountAlias[] = [
   {
     id: "alias_openai_primary",
     humanUserId: "user_demo_1",
-    email: "primary@example.com",
+    email: "primary@gptsieure.site",
     givenName: "Primary",
     familyName: "Account",
     openAiAccountId: "openai_primary",
@@ -22,7 +22,7 @@ const demoAliases: AccountAlias[] = [
   {
     id: "alias_openai_backup",
     humanUserId: "user_demo_1",
-    email: "backup@example.com",
+    email: "backup@gptsieure.site",
     givenName: "Backup",
     familyName: "Account",
     openAiAccountId: "openai_backup",

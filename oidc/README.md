@@ -18,10 +18,10 @@ because OpenAI's setup test does not send a PKCE `code_challenge`.
 
 ## Catch-all alias model
 
-Use the catch-all domain `gptsieure.bond`, then create aliases like:
+Use the catch-all domain `gptsieure.site`, then create aliases like:
 
 ```text
-adjective-animal-number@gptsieure.bond
+adjective-animal-number@gptsieure.site
 ```
 
 Persist a table with at least:
@@ -68,6 +68,12 @@ https://external.auth.openai.com/sso/oidc/6A8rnomqd4FgfFnu5erMMiVfJ/callback
 
 Set `OIDC_JWKS` to a private signing JWKS in production. Without it, `oidc-provider`
 uses development keys and prints a warning.
+
+Generate one with:
+
+```bash
+node scripts/generate-oidc-jwks.mjs
+```
 
 For persistence, either set `REDIS_URL` (`rediss://...`) or Upstash REST
 variables (`UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`).
