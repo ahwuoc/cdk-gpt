@@ -12,6 +12,10 @@ This folder contains a Next.js App Router based OIDC provider powered by `oidc-p
 6. `findAccount()` resolves that alias and returns ID token claims:
    `email`, `email_verified`, `given_name`, and `family_name`.
 
+PKCE remains required for public clients (`token_endpoint_auth_method=none`).
+The OpenAI SSO client is configured as a confidential client with `client_secret_basic`,
+because OpenAI's setup test does not send a PKCE `code_challenge`.
+
 ## Catch-all alias model
 
 Use the catch-all domain `gptsieure.bond`, then create aliases like:

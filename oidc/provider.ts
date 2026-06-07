@@ -67,7 +67,7 @@ export function createOidcProvider() {
       },
     },
     pkce: {
-      required: () => true,
+      required: (_ctx, client) => client.tokenEndpointAuthMethod === "none",
     },
     renderError(ctx, out, error) {
       console.error("OIDC provider error", error);
@@ -89,7 +89,9 @@ export function createOidcProvider() {
     },
   };
 
-  return new Provider(getIssuer(), configuration);
+  const provider = new Provider(getIssuer(), configuration);
+  provider.proxy = true;
+  return provider;
 }
 
 let provider: Provider | null = null;

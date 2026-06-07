@@ -14,11 +14,15 @@ function stripPrefix(pathname: string, prefix: string) {
   return stripped || "/";
 }
 
-function headerObject(headers: Headers) {
+function headerObject(headers: Headers, url: URL) {
   const output: Record<string, string> = {};
   headers.forEach((value, key) => {
     output[key] = value;
   });
+
+  output["x-forwarded-proto"] ??= url.protocol.replace(":", "");
+  output["x-forwarded-host"] ??= url.host;
+
   return output;
 }
 
@@ -49,7 +53,7 @@ export async function runWithNodeBridge(
     method: request.method as RequestMethod,
     url: relativeUrl,
     originalUrl: `${url.pathname}${url.search}`,
-    headers: headerObject(request.headers),
+    headers: headerObject(request.headers, url),
     body: parseBody(request.headers.get("content-type"), body),
   });
   const res = new ServerResponse(req);
