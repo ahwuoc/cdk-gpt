@@ -14,8 +14,26 @@ const grantable = new Set([
   "BackchannelAuthenticationRequest",
 ]);
 
+const modelFallbacks = [
+  "",
+  "Interaction",
+  "Session",
+  "Grant",
+  "AuthorizationCode",
+  "AccessToken",
+  "RefreshToken",
+  "DeviceCode",
+  "BackchannelAuthenticationRequest",
+  "PushedAuthorizationRequest",
+  "ReplayDetection",
+];
+
 function key(model: string, id: string) {
   return `oidc:${model}:${id}`;
+}
+
+function candidateKeys(model: string, id: string) {
+  return [...new Set([model, ...modelFallbacks])].map((candidate) => key(candidate, id));
 }
 
 function grantKey(grantId: string) {
@@ -121,17 +139,27 @@ export class RedisAdapter implements Adapter {
   }
 
   async find(id: string) {
-    const storageKey = key(this.model, id);
     if (upstash) {
-      return (await upstash.get<StoredPayload>(storageKey)) ?? undefined;
+      for (const storageKey of candidateKeys(this.model, id)) {
+        const payload = await upstash.get<StoredPayload>(storageKey);
+        if (payload) return payload;
+      }
+      return undefined;
     }
 
     if (redis) {
-      const payload = await redis.get(storageKey);
-      return payload ? (JSON.parse(payload) as StoredPayload) : undefined;
+      for (const storageKey of candidateKeys(this.model, id)) {
+        const payload = await redis.get(storageKey);
+        if (payload) return JSON.parse(payload) as StoredPayload;
+      }
+      return undefined;
     }
 
-    return getActiveMemoryValue(storageKey);
+    for (const storageKey of candidateKeys(this.model, id)) {
+      const payload = getActiveMemoryValue(storageKey);
+      if (payload) return payload;
+    }
+    return undefined;
   }
 
   async findByUserCode(userCode: string) {
