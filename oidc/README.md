@@ -57,7 +57,13 @@ bun run dev
 Discovery URL:
 
 ```text
-http://localhost:3000/api/oidc/.well-known/openid-configuration
+http://localhost:3000/.well-known/openid-configuration
+```
+
+Production discovery URL for OpenAI:
+
+```text
+https://www.gptsieure.site/.well-known/openid-configuration
 ```
 
 OpenAI redirect/callback URI:

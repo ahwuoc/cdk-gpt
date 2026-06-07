@@ -4,7 +4,14 @@ import { getClients } from "./client-config";
 import { RedisAdapter } from "./redis-adapter";
 
 function getIssuer() {
-  return process.env.OIDC_ISSUER ?? "http://localhost:3000/api/oidc";
+  const issuer = process.env.OIDC_ISSUER ?? "http://localhost:3000";
+  const url = new URL(issuer);
+
+  if (url.pathname === "/api/oidc" || url.pathname === "/oidc") {
+    return url.origin;
+  }
+
+  return issuer.replace(/\/$/, "");
 }
 
 function getCookieKeys() {
@@ -34,6 +41,7 @@ async function findAccount(_ctx: KoaContextWithOIDC, sub: string): Promise<Accou
         sub: alias.id,
         email: alias.email,
         email_verified: true,
+        name: `${alias.givenName} ${alias.familyName}`,
         given_name: alias.givenName,
         family_name: alias.familyName,
       };
@@ -44,14 +52,16 @@ async function findAccount(_ctx: KoaContextWithOIDC, sub: string): Promise<Accou
 export function createOidcProvider() {
   const configuration: Configuration = {
     clients: getClients(),
+    clientAuthMethods: ["client_secret_basic", "client_secret_post"],
     adapter: RedisAdapter,
     jwks: getJwks(),
+    responseTypes: ["code"],
     conformIdTokenClaims: false,
     findAccount,
     claims: {
       openid: ["sub"],
       email: ["email", "email_verified"],
-      profile: ["given_name", "family_name"],
+      profile: ["name", "given_name", "family_name"],
     },
     cookies: {
       keys: getCookieKeys(),
@@ -80,6 +90,14 @@ export function createOidcProvider() {
               debug: error.message,
               stack: error.stack,
             };
+    },
+    routes: {
+      authorization: "/oidc/authorize",
+      token: "/oidc/token",
+      userinfo: "/oidc/userinfo",
+      jwks: "/oidc/jwks",
+      end_session: "/oidc/session/end",
+      pushed_authorization_request: "/oidc/request",
     },
     ttl: {
       AuthorizationCode: 60,

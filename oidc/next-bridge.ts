@@ -6,6 +6,7 @@ import type { Body, RequestMethod } from "node-mocks-http";
 
 type MockRequest = IncomingMessage & {
   originalUrl?: string;
+  baseUrl?: string;
 };
 
 function stripPrefix(pathname: string, prefix: string) {
@@ -56,6 +57,7 @@ export async function runWithNodeBridge(
     headers: headerObject(request.headers, url),
     body: parseBody(request.headers.get("content-type"), body),
   });
+  req.baseUrl = prefix;
   const res = new ServerResponse(req);
   const chunks: Buffer[] = [];
 
