@@ -29,6 +29,8 @@ function FlashMessagesContent() {
       }
     }
 
+    if (!searchParams) return;
+
     // 2. Backward Compatibility: Check URL Search Params
     const success = searchParams.get("success");
     const error = searchParams.get("error");

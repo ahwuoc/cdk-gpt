@@ -13,17 +13,22 @@
     "@tailwindcss/postcss": "^4.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "ioredis": "^5.11.1",
     "jszip": "^3.10.1",
     "lucide-react": "^1.14.0",
     "next": "^16.2.6",
+    "node-mocks-http": "^1.17.2",
+    "oidc-provider": "^9.8.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
-    "tailwindcss": "^4.3.0"
+    "tailwindcss": "^4.3.0",
+    "unique-names-generator": "^4.7.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/oidc-provider": "^9.5.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9",
