@@ -1,3 +1,4 @@
+import { Redis as UpstashRedis } from "@upstash/redis";
 import Redis from "ioredis";
 import type { Adapter, AdapterPayload } from "oidc-provider";
 
@@ -34,7 +35,15 @@ function getRedis() {
   return url ? new Redis(url, { maxRetriesPerRequest: 2 }) : null;
 }
 
-const redis = getRedis();
+function getUpstashRedis() {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  return url && token ? new UpstashRedis({ url, token }) : null;
+}
+
+const upstash = getUpstashRedis();
+const redis = upstash ? null : getRedis();
 
 const memoryStore = new Map<string, { payload: StoredPayload; expiresAt: number }>();
 const memorySets = new Map<string, Set<string>>();
@@ -61,6 +70,25 @@ export class RedisAdapter implements Adapter {
   async upsert(id: string, payload: AdapterPayload, expiresIn: number) {
     const storageKey = key(this.model, id);
     const ttl = Math.max(1, expiresIn);
+
+    if (upstash) {
+      await upstash.set(storageKey, payload, { ex: ttl });
+
+      if (payload.userCode) {
+        await upstash.set(userCodeKey(String(payload.userCode)), id, { ex: ttl });
+      }
+
+      if (payload.uid) {
+        await upstash.set(uidKey(String(payload.uid)), id, { ex: ttl });
+      }
+
+      if (payload.grantId && grantable.has(this.model)) {
+        await upstash.sadd(grantKey(String(payload.grantId)), storageKey);
+        await upstash.expire(grantKey(String(payload.grantId)), ttl);
+      }
+
+      return;
+    }
 
     if (redis) {
       const multi = redis.multi().set(storageKey, JSON.stringify(payload), "EX", ttl);
@@ -94,6 +122,10 @@ export class RedisAdapter implements Adapter {
 
   async find(id: string) {
     const storageKey = key(this.model, id);
+    if (upstash) {
+      return (await upstash.get<StoredPayload>(storageKey)) ?? undefined;
+    }
+
     if (redis) {
       const payload = await redis.get(storageKey);
       return payload ? (JSON.parse(payload) as StoredPayload) : undefined;
@@ -103,6 +135,11 @@ export class RedisAdapter implements Adapter {
   }
 
   async findByUserCode(userCode: string) {
+    if (upstash) {
+      const id = await upstash.get<string>(userCodeKey(userCode));
+      return id ? this.find(id) : undefined;
+    }
+
     if (redis) {
       const id = await redis.get(userCodeKey(userCode));
       return id ? this.find(id) : undefined;
@@ -113,6 +150,11 @@ export class RedisAdapter implements Adapter {
   }
 
   async findByUid(uid: string) {
+    if (upstash) {
+      const id = await upstash.get<string>(uidKey(uid));
+      return id ? this.find(id) : undefined;
+    }
+
     if (redis) {
       const id = await redis.get(uidKey(uid));
       return id ? this.find(id) : undefined;
@@ -131,6 +173,11 @@ export class RedisAdapter implements Adapter {
 
   async destroy(id: string) {
     const storageKey = key(this.model, id);
+    if (upstash) {
+      await upstash.del(storageKey);
+      return;
+    }
+
     if (redis) {
       await redis.del(storageKey);
       return;
@@ -141,6 +188,15 @@ export class RedisAdapter implements Adapter {
 
   async revokeByGrantId(grantId: string) {
     const storageGrantKey = grantKey(grantId);
+
+    if (upstash) {
+      const tokenKeys = await upstash.smembers<string[]>(storageGrantKey);
+      if (tokenKeys.length > 0) {
+        await upstash.del(...tokenKeys);
+      }
+      await upstash.del(storageGrantKey);
+      return;
+    }
 
     if (redis) {
       const tokenKeys = await redis.smembers(storageGrantKey);

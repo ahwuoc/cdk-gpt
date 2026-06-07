@@ -68,3 +68,6 @@ https://external.auth.openai.com/sso/oidc/6A8rnomqd4FgfFnu5erMMiVfJ/callback
 
 Set `OIDC_JWKS` to a private signing JWKS in production. Without it, `oidc-provider`
 uses development keys and prints a warning.
+
+For persistence, either set `REDIS_URL` (`rediss://...`) or Upstash REST
+variables (`UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`).
