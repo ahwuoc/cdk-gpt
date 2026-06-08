@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowLeft, CheckCircle2, Mail, ShieldCheck, UserCircle } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Mail, Plus, ShieldCheck, UserCircle } from "lucide-react";
 import { getCurrentSession } from "@/lib/auth";
 import { accountRepository } from "@/oidc/account-repository";
 import { getDiscoveryMetadata } from "@/oidc/discovery";
@@ -68,8 +68,29 @@ export default async function DashboardPage() {
               <h2 className="text-lg font-black text-slate-950">OpenAI account aliases</h2>
               <p className="mt-1 text-sm text-slate-500">These identities are available in the interaction picker.</p>
             </div>
-            <div className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-              {aliases.length} aliases
+            <div className="flex flex-wrap items-center gap-2">
+              <form action="/api/aliases" method="post">
+                <input type="hidden" name="returnTo" value="/dashboard" />
+                <button
+                  type="submit"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-emerald-600 px-3 text-sm font-bold text-white transition hover:bg-emerald-700"
+                >
+                  <Plus className="h-4 w-4" />
+                  Alias
+                </button>
+              </form>
+              <form action="/api/aliases" method="post">
+                <input type="hidden" name="returnTo" value="/dashboard" />
+                <input type="hidden" name="count" value="10" />
+                <button
+                  type="submit"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
+                >
+                  <Plus className="h-4 w-4" />
+                  10
+                </button>
+              </form>
+              <div className="text-xs font-bold uppercase tracking-wider text-emerald-700">{aliases.length} aliases</div>
             </div>
           </div>
 

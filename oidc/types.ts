@@ -16,7 +16,7 @@ export type AccountAlias = {
 
 export type CreateAliasInput = {
   humanUserId: string;
-  domain: string;
+  domain?: string;
   givenName: string;
   familyName: string;
 };

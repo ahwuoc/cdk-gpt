@@ -1,10 +1,23 @@
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
+import { readEnv } from "./env";
 
-export const defaultAliasDomain = "gptsieure.site";
+export function getDefaultAliasDomain() {
+  const configuredDomain = readEnv("OIDC_ALIAS_DOMAIN");
+  if (configuredDomain) return normalizeAliasDomain(configuredDomain);
+
+  const issuer = readEnv("OIDC_ISSUER") ?? "https://www.chillnro.online";
+  return normalizeAliasDomain(new URL(issuer).hostname);
+}
+
+export const defaultAliasDomain = getDefaultAliasDomain();
+
+function normalizeAliasDomain(domain: string) {
+  return domain.trim().toLowerCase().replace(/^@/, "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
 
 export function generateCatchAllAlias(domain = defaultAliasDomain) {
-  const normalizedDomain = domain.trim().toLowerCase().replace(/^@/, "");
+  const normalizedDomain = normalizeAliasDomain(domain);
   if (!normalizedDomain || !normalizedDomain.includes(".")) {
     throw new Error("A valid catch-all domain is required");
   }
