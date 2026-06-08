@@ -1,10 +1,11 @@
 import Provider, { type Account, type Configuration, type KoaContextWithOIDC } from "oidc-provider";
 import { accountRepository } from "./account-repository";
 import { getClients } from "./client-config";
+import { readCsvEnv, readEnv } from "./env";
 import { RedisAdapter } from "./redis-adapter";
 
 export function getIssuer() {
-  const issuer = process.env.OIDC_ISSUER ?? "http://localhost:3000";
+  const issuer = readEnv("OIDC_ISSUER") ?? "http://localhost:3000";
   const url = new URL(issuer);
 
   if (url.pathname === "/api/oidc" || url.pathname === "/oidc") {
@@ -15,16 +16,14 @@ export function getIssuer() {
 }
 
 function getCookieKeys() {
-  const keys = process.env.OIDC_COOKIE_KEYS?.split(",")
-    .map((key) => key.trim())
-    .filter(Boolean);
+  const keys = readCsvEnv("OIDC_COOKIE_KEYS");
 
   if (keys && keys.length > 0) return keys;
   return ["dev-cookie-key-change-me"];
 }
 
 function getJwks() {
-  const value = process.env.OIDC_JWKS;
+  const value = readEnv("OIDC_JWKS");
   if (!value) return undefined;
 
   return JSON.parse(value) as NonNullable<Configuration["jwks"]>;

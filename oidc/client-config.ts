@@ -1,16 +1,10 @@
 import type { ClientMetadata } from "oidc-provider";
-
-function csv(value?: string) {
-  return value
-    ?.split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
+import { readCsvEnv, readEnv } from "./env";
 
 export function getClients(): ClientMetadata[] {
-  const clientId = process.env.OIDC_CLIENT_ID ?? "openai-alias-demo";
-  const clientSecret = process.env.OIDC_CLIENT_SECRET ?? "dev-secret-change-me";
-  const redirectUris = csv(process.env.OIDC_CLIENT_REDIRECT_URIS) ?? [
+  const clientId = readEnv("OIDC_CLIENT_ID") ?? "openai-alias-demo";
+  const clientSecret = readEnv("OIDC_CLIENT_SECRET") ?? "dev-secret-change-me";
+  const redirectUris = readCsvEnv("OIDC_CLIENT_REDIRECT_URIS") ?? [
     "https://external.auth.openai.com/sso/oidc/6A8rnomqd4FgfFnu5erMMiVfJ/callback",
     "http://localhost:3000/api/auth/callback/oidc",
   ];

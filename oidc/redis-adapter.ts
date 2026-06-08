@@ -1,6 +1,7 @@
 import { Redis as UpstashRedis } from "@upstash/redis";
 import Redis from "ioredis";
 import type { Adapter, AdapterPayload } from "oidc-provider";
+import { readEnv } from "./env";
 
 type StoredPayload = AdapterPayload & {
   consumed?: number;
@@ -49,13 +50,13 @@ function uidKey(uid: string) {
 }
 
 function getRedis() {
-  const url = process.env.REDIS_URL;
+  const url = readEnv("REDIS_URL");
   return url ? new Redis(url, { maxRetriesPerRequest: 2 }) : null;
 }
 
 function getUpstashRedis() {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const url = readEnv("UPSTASH_REDIS_REST_URL");
+  const token = readEnv("UPSTASH_REDIS_REST_TOKEN");
 
   return url && token ? new UpstashRedis({ url, token }) : null;
 }
@@ -82,46 +83,84 @@ function getActiveMemoryValue(storageKey: string) {
   return item.payload;
 }
 
+function normalizeTtl(expiresIn?: number | null) {
+  if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn)) {
+    return null;
+  }
+
+  return Math.max(1, expiresIn);
+}
+
 export class RedisAdapter implements Adapter {
   constructor(private readonly model: string) {}
 
-  async upsert(id: string, payload: AdapterPayload, expiresIn: number) {
+  async upsert(id: string, payload: AdapterPayload, expiresIn?: number | null) {
     const storageKey = key(this.model, id);
-    const ttl = Math.max(1, expiresIn);
+    const ttl = normalizeTtl(expiresIn);
 
     if (upstash) {
-      await upstash.set(storageKey, payload, { ex: ttl });
+      if (ttl) {
+        await upstash.set(storageKey, payload, { ex: ttl });
+      } else {
+        await upstash.set(storageKey, payload);
+      }
 
       if (payload.userCode) {
-        await upstash.set(userCodeKey(String(payload.userCode)), id, { ex: ttl });
+        if (ttl) {
+          await upstash.set(userCodeKey(String(payload.userCode)), id, { ex: ttl });
+        } else {
+          await upstash.set(userCodeKey(String(payload.userCode)), id);
+        }
       }
 
       if (payload.uid) {
-        await upstash.set(uidKey(String(payload.uid)), id, { ex: ttl });
+        if (ttl) {
+          await upstash.set(uidKey(String(payload.uid)), id, { ex: ttl });
+        } else {
+          await upstash.set(uidKey(String(payload.uid)), id);
+        }
       }
 
       if (payload.grantId && grantable.has(this.model)) {
         await upstash.sadd(grantKey(String(payload.grantId)), storageKey);
-        await upstash.expire(grantKey(String(payload.grantId)), ttl);
+        if (ttl) {
+          await upstash.expire(grantKey(String(payload.grantId)), ttl);
+        }
       }
 
       return;
     }
 
     if (redis) {
-      const multi = redis.multi().set(storageKey, JSON.stringify(payload), "EX", ttl);
+      const multi = redis.multi();
+
+      if (ttl) {
+        multi.set(storageKey, JSON.stringify(payload), "EX", ttl);
+      } else {
+        multi.set(storageKey, JSON.stringify(payload));
+      }
 
       if (payload.userCode) {
-        multi.set(userCodeKey(String(payload.userCode)), id, "EX", ttl);
+        if (ttl) {
+          multi.set(userCodeKey(String(payload.userCode)), id, "EX", ttl);
+        } else {
+          multi.set(userCodeKey(String(payload.userCode)), id);
+        }
       }
 
       if (payload.uid) {
-        multi.set(uidKey(String(payload.uid)), id, "EX", ttl);
+        if (ttl) {
+          multi.set(uidKey(String(payload.uid)), id, "EX", ttl);
+        } else {
+          multi.set(uidKey(String(payload.uid)), id);
+        }
       }
 
       if (payload.grantId && grantable.has(this.model)) {
         multi.sadd(grantKey(String(payload.grantId)), storageKey);
-        multi.expire(grantKey(String(payload.grantId)), ttl);
+        if (ttl) {
+          multi.expire(grantKey(String(payload.grantId)), ttl);
+        }
       }
 
       await multi.exec();
@@ -130,7 +169,7 @@ export class RedisAdapter implements Adapter {
 
     memoryStore.set(storageKey, {
       payload,
-      expiresAt: Date.now() + ttl * 1000,
+      expiresAt: ttl ? Date.now() + ttl * 1000 : Number.POSITIVE_INFINITY,
     });
 
     if (payload.userCode) rememberSet(userCodeKey(String(payload.userCode)), id);
