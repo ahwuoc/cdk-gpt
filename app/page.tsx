@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { OidcSsoHome } from "@/components/oidc-sso-home";
 
 export default function HomePage() {
-  redirect("/shop");
+  return <OidcSsoHome />;
 }

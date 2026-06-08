@@ -12,7 +12,7 @@ export default async function DashboardPage() {
   const session = await getCurrentSession();
 
   if (!session) {
-    redirect("/sso");
+    redirect("/");
   }
 
   const metadata = getDiscoveryMetadata();
@@ -33,7 +33,7 @@ export default async function DashboardPage() {
             </div>
           </div>
           <Link
-            href="/sso"
+            href="/"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
           >
             <ArrowLeft className="h-4 w-4" />
