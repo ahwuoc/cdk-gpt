@@ -3,7 +3,7 @@ import { accountRepository } from "./account-repository";
 import { getClients } from "./client-config";
 import { RedisAdapter } from "./redis-adapter";
 
-function getIssuer() {
+export function getIssuer() {
   const issuer = process.env.OIDC_ISSUER ?? "http://localhost:3000";
   const url = new URL(issuer);
 

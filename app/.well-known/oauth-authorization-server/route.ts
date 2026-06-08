@@ -1,12 +1,8 @@
-import { getOidcProvider } from "@/oidc/provider";
-import { runWithNodeBridge } from "@/oidc/next-bridge";
+import { discoveryResponse } from "@/oidc/discovery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(request: Request) {
-  const provider = getOidcProvider();
-  return runWithNodeBridge(request, "", async (req, res) => {
-    await provider.callback()(req, res);
-  });
+export async function GET() {
+  return discoveryResponse();
 }
