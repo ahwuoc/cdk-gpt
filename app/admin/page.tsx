@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { requireAdmin } from "@/lib/auth";
 import { getShopPrice, getWarrantyDays } from "@/lib/settings";
-import { countSellableAccounts, countSoldAccounts, listAccounts } from "@/lib/accounts";
+import { countAccounts, countAccountsByStatus, countSellableAccounts, countSoldAccounts } from "@/lib/accounts";
 import { listAdminUsers } from "@/lib/admin-users";
 import { listOrders } from "@/lib/orders";
 import { Badge } from "@/components/ui/badge";
@@ -29,30 +29,39 @@ function formatPrice(value: number) {
 export default async function AdminPage() {
   await requireAdmin();
 
-  const [accounts, users, orders, sellableCount, soldCount, shopPrice, warrantyDays] = await Promise.all([
-    listAccounts(),
+  const [
+    accountCount,
+    users,
+    orders,
+    sellableCount,
+    soldCount,
+    shopPrice,
+    warrantyDays,
+    pendingRegCount,
+    failedRegCount,
+  ] = await Promise.all([
+    countAccounts(),
     listAdminUsers(),
     listOrders(),
     countSellableAccounts(),
     countSoldAccounts(),
     getShopPrice(),
     getWarrantyDays(),
+    countAccountsByStatus("not-registered"),
+    countAccountsByStatus("reg-failed"),
   ]);
 
   const totalUserBalance = users.reduce((sum, user) => sum + (user.balance || 0), 0);
   const totalRevenue = orders
     .filter((order) => order.status === "completed")
     .reduce((sum, order) => sum + (order.totalPrice || 0), 0);
-  const pendingRegCount = accounts.filter((account) => account.status === "not-registered").length;
-  const failedRegCount = accounts.filter((account) => account.status === "reg-failed").length;
-
   const navItems = [
     {
       href: "/admin/accounts",
       title: "Quản lý tài khoản",
       description: "Import, đổi trạng thái reg, bật/tắt bán và thu hồi account.",
       icon: Package,
-      metric: `${accounts.length} account`,
+      metric: `${accountCount} account`,
       tone: "bg-blue-50 text-blue-700",
     },
     {
@@ -100,7 +109,7 @@ export default async function AdminPage() {
         </header>
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard title="Tài khoản" value={accounts.length.toLocaleString("vi-VN")} detail={`${sellableCount} đang bán, ${soldCount} đã bán`} icon={<Package className="h-4 w-4" />} />
+          <MetricCard title="Tài khoản" value={accountCount.toLocaleString("vi-VN")} detail={`${sellableCount} đang bán, ${soldCount} đã bán`} icon={<Package className="h-4 w-4" />} />
           <MetricCard title="Doanh thu" value={formatPrice(totalRevenue)} detail="Từ đơn hàng đã hoàn tất" icon={<TrendingUp className="h-4 w-4" />} />
           <MetricCard title="Người dùng" value={users.length.toLocaleString("vi-VN")} detail={`Tổng số dư ${formatPrice(totalUserBalance)}`} icon={<Users className="h-4 w-4" />} />
           <MetricCard title="Cấu hình" value={formatPrice(shopPrice)} detail={`Bảo hành ${warrantyDays} ngày`} icon={<Wallet className="h-4 w-4" />} />

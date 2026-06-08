@@ -1,9 +1,8 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getCurrentSession } from "@/lib/auth";
 import { hasCompletedTeamOrder } from "@/lib/orders";
-import { TEAM_ALIAS_CREATE_BATCH_LIMIT, TEAM_ALIAS_LIMIT } from "@/lib/team-alias";
 import { accountRepository } from "@/oidc/account-repository";
-import { getDefaultAliasDomain } from "@/oidc/alias-generator";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,32 +20,33 @@ function safeReturnTo(value: FormDataEntryValue | null) {
 
 export async function POST(request: Request) {
   const formData = await request.formData();
+  const aliasId = formData.get("aliasId");
   const returnTo = safeReturnTo(formData.get("returnTo"));
   const session = await getCurrentSession();
+
   if (!session || !(await hasCompletedTeamOrder(session.username))) {
     redirect(returnTo);
   }
 
-  const humanUserId = await resolveHumanUserId(request);
-  const existingAliases = await accountRepository.listAliasesForHumanUser(humanUserId);
-  const remainingSlots = Math.max(0, TEAM_ALIAS_LIMIT - existingAliases.length);
-  const aliasCount = Number(formData.get("count") ?? 1);
-  const count = Number.isFinite(aliasCount)
-    ? Math.min(Math.max(Math.floor(aliasCount), 1), remainingSlots, TEAM_ALIAS_CREATE_BATCH_LIMIT)
-    : 1;
-
-  if (count <= 0) {
+  if (typeof aliasId !== "string") {
     redirect(returnTo);
   }
 
-  for (let index = 0; index < count; index += 1) {
-    await accountRepository.createAlias({
-      humanUserId,
-      domain: getDefaultAliasDomain(),
-      givenName: "OpenAI",
-      familyName: "Alias",
-    });
+  const humanUserId = await resolveHumanUserId(request);
+  const alias = await accountRepository.getAliasById(aliasId);
+
+  if (!alias || alias.humanUserId !== humanUserId) {
+    redirect(returnTo);
   }
+
+  const cookieStore = await cookies();
+  cookieStore.set("oidc_selected_alias_id", alias.id, {
+    httpOnly: true,
+    maxAge: 60 * 60 * 24 * 365,
+    path: "/",
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+  });
 
   redirect(returnTo);
 }

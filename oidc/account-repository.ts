@@ -105,7 +105,7 @@ export class InMemoryAccountRepository implements AccountRepository {
       aliases.push(...storedAliases.filter((alias): alias is AccountAlias => Boolean(alias)));
     }
 
-    return aliases.sort((left, right) => left.email.localeCompare(right.email));
+    return aliases.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
   }
 
   async getAliasById(aliasId: string) {
@@ -149,6 +149,27 @@ export class InMemoryAccountRepository implements AccountRepository {
     }
 
     return alias;
+  }
+
+  async deleteAlias(aliasId: string) {
+    const alias = await this.getAliasById(aliasId);
+    if (!alias) return false;
+
+    if (upstash) {
+      await upstash.del(aliasKey(aliasId));
+      await upstash.srem(userAliasesKey(alias.humanUserId), aliasId);
+      return true;
+    }
+
+    if (redis) {
+      const multi = redis.multi();
+      multi.del(aliasKey(aliasId));
+      multi.srem(userAliasesKey(alias.humanUserId), aliasId);
+      await multi.exec();
+      return true;
+    }
+
+    return this.aliases.delete(aliasId);
   }
 }
 

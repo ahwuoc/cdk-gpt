@@ -36,6 +36,7 @@ const tableName = "accounts";
 const secretTableName = "account_secrets";
 const ordersTableName = "shop_orders";
 const SOURCE_WEB_SHOP = "sell_chatgpt_web";
+const EMAIL_IN_FILTER_CHUNK_SIZE = 100;
 
 function mapDbStatus(status: AccountRow["status"]): AccountStatus {
   if (status === "Success" || status === "Sold") return "reg-success";
@@ -103,14 +104,21 @@ function mapAccount(row: AccountWithSecret): AccountView {
 async function attachSecrets(rows: AccountRow[]): Promise<AccountWithSecret[]> {
   if (rows.length === 0) return [];
   const emails = rows.map((row) => row.email);
-  const { data, error } = await supabase
-    .from(secretTableName)
-    .select("email,password,mail_refresh_token,chatgpt_access_token")
-    .in("email", emails);
+  const secrets: SecretRow[] = [];
 
-  if (error) throw error;
+  for (let index = 0; index < emails.length; index += EMAIL_IN_FILTER_CHUNK_SIZE) {
+    const emailChunk = emails.slice(index, index + EMAIL_IN_FILTER_CHUNK_SIZE);
+    const { data, error } = await supabase
+      .from(secretTableName)
+      .select("email,password,mail_refresh_token,chatgpt_access_token")
+      .in("email", emailChunk);
+
+    if (error) throw error;
+    secrets.push(...((data ?? []) as SecretRow[]));
+  }
+
   const secretsByEmail = new Map(
-    (data ?? []).map((secret) => [(secret as SecretRow).email.toLowerCase(), secret as SecretRow]),
+    secrets.map((secret) => [secret.email.toLowerCase(), secret]),
   );
   return rows.map((row) => ({
     ...row,
@@ -165,6 +173,25 @@ export async function listAccounts(): Promise<AccountView[]> {
 
   if (error) throw error;
   return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
+}
+
+export async function countAccounts() {
+  const { count, error } = await supabase
+    .from(tableName)
+    .select("id", { count: "exact", head: true });
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function countAccountsByStatus(status: AccountStatus) {
+  const { count, error } = await supabase
+    .from(tableName)
+    .select("id", { count: "exact", head: true })
+    .eq("status", mapUiStatus(status));
+
+  if (error) throw error;
+  return count ?? 0;
 }
 
 export async function findAccountByEmail(email: string) {
@@ -289,10 +316,17 @@ export async function listAvailableAccountsForSale() {
 export async function findExistingAccounts(inputs: CreateAccountInput[]): Promise<AccountView[]> {
   if (inputs.length === 0) return [];
   const emails = [...new Set(inputs.map((input) => input.email))];
-  const { data, error } = await supabase.from(tableName).select("*").in("email", emails);
+  const rows: AccountRow[] = [];
 
-  if (error) throw error;
-  return (await attachSecrets((data ?? []) as AccountRow[])).map(mapAccount);
+  for (let index = 0; index < emails.length; index += EMAIL_IN_FILTER_CHUNK_SIZE) {
+    const emailChunk = emails.slice(index, index + EMAIL_IN_FILTER_CHUNK_SIZE);
+    const { data, error } = await supabase.from(tableName).select("*").in("email", emailChunk);
+
+    if (error) throw error;
+    rows.push(...((data ?? []) as AccountRow[]));
+  }
+
+  return (await attachSecrets(rows)).map(mapAccount);
 }
 
 export async function createAccounts(inputs: CreateAccountInput[]) {

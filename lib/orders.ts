@@ -103,6 +103,44 @@ export async function createOrder(input: {
   return data.id as string;
 }
 
+export async function createCompletedTeamOrder(input: {
+  buyerUsername: string;
+  unitPrice: number;
+}) {
+  const now = toIsoDate();
+  const { data, error } = await supabase
+    .from(tableName)
+    .insert({
+      buyer_username: input.buyerUsername,
+      buyer_contact: "ChatGPT Team",
+      unit_price: input.unitPrice,
+      quantity: 1,
+      total_price: input.unitPrice,
+      status: "completed",
+      notes: "Alias management package",
+      created_at: now,
+      updated_at: now,
+      completed_at: now,
+    })
+    .select("id")
+    .single();
+
+  if (error) throw error;
+  return data.id as string;
+}
+
+export async function hasCompletedTeamOrder(username: string) {
+  const { count, error } = await supabase
+    .from(tableName)
+    .select("id", { count: "exact", head: true })
+    .eq("buyer_username", username.trim().toLowerCase())
+    .eq("buyer_contact", "ChatGPT Team")
+    .eq("status", "completed");
+
+  if (error) throw error;
+  return (count ?? 0) > 0;
+}
+
 export async function listOrders() {
   const { data, error } = await supabase
     .from(tableName)
@@ -249,4 +287,3 @@ export async function getRecentPurchases(limit = 10): Promise<RecentPurchase[]> 
     createdAt: parseDate(row.created_at) ?? new Date(),
   }));
 }
-

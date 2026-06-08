@@ -26,4 +26,5 @@ export type AccountRepository = {
   listAliasesForHumanUser(userId: string): Promise<AccountAlias[]>;
   getAliasById(aliasId: string): Promise<AccountAlias | null>;
   createAlias(input: CreateAliasInput): Promise<AccountAlias>;
+  deleteAlias(aliasId: string): Promise<boolean>;
 };

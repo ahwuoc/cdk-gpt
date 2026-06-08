@@ -1,4 +1,4 @@
-"use server";
+  "use server";
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -43,6 +43,8 @@ import type {
 } from "@/types/account";
 import {
   createOrder,
+  createCompletedTeamOrder,
+  hasCompletedTeamOrder,
   getOrderById,
   assignOrderAccounts,
   cancelOrder,
@@ -53,6 +55,9 @@ import {
 import { SHOP_PRICE } from "@/lib/config";
 import { logTransaction } from "@/lib/transactions";
 import { getSetting, getShopPrice, setSetting, setShopPrice, setWarrantyDays } from "@/lib/settings";
+import { formatAliasLimit } from "@/lib/team-alias";
+
+const CHATGPT_TEAM_PRICE = 50000;
 
 function readRequiredField(formData: FormData, key: string): string {
   const value = formData.get(key);
@@ -263,6 +268,46 @@ export async function createOrderAction(formData: FormData) {
   redirect("/my-orders");
 }
 
+export async function buyChatGptTeamAction() {
+  const session = await getCurrentSession();
+  if (!session) redirect(buildLoginRedirectUrl("/shop"));
+
+  if (await hasCompletedTeamOrder(session.username)) {
+    redirect("/dashboard");
+  }
+
+  const currentUser = await findAdminUserByUsername(session.username);
+  const currentBalance = getAdminUserBalance(currentUser);
+
+  if (currentBalance < CHATGPT_TEAM_PRICE) {
+    await redirectToShop("Số dư không đủ để mua gói ChatGPT Team");
+  }
+
+  const deducted = await deductAdminUserBalance(session.username, CHATGPT_TEAM_PRICE);
+  if (!deducted) {
+    await redirectToShop("Lỗi khi trừ số dư, vui lòng thử lại");
+  }
+
+  await createCompletedTeamOrder({
+    buyerUsername: session.username,
+    unitPrice: CHATGPT_TEAM_PRICE,
+  });
+
+  await logTransaction({
+    username: session.username,
+    type: "purchase",
+    amount: CHATGPT_TEAM_PRICE,
+    balanceBefore: currentBalance,
+    balanceAfter: currentBalance - CHATGPT_TEAM_PRICE,
+    note: `Mua gói ChatGPT Team - quản trị tối đa ${formatAliasLimit()} alias`,
+  });
+
+  revalidatePath("/shop");
+  revalidatePath("/dashboard");
+  revalidatePath("/my-orders");
+  redirect("/dashboard");
+}
+
 // --- Admin Account Actions ---
 
 export async function bulkImportAccountsAction(formData: FormData) {
@@ -393,16 +438,12 @@ export async function revokeAccountAction(formData: FormData) {
   const revokedCount = await revokeAccountsByOrderId(soldOrderId);
 
   if (revokedCount > 0) {
-    // Mark the order as refunded
     await refundOrder(soldOrderId);
-
-    // Automatically refund the user balance
     if (order && order.buyerUsername) {
       const refundAmount = order.totalPrice;
       const buyer = await findAdminUserByUsername(order.buyerUsername);
       const currentBalance = getAdminUserBalance(buyer);
       const refunded = await refundAdminUserBalance(order.buyerUsername, refundAmount);
-
       if (refunded) {
         const newBalance = currentBalance + refundAmount;
         await logTransaction({
@@ -430,9 +471,6 @@ export async function revokeAccountAction(formData: FormData) {
   }
   return { success: false, message: "Không thể thu hồi tài khoản này" };
 }
-
-// --- Admin Order Management ---
-
 export async function assignOrderAccountAction(formData: FormData) {
   await requireAdmin();
   const orderId = readRequiredField(formData, "orderId");
