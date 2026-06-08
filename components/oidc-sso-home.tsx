@@ -21,7 +21,7 @@ export function OidcSsoHome() {
           </div>
           <div className="space-y-2">
             <h1 className="text-3xl font-black tracking-normal text-slate-950 sm:text-4xl">OIDC-SSO</h1>
-            <p className="font-mono text-sm text-slate-500">gptsieure.site · OpenID Connect · RS256</p>
+            <p className="break-all font-mono text-sm text-slate-500">{metadata.issuer} · OpenID Connect · RS256</p>
           </div>
         </header>
 

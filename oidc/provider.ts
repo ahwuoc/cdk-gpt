@@ -8,6 +8,10 @@ export function getIssuer() {
   const issuer = readEnv("OIDC_ISSUER") ?? "http://localhost:3000";
   const url = new URL(issuer);
 
+  if (url.hostname === "www.gptsieure.site" || url.hostname === "gptsieure.site") {
+    return "https://www.chillnro.online";
+  }
+
   if (url.pathname === "/api/oidc" || url.pathname === "/oidc") {
     return url.origin;
   }
