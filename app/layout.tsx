@@ -1,11 +1,9 @@
-import type { Metadata } from "next";
-import { Toaster } from "sonner";
-import { FlashMessages } from "@/components/flash-messages";
-import "./globals.css";
+import type { Metadata } from 'next';
+import './globals.css';
 
 export const metadata: Metadata = {
-  title: "ChatGPT Account Dashboard",
-  description: "Trang lưu và quản lý tài khoản với MongoDB",
+  title: 'New Application',
+  description: 'Clean start project initialized from scratch.',
 };
 
 export default function RootLayout({
@@ -14,11 +12,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className="antialiased font-sans">
+    <html lang="vi" className="w-full h-full">
+      <body className="w-full min-h-screen">
         {children}
-        <Toaster richColors position="top-right" />
-        <FlashMessages />
       </body>
     </html>
   );
