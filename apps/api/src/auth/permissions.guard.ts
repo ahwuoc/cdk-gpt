@@ -14,6 +14,7 @@ export class PermissionsGuard implements CanActivate {
   canActivate(context: ExecutionContext) {
     const required = this.reflector.getAllAndOverride<string[]>(PERMISSIONS, [context.getHandler(), context.getClass()]) ?? [];
     const anyRequired = this.reflector.getAllAndOverride<string[]>(ANY_PERMISSIONS, [context.getHandler(), context.getClass()]) ?? [];
+    if (required.length === 0 && anyRequired.length === 0) return true;
     const claims = context.switchToHttp().getRequest<FastifyRequest & { admin?: AdminClaims }>().admin;
     const granted = claims?.permissions ?? [];
     const hasAll = required.every((permission) => granted.includes('*') || granted.includes(permission));
