@@ -24,6 +24,7 @@
     "seed": "bun packages/database/src/seed.ts"
   },
   "dependencies": {
+    "@fastify/static": "^10.1.2",
     "@nestjs/common": "^11.1.6",
     "@nestjs/core": "^11.1.6",
     "@nestjs/jwt": "^11.0.0",
