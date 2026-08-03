@@ -25,6 +25,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # local generated import bundles may contain live session tokens
 import-tool/
+supabase/
 
 # caches
 .eslintcache

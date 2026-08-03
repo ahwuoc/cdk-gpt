@@ -1,0 +1,1 @@
+{"name":"@store/bot","version":"1.0.0","private":true,"type":"module","scripts":{"dev":"bun --watch src/main.ts","start":"bun src/main.ts"},"dependencies":{"@store/config":"workspace:*","@store/database":"workspace:*","@store/encryption":"workspace:*","@store/shared":"workspace:*"}}

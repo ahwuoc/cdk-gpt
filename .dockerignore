@@ -1,0 +1,8 @@
+.git
+.next
+apps/admin-web/.next
+node_modules
+coverage
+.env*
+supabase
+*.log
