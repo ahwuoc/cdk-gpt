@@ -4,6 +4,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { Queue, Worker } from 'bullmq';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { validate } from 'class-validator';
 import { EncryptionService } from '@store/encryption';
 import { redisConnectionOptions } from '@store/config';
 import {
@@ -23,6 +24,7 @@ import { InventoryAdminService } from '../../apps/api/src/inventory/inventory-ad
 import { DeliveryRecoveryService } from '../../apps/api/src/delivery/delivery-recovery.service';
 import { BotConfigService } from '../../apps/api/src/bot-config/bot-config.service';
 import { ProductService } from '../../apps/api/src/product/product.service';
+import { SaveProductDto } from '../../apps/api/src/product/product.dto';
 
 process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef';
 process.env.PAYLOAD_HASH_KEY = 'abcdef0123456789abcdef0123456789';
@@ -309,6 +311,11 @@ integration('digital store on a MongoDB replica set', () => {
       fieldDefinitions: compatibleFields }, adminId.toString(), 'compatible-fields');
     await expect(service.update(created._id.toString(), { ...input, deliveryTemplate: 'Static', fieldDefinitions: [compatibleFields[1]!] },
       adminId.toString(), 'unsafe-fields')).rejects.toThrow('cannot be removed');
+    await expect(service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
+      fieldDefinitions: compatibleFields.map((field) => field.key === 'login' ? { ...field, sensitive: true } : field) },
+    adminId.toString(), 'unsafe-visibility')).rejects.toThrow('visibility cannot change');
+    const archivedInput = Object.assign(new SaveProductDto(), { ...input, status: ProductStatus.ARCHIVED });
+    expect((await validate(archivedInput)).some((error) => error.property === 'status')).toBeTrue();
     await service.archive(created._id.toString(), adminId.toString(), 'archive-product');
     expect(await service.list()).toHaveLength(0);
     expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(4);

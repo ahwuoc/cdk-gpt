@@ -113,6 +113,9 @@ export class ProductService {
       if (!field.required && updated.required) {
         throw new ConflictException(`Inventory field ${field.key} cannot become required after stock exists`);
       }
+      if (field.sensitive !== updated.sensitive || field.visibleToCustomer !== updated.visibleToCustomer) {
+        throw new ConflictException(`Inventory field ${field.key} visibility cannot change after stock exists`);
+      }
     }
     const previousKeys = new Set(existing.map((field) => field.key));
     const unsafeAddition = next.find((field) => !previousKeys.has(field.key) && field.required);

@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Headers, Param, Post, Put, Req } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import type { AdminClaims } from '../auth/auth.service';
-import { RequirePermissions } from '../auth/permissions.guard';
+import { RequireAnyPermission, RequirePermissions } from '../auth/permissions.guard';
 import { SaveProductDto } from './product.dto';
 import { ProductService } from './product.service';
 
@@ -10,7 +10,7 @@ import { ProductService } from './product.service';
 export class ProductController {
   constructor(private readonly products: ProductService) {}
 
-  @Get() @RequirePermissions()
+  @Get() @RequirePermissions() @RequireAnyPermission('products.manage', 'inventory.import')
   list() { return this.products.list(); }
 
   @Post()

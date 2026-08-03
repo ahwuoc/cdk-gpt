@@ -42,8 +42,8 @@ export class SaveProductDto {
   @IsInt() @Min(0)
   price!: number;
 
-  @IsIn(Object.values(ProductStatus))
-  status!: typeof ProductStatus[keyof typeof ProductStatus];
+  @IsIn([ProductStatus.DRAFT, ProductStatus.ACTIVE, ProductStatus.INACTIVE])
+  status!: typeof ProductStatus.DRAFT | typeof ProductStatus.ACTIVE | typeof ProductStatus.INACTIVE;
 
   @IsArray() @ArrayMaxSize(20) @IsUrl({}, { each: true })
   imageUrls!: string[];
