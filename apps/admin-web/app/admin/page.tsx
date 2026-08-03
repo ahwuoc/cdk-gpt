@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { Bot, Boxes, Eye, FileUp, KeyRound, LogOut, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react';
+import { ProductManager, type ProductRecord } from './product-manager';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
@@ -20,6 +21,7 @@ export default function AdminPage() {
   const [tokens, setTokens] = useState<Tokens | null>(null);
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const [productId, setProductId] = useState(''); const [source, setSource] = useState('');
+  const [products, setProducts] = useState<ProductRecord[]>([]);
   const [report, setReport] = useState<ImportReport | null>(null); const [busy, setBusy] = useState(false);
   const [itemId, setItemId] = useState(''); const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
   const [botConfig, setBotConfig] = useState<BotConfig | null>(null); const [botToken, setBotToken] = useState('');
@@ -30,6 +32,17 @@ export default function AdminPage() {
     const stored = sessionStorage.getItem('store-admin-tokens');
     if (stored) queueMicrotask(() => setTokens(JSON.parse(stored) as Tokens));
   }, []);
+
+  useEffect(() => {
+    const accessToken = tokens?.accessToken; if (!accessToken) return;
+    const controller = new AbortController();
+    void fetch(`${apiBase}/admin/products`, { headers: { authorization: `Bearer ${accessToken}` }, signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Không thể tải sản phẩm');
+        setProducts(body); setProductId((current) => current || body[0]?._id || '');
+      }).catch((error) => { if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message); });
+    return () => controller.abort();
+  }, [tokens?.accessToken]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage('');
@@ -73,6 +86,12 @@ export default function AdminPage() {
       setReport(body); setMessage(commit ? `Imported ${body.importedRows} items` : 'Preview generated; no data was written');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Import failed'); }
     finally { setBusy(false); }
+  }
+
+  async function loadProducts() {
+    const response = await authorized('/admin/products');
+    const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Không thể tải sản phẩm');
+    setProducts(body); setProductId((current) => body.some((product: ProductRecord) => product._id === current) ? current : body[0]?._id ?? '');
   }
 
   async function reveal() {
@@ -119,8 +138,9 @@ export default function AdminPage() {
       </header>
       <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-[1fr_360px]">
         <section className="space-y-6">
+          <ProductManager products={products} authorized={authorized} reload={loadProducts} selectProduct={setProductId} setMessage={setMessage} />
           <Panel icon={<FileUp />} title="Bulk inventory import" subtitle="JSON array or one JSON object per line. Values are encrypted by the API before persistence.">
-            <label className="label">Product ObjectId</label><input className="input" value={productId} onChange={(event) => setProductId(event.target.value)} placeholder="665f..." />
+            <label className="label">Sản phẩm</label><select className="input" value={productId} onChange={(event) => setProductId(event.target.value)} required><option value="">Chọn sản phẩm</option>{products.map((product) => <option key={product._id} value={product._id}>{product.name} — tồn {product.availableStock}</option>)}</select>
             <label className="label mt-4">Rows</label><textarea className="input min-h-64 font-mono text-xs" value={source} onChange={(event) => setSource(event.target.value)} placeholder={'{"login":"user@example.com","password":"secret"}'} />
             <div className="mt-4 flex gap-3"><button disabled={busy} onClick={() => importRows(false)} className="button-secondary">Preview</button><button disabled={busy} onClick={() => importRows(true)} className="button-primary">Encrypt & import</button></div>
           </Panel>

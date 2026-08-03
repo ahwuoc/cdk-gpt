@@ -22,6 +22,7 @@ import { InventoryImportService } from '../../apps/api/src/inventory/inventory-i
 import { InventoryAdminService } from '../../apps/api/src/inventory/inventory-admin.service';
 import { DeliveryRecoveryService } from '../../apps/api/src/delivery/delivery-recovery.service';
 import { BotConfigService } from '../../apps/api/src/bot-config/bot-config.service';
+import { ProductService } from '../../apps/api/src/product/product.service';
 
 process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef';
 process.env.PAYLOAD_HASH_KEY = 'abcdef0123456789abcdef0123456789';
@@ -280,5 +281,26 @@ integration('digital store on a MongoDB replica set', () => {
     const publicConfig = await service.getPublicConfig();
     expect(JSON.stringify(publicConfig)).not.toContain('encryptedToken');
     expect(await AuditLogModel.countDocuments({ action: 'TELEGRAM_BOT_TOKEN_UPDATED' })).toBe(1);
+  });
+
+  test('admin can create, list, update, and archive products', async () => {
+    const adminId = new Types.ObjectId();
+    const service = new ProductService(ProductModel, InventoryItemModel, AuditLogModel);
+    const input = {
+      name: 'Managed Product', slug: 'managed-product', description: 'Created from the admin product form',
+      price: 250, status: ProductStatus.DRAFT, imageUrls: [], instructions: '', warrantyPolicy: '', warrantyDays: 7,
+      deliveryTemplate: 'Login: {{login}}', fieldDefinitions: [
+        { name: 'Login', key: 'login', type: 'EMAIL' as const, sensitive: false, visibleToCustomer: true, required: true, sortOrder: 1 },
+      ], purchaseLimitPerUser: 0, lowStockThreshold: 2, sortOrder: 1,
+    };
+    const created = await service.create(input, adminId.toString(), 'create-product');
+    expect(created.slug).toBe('managed-product');
+    expect((await service.list())[0]).toMatchObject({ name: 'Managed Product', availableStock: 0 });
+    const updated = await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE },
+      adminId.toString(), 'update-product');
+    expect(updated.price).toBe(300); expect(updated.status).toBe(ProductStatus.ACTIVE);
+    await service.remove(created._id.toString(), adminId.toString(), 'delete-product');
+    expect(await service.list()).toHaveLength(0);
+    expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(3);
   });
 });
