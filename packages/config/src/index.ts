@@ -58,7 +58,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     nodeEnv: env.NODE_ENV ?? 'development',
     mongoUri: required('MONGODB_URI', 'mongodb://localhost:27017/digital_store?replicaSet=rs0'),
     redisUrl: required('REDIS_URL', 'redis://localhost:6379'),
-    botToken: required('BOT_TOKEN', 'development-bot-token'),
+    botToken: env.BOT_TOKEN ?? '',
     adminTelegramIds: (env.ADMIN_TELEGRAM_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean),
     jwtAccessSecret: required('JWT_ACCESS_SECRET', 'development-access-secret-change-me'),
     jwtRefreshSecret: required('JWT_REFRESH_SECRET', 'development-refresh-secret-change-me'),

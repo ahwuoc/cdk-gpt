@@ -28,7 +28,7 @@ export class BotRuntimeManager {
     private readonly pollSeconds: number) {}
 
   async start() {
-    await this.refresh(true);
+    await this.refresh(false);
     const seconds = Number.isFinite(this.pollSeconds) ? Math.max(5, this.pollSeconds) : 15;
     this.timer = setInterval(() => void this.refresh(false), seconds * 1000);
   }

@@ -38,7 +38,7 @@ Các collection chính: `admins`, `roles`, `users`, `products`, `inventory_items
 
 ## Development bằng Docker Compose
 
-Yêu cầu Docker/Compose và một Telegram bot token hợp lệ.
+Yêu cầu Docker/Compose. Telegram bot token có thể để trống lúc khởi động và cấu hình sau trong trang admin.
 
 ```bash
 cp .env.example .env
