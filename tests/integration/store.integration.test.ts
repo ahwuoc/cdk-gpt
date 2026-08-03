@@ -285,7 +285,7 @@ integration('digital store on a MongoDB replica set', () => {
 
   test('admin can create, list, update, and archive products', async () => {
     const adminId = new Types.ObjectId();
-    const service = new ProductService(ProductModel, InventoryItemModel, AuditLogModel);
+    const service = new ProductService(mongoose.connection, ProductModel, InventoryItemModel, AuditLogModel);
     const input = {
       name: 'Managed Product', slug: 'managed-product', description: 'Created from the admin product form',
       price: 250, status: ProductStatus.DRAFT, imageUrls: [], instructions: '', warrantyPolicy: '', warrantyDays: 7,
@@ -299,8 +299,18 @@ integration('digital store on a MongoDB replica set', () => {
     const updated = await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE },
       adminId.toString(), 'update-product');
     expect(updated.price).toBe(300); expect(updated.status).toBe(ProductStatus.ACTIVE);
-    await service.remove(created._id.toString(), adminId.toString(), 'delete-product');
+    const payload = { login: 'managed@example.invalid' };
+    await InventoryItemModel.create({ productId: created._id, encryptedPayload: encryption.encrypt(payload),
+      maskedPreview: payload, payloadHash: encryption.normalizedHash(payload), status: InventoryStatus.AVAILABLE,
+      createdBy: adminId, deletedAt: null });
+    const compatibleFields = [...input.fieldDefinitions,
+      { name: 'Ghi chú', key: 'note', type: 'STRING' as const, sensitive: false, visibleToCustomer: true, required: false, sortOrder: 2 }];
+    await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
+      fieldDefinitions: compatibleFields }, adminId.toString(), 'compatible-fields');
+    await expect(service.update(created._id.toString(), { ...input, deliveryTemplate: 'Static', fieldDefinitions: [compatibleFields[1]!] },
+      adminId.toString(), 'unsafe-fields')).rejects.toThrow('cannot be removed');
+    await service.archive(created._id.toString(), adminId.toString(), 'archive-product');
     expect(await service.list()).toHaveLength(0);
-    expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(3);
+    expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(4);
   });
 });

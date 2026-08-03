@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { Bot, Boxes, Eye, FileUp, KeyRound, LogOut, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react';
 import { ProductManager, type ProductRecord } from './product-manager';
 
@@ -28,21 +28,39 @@ export default function AdminPage() {
   const [botBusy, setBotBusy] = useState(false);
   const [message, setMessage] = useState('');
 
+  const logout = useCallback(() => { setTokens(null); sessionStorage.removeItem('store-admin-tokens'); }, []);
+
+  const authorized = useCallback(async (path: string, init: RequestInit = {}) => {
+    if (!tokens) throw new Error('Login required');
+    let response = await fetch(`${apiBase}${path}`, { ...init, headers: { ...init.headers, authorization: `Bearer ${tokens.accessToken}` } });
+    if (response.status === 401) {
+      const refresh = await fetch(`${apiBase}/admin/auth/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refreshToken: tokens.refreshToken }) });
+      if (!refresh.ok) { logout(); throw new Error('Session expired'); }
+      const next = await refresh.json() as Tokens; setTokens(next); sessionStorage.setItem('store-admin-tokens', JSON.stringify(next));
+      response = await fetch(`${apiBase}${path}`, { ...init, headers: { ...init.headers, authorization: `Bearer ${next.accessToken}` } });
+    }
+    return response;
+  }, [logout, tokens]);
+
+  const loadProducts = useCallback(async (signal?: AbortSignal) => {
+    const response = await authorized('/admin/products', { signal });
+    const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Không thể tải sản phẩm');
+    setProducts(body); setProductId((current) => body.some((product: ProductRecord) => product._id === current) ? current : body[0]?._id ?? '');
+  }, [authorized]);
+
   useEffect(() => {
     const stored = sessionStorage.getItem('store-admin-tokens');
     if (stored) queueMicrotask(() => setTokens(JSON.parse(stored) as Tokens));
   }, []);
 
   useEffect(() => {
-    const accessToken = tokens?.accessToken; if (!accessToken) return;
+    if (!tokens?.accessToken) return;
     const controller = new AbortController();
-    void fetch(`${apiBase}/admin/products`, { headers: { authorization: `Bearer ${accessToken}` }, signal: controller.signal })
-      .then(async (response) => {
-        const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Không thể tải sản phẩm');
-        setProducts(body); setProductId((current) => current || body[0]?._id || '');
-      }).catch((error) => { if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message); });
+    queueMicrotask(() => void loadProducts(controller.signal)
+      .catch((error) => { if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message); }));
     return () => controller.abort();
-  }, [tokens?.accessToken]);
+  }, [loadProducts, tokens?.accessToken]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage('');
@@ -55,25 +73,10 @@ export default function AdminPage() {
     finally { setBusy(false); }
   }
 
-  function logout() { setTokens(null); sessionStorage.removeItem('store-admin-tokens'); }
-
   function parseRows() {
     const trimmed = source.trim(); if (!trimmed) throw new Error('Paste at least one JSON object');
     if (trimmed.startsWith('[')) return JSON.parse(trimmed) as Record<string, unknown>[];
     return trimmed.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
-  }
-
-  async function authorized(path: string, init: RequestInit = {}) {
-    if (!tokens) throw new Error('Login required');
-    let response = await fetch(`${apiBase}${path}`, { ...init, headers: { ...init.headers, authorization: `Bearer ${tokens.accessToken}` } });
-    if (response.status === 401) {
-      const refresh = await fetch(`${apiBase}/admin/auth/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ refreshToken: tokens.refreshToken }) });
-      if (!refresh.ok) { logout(); throw new Error('Session expired'); }
-      const next = await refresh.json() as Tokens; setTokens(next); sessionStorage.setItem('store-admin-tokens', JSON.stringify(next));
-      response = await fetch(`${apiBase}${path}`, { ...init, headers: { ...init.headers, authorization: `Bearer ${next.accessToken}` } });
-    }
-    return response;
   }
 
   async function importRows(commit: boolean) {
@@ -86,12 +89,6 @@ export default function AdminPage() {
       setReport(body); setMessage(commit ? `Imported ${body.importedRows} items` : 'Preview generated; no data was written');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Import failed'); }
     finally { setBusy(false); }
-  }
-
-  async function loadProducts() {
-    const response = await authorized('/admin/products');
-    const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Không thể tải sản phẩm');
-    setProducts(body); setProductId((current) => body.some((product: ProductRecord) => product._id === current) ? current : body[0]?._id ?? '');
   }
 
   async function reveal() {

@@ -10,7 +10,7 @@ import { ProductService } from './product.service';
 export class ProductController {
   constructor(private readonly products: ProductService) {}
 
-  @Get()
+  @Get() @RequirePermissions()
   list() { return this.products.list(); }
 
   @Post()
@@ -26,8 +26,8 @@ export class ProductController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string, @Req() request: FastifyRequest & { admin: AdminClaims },
+  archive(@Param('id') id: string, @Req() request: FastifyRequest & { admin: AdminClaims },
     @Headers('x-request-id') requestId?: string) {
-    return this.products.remove(id, request.admin.sub, requestId);
+    return this.products.archive(id, request.admin.sub, requestId);
   }
 }

@@ -72,7 +72,7 @@ export function ProductManager({ products, authorized, reload, selectProduct, se
     await save({ ...productInput(product), status: product.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' }, product._id);
   }
 
-  async function remove(product: ProductRecord) {
+  async function archive(product: ProductRecord) {
     if (!window.confirm(`Lưu trữ sản phẩm “${product.name}”? Sản phẩm sẽ không còn được bán.`)) return;
     setSaving(true); setMessage('');
     try {
@@ -147,7 +147,7 @@ export function ProductManager({ products, authorized, reload, selectProduct, se
       <div className="space-y-3">{products.map((product) => <div key={product._id} className="rounded-xl border border-slate-800 bg-slate-950 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><h3 className="font-medium">{product.name}</h3><Status value={product.status} /></div><p className="mt-1 font-mono text-xs text-slate-500">{product.slug} · ID {product._id}</p></div><p className="font-semibold text-indigo-300">{formatMoney(product.price)}</p></div>
         <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs"><Stock label="Có sẵn" value={product.availableStock} color="text-emerald-400" /><Stock label="Đang giữ" value={product.reservedStock} color="text-amber-400" /><Stock label="Đã bán" value={product.soldStock} color="text-slate-300" /></div>
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4"><button type="button" onClick={() => { selectProduct(product._id); setMessage(`Đã chọn ${product.name} để nhập kho.`); }} className="button-secondary py-2">Nhập kho</button><button type="button" onClick={() => edit(product)} className="button-secondary flex items-center justify-center gap-2 py-2"><Pencil size={14} />Sửa</button><button type="button" disabled={saving} onClick={() => void toggle(product)} className="button-secondary py-2">{product.status === 'ACTIVE' ? 'Tạm ngừng' : 'Bật bán'}</button><button type="button" disabled={saving} onClick={() => void remove(product)} className="rounded-xl border border-rose-900/60 px-3 py-2 text-sm text-rose-400 hover:bg-rose-950/30">Lưu trữ</button></div>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4"><button type="button" onClick={() => { selectProduct(product._id); setMessage(`Đã chọn ${product.name} để nhập kho.`); }} className="button-secondary py-2">Nhập kho</button><button type="button" onClick={() => edit(product)} className="button-secondary flex items-center justify-center gap-2 py-2"><Pencil size={14} />Sửa</button><button type="button" disabled={saving} onClick={() => void toggle(product)} className="button-secondary py-2">{product.status === 'ACTIVE' ? 'Tạm ngừng' : 'Bật bán'}</button><button type="button" disabled={saving} onClick={() => void archive(product)} className="rounded-xl border border-rose-900/60 px-3 py-2 text-sm text-rose-400 hover:bg-rose-950/30">Lưu trữ</button></div>
       </div>)}{products.length === 0 && <p className="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-500">Chưa có sản phẩm. Điền biểu mẫu phía trên để tạo sản phẩm đầu tiên.</p>}</div>
     </div>
   </div>;
