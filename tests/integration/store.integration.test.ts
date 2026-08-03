@@ -21,6 +21,7 @@ import { InventoryReservationService } from '../../apps/api/src/inventory/invent
 import { InventoryImportService } from '../../apps/api/src/inventory/inventory-import.service';
 import { InventoryAdminService } from '../../apps/api/src/inventory/inventory-admin.service';
 import { DeliveryRecoveryService } from '../../apps/api/src/delivery/delivery-recovery.service';
+import { BotConfigService } from '../../apps/api/src/bot-config/bot-config.service';
 
 process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef';
 process.env.PAYLOAD_HASH_KEY = 'abcdef0123456789abcdef0123456789';
@@ -261,5 +262,23 @@ integration('digital store on a MongoDB replica set', () => {
     expect((await OrderModel.findById(order._id))!.status).toBe('REFUNDED');
     expect((await UserModel.findById(user._id))!.walletBalance).toBe(1000);
     expect((await InventoryItemModel.findOne({ productId: product._id }))!.status).toBe(InventoryStatus.DISABLED);
+  });
+
+  test('admin bot token configuration is encrypted, masked, and audited', async () => {
+    const adminId = new Types.ObjectId();
+    const rawToken = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd123456';
+    const service = new BotConfigService(SettingModel, AuditLogModel, async () => ({
+      id: 123456789, username: 'fixture_bot', first_name: 'Fixture',
+    }));
+    const result = await service.updateToken(rawToken, adminId.toString(), 'request-bot-token');
+    expect(result.botUsername).toBe('fixture_bot');
+    expect(result.maskedToken).toEndWith('3456');
+    const setting = await SettingModel.findOne({ key: 'telegram.bot_token' }).lean();
+    expect(JSON.stringify(setting!.value)).not.toContain(rawToken);
+    const stored = setting!.value as { encryptedToken: string };
+    expect(encryption.decrypt<string>(stored.encryptedToken)).toBe(rawToken);
+    const publicConfig = await service.getPublicConfig();
+    expect(JSON.stringify(publicConfig)).not.toContain('encryptedToken');
+    expect(await AuditLogModel.countDocuments({ action: 'TELEGRAM_BOT_TOKEN_UPDATED' })).toBe(1);
   });
 });

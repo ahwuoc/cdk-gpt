@@ -15,6 +15,7 @@ export interface AppConfig {
   shopName: string;
   deliveryAttempts: number;
   deliveryBackoffMs: number;
+  botConfigPollSeconds: number;
 }
 
 export interface RedisConnectionOptions {
@@ -45,8 +46,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
   const deliveryAttempts = Number(env.DELIVERY_ATTEMPTS ?? 6);
   const deliveryBackoffMs = Number(env.DELIVERY_BACKOFF_MS ?? 5000);
+  const botConfigPollSeconds = Number(env.BOT_CONFIG_POLL_SECONDS ?? 15);
   if (!Number.isSafeInteger(deliveryAttempts) || deliveryAttempts < 1 || !Number.isSafeInteger(deliveryBackoffMs) || deliveryBackoffMs < 0) {
     throw new Error('DELIVERY_ATTEMPTS and DELIVERY_BACKOFF_MS must be non-negative integers, with at least one attempt');
+  }
+  if (!Number.isSafeInteger(botConfigPollSeconds) || botConfigPollSeconds < 5) {
+    throw new Error('BOT_CONFIG_POLL_SECONDS must be an integer of at least 5 seconds');
   }
 
   return {
@@ -66,5 +71,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     shopName: env.SHOP_NAME ?? 'Digital Store',
     deliveryAttempts,
     deliveryBackoffMs,
+    botConfigPollSeconds,
   };
 }

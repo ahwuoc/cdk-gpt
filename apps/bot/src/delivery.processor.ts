@@ -1,5 +1,4 @@
 import { UnrecoverableError, type Job } from 'bullmq';
-import { Telegraf } from 'telegraf';
 import mongoose, { Types } from 'mongoose';
 import {
   InventoryItemModel, InventoryRepository, NotificationModel, OrderModel, OrderRepository, ProductModel, UserModel,
@@ -8,12 +7,15 @@ import { EncryptionService } from '@store/encryption';
 import { DeliveryStatus, InventoryStatus, OrderStatus } from '@store/shared';
 
 export interface DeliveryJob { orderId: string; }
+export interface TelegramBotClient {
+  telegram: { sendMessage(chatId: string | number, text: string): Promise<{ message_id: number }> };
+}
 
 export class DeliveryProcessor {
   private readonly encryption = EncryptionService.fromEnvironment();
   private readonly inventoryRepository = new InventoryRepository(InventoryItemModel);
   private readonly orderRepository = new OrderRepository(OrderModel);
-  constructor(private readonly bot: Telegraf, private readonly adminTelegramIds: string[]) {}
+  constructor(private readonly bot: TelegramBotClient, private readonly adminTelegramIds: string[]) {}
 
   async process(job: Job<DeliveryJob>) {
     if (!Types.ObjectId.isValid(job.data.orderId)) throw new UnrecoverableError('Invalid order identifier');

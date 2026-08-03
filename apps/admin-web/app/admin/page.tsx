@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import { Boxes, Eye, FileUp, KeyRound, LogOut, ShieldCheck, WalletCards } from 'lucide-react';
+import { Bot, Boxes, Eye, FileUp, KeyRound, LogOut, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
@@ -11,6 +11,10 @@ interface ImportReport {
   importedRows?: number; preview?: Array<{ line: number; maskedPreview: Record<string, unknown> }>;
   errors?: Array<{ line: number; reason: string }>; skipped?: Array<{ line: number; reason: string }>;
 }
+interface BotConfig {
+  configured: boolean; source?: string; botId?: number; botUsername?: string; maskedToken?: string;
+  encryptionKeyVersion?: number; updatedAt?: string; reloadWithinSeconds?: number;
+}
 
 export default function AdminPage() {
   const [tokens, setTokens] = useState<Tokens | null>(null);
@@ -18,6 +22,8 @@ export default function AdminPage() {
   const [productId, setProductId] = useState(''); const [source, setSource] = useState('');
   const [report, setReport] = useState<ImportReport | null>(null); const [busy, setBusy] = useState(false);
   const [itemId, setItemId] = useState(''); const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
+  const [botConfig, setBotConfig] = useState<BotConfig | null>(null); const [botToken, setBotToken] = useState('');
+  const [botBusy, setBotBusy] = useState(false);
   const [message, setMessage] = useState('');
 
   useEffect(() => {
@@ -78,6 +84,29 @@ export default function AdminPage() {
     finally { setBusy(false); }
   }
 
+  async function loadBotConfig() {
+    setBotBusy(true); setMessage('');
+    try {
+      const response = await authorized('/admin/bot-config');
+      const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Không thể tải cấu hình bot');
+      setBotConfig(body);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể tải cấu hình bot'); }
+    finally { setBotBusy(false); }
+  }
+
+  async function saveBotToken(event: FormEvent) {
+    event.preventDefault(); setBotBusy(true); setMessage('');
+    try {
+      const response = await authorized('/admin/bot-config/token', { method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-request-id': crypto.randomUUID() },
+        body: JSON.stringify({ token: botToken.trim() }) });
+      const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Token Telegram không hợp lệ');
+      setBotConfig(body); setBotToken('');
+      setMessage(`Đã lưu token. Bot @${body.botUsername ?? body.botId} sẽ tự nạp lại trong tối đa ${body.reloadWithinSeconds} giây.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể cập nhật token'); }
+    finally { setBotBusy(false); }
+  }
+
   if (!tokens) return <Login email={email} password={password} busy={busy} message={message} setEmail={setEmail} setPassword={setPassword} submit={login} />;
 
   return (
@@ -102,6 +131,24 @@ export default function AdminPage() {
           </Panel>}
         </section>
         <aside className="space-y-6">
+          <Panel icon={<Bot />} title="Telegram bot token" subtitle="Đổi token đã mã hóa mà không cần build hoặc restart container. Bot tự nạp lại cấu hình.">
+            {botConfig && <div className="mb-4 rounded-xl bg-slate-950 p-3 text-xs text-slate-300">
+              <div className="flex items-center justify-between"><span>Trạng thái</span><span className="text-emerald-400">{botConfig.configured ? 'Đã cấu hình' : 'Chưa cấu hình'}</span></div>
+              {botConfig.botUsername && <div className="mt-2 flex items-center justify-between"><span>Bot</span><span>@{botConfig.botUsername}</span></div>}
+              {botConfig.maskedToken && <div className="mt-2 flex items-center justify-between"><span>Token</span><code>{botConfig.maskedToken}</code></div>}
+              {botConfig.source && <div className="mt-2 flex items-center justify-between"><span>Nguồn</span><span>{botConfig.source}</span></div>}
+            </div>}
+            <form onSubmit={saveBotToken}>
+              <label className="label">Token mới từ @BotFather</label>
+              <input className="input font-mono" type="password" autoComplete="off" value={botToken}
+                onChange={(event) => setBotToken(event.target.value)} placeholder="123456789:AA..." required />
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button type="button" disabled={botBusy} onClick={loadBotConfig} className="button-secondary flex items-center justify-center gap-2"><RefreshCw size={15} />Tải trạng thái</button>
+                <button disabled={botBusy || !botToken.trim()} className="button-primary">Lưu token</button>
+              </div>
+            </form>
+            <p className="mt-3 text-xs leading-5 text-slate-500">Token được kiểm tra với Telegram, mã hóa AES-256-GCM và không bao giờ hiển thị lại dưới dạng đầy đủ.</p>
+          </Panel>
           <Panel icon={<Eye />} title="Sensitive item access" subtitle="Requires inventory.read_sensitive. Every reveal is audited.">
             <label className="label">Inventory ObjectId</label><input className="input" value={itemId} onChange={(event) => setItemId(event.target.value)} />
             <button disabled={busy} onClick={reveal} className="button-primary mt-4 w-full">Reveal payload</button>

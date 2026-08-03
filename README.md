@@ -118,8 +118,21 @@ Worker claim order, giải mã trong memory, render template rồi gửi đúng 
 - `inventory.read_sensitive`
 - `payments.approve`
 - `orders.delivery_recover`
+- `bot.manage`
 
 Delivery retry được cấu hình bằng `DELIVERY_ATTEMPTS` và `DELIVERY_BACKOFF_MS`. BullMQ bắt buộc sử dụng engine Redis tương thích IORedis ở bên trong; ứng dụng không khởi tạo IORedis trực tiếp vì BullMQ chưa hỗ trợ `Bun.RedisClient` làm connection adapter.
+
+## Đổi Telegram bot token không cần build lại
+
+Mở trang admin, vào thẻ **Telegram bot token**, dán token mới từ `@BotFather` và chọn **Lưu token**. API sẽ:
+
+1. kiểm tra token trực tiếp với Telegram trước khi nhận;
+2. mã hóa token bằng AES-256-GCM rồi lưu tại setting `telegram.bot_token`;
+3. chỉ trả masked token về giao diện;
+4. ghi audit log `TELEGRAM_BOT_TOKEN_UPDATED` không chứa token;
+5. bot tự kiểm tra setting và chuyển sang token mới trong tối đa `BOT_CONFIG_POLL_SECONDS` giây.
+
+Không cần build image hoặc restart container. `BOT_TOKEN` trong environment chỉ là token bootstrap/fallback khi database chưa có cấu hình. Chỉ role có quyền `bot.manage` được xem trạng thái hoặc cập nhật token.
 
 Không dùng `ADMIN_SECRET` query parameter cũ.
 
