@@ -8,6 +8,8 @@ export interface Notification {
   userId?: Types.ObjectId; adminId?: Types.ObjectId; channel: typeof NotificationChannel[keyof typeof NotificationChannel];
   title: string; body: string; status: typeof NotificationStatus[keyof typeof NotificationStatus];
   referenceType?: string; referenceId?: Types.ObjectId; sentAt?: Date; readAt?: Date; errorCode?: string;
+  /** Optional globally-unique key for at-least-once asynchronous delivery. */
+  deduplicationKey?: string;
   metadata: Record<string, unknown>; createdAt: Date; updatedAt: Date;
 }
 export const NotificationSchema = new Schema<Notification>({
@@ -16,10 +18,12 @@ export const NotificationSchema = new Schema<Notification>({
   title: { type: String, required: true, trim: true, maxlength: 200 }, body: { type: String, required: true, maxlength: 5000 },
   status: { type: String, enum: Object.values(NotificationStatus), default: NotificationStatus.PENDING },
   referenceType: { type: String, maxlength: 80 }, referenceId: objectId(), sentAt: Date, readAt: Date,
-  errorCode: { type: String, maxlength: 100 }, metadata,
+  errorCode: { type: String, maxlength: 100 },
+  deduplicationKey: { type: String, trim: true, minlength: 8, maxlength: 200 }, metadata,
 }, baseSchemaOptions);
 NotificationSchema.index({ userId: 1, status: 1, createdAt: -1 });
 NotificationSchema.index({ adminId: 1, status: 1, createdAt: -1 });
 NotificationSchema.index({ status: 1, createdAt: 1 });
 NotificationSchema.index({ referenceType: 1, referenceId: 1 });
+NotificationSchema.index({ deduplicationKey: 1 }, { unique: true, sparse: true });
 export const NotificationModel: Model<Notification> = (models.Notification as Model<Notification> | undefined) ?? model<Notification>('Notification', NotificationSchema, 'notifications');

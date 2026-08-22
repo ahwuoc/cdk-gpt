@@ -1,5 +1,6 @@
 import { UnrecoverableError, type Job } from 'bullmq';
 import mongoose, { Types } from 'mongoose';
+import type { Telegram } from 'telegraf';
 import {
   InventoryItemModel, InventoryRepository, NotificationModel, OrderModel, OrderRepository, ProductModel, UserModel,
 } from '@store/database';
@@ -8,14 +9,15 @@ import { DeliveryStatus, InventoryStatus, OrderStatus } from '@store/shared';
 
 export interface DeliveryJob { orderId: string; }
 export interface TelegramBotClient {
-  telegram: { sendMessage(chatId: string | number, text: string): Promise<{ message_id: number }> };
+  telegram: { sendMessage(chatId: string | number, text: string, extra?: Parameters<Telegram['sendMessage']>[2]): Promise<{ message_id: number }> };
 }
 
 export class DeliveryProcessor {
   private readonly encryption = EncryptionService.fromEnvironment();
   private readonly inventoryRepository = new InventoryRepository(InventoryItemModel);
   private readonly orderRepository = new OrderRepository(OrderModel);
-  constructor(private readonly bot: TelegramBotClient, private readonly adminTelegramIds: string[]) {}
+  constructor(private readonly bot: TelegramBotClient,
+    private readonly adminTelegramIds: string[] | (() => Promise<string[]>)) {}
 
   async process(job: Job<DeliveryJob>) {
     if (!Types.ObjectId.isValid(job.data.orderId)) throw new UnrecoverableError('Invalid order identifier');
@@ -82,7 +84,9 @@ export class DeliveryProcessor {
     await NotificationModel.create({ channel: 'ADMIN_WEB', title: 'Delivery requires attention',
       body: `Order ${order.orderCode} failed delivery: ${reason}`, status: 'PENDING', referenceType: 'Order',
       referenceId: order._id, metadata: { attemptsMade: job.attemptsMade } });
-    await Promise.allSettled(this.adminTelegramIds.map((chatId) => this.bot.telegram.sendMessage(chatId,
+    const adminTelegramIds = typeof this.adminTelegramIds === 'function'
+      ? await this.adminTelegramIds().catch(() => []) : this.adminTelegramIds;
+    await Promise.allSettled(adminTelegramIds.map((chatId) => this.bot.telegram.sendMessage(chatId,
       `⚠️ Delivery failed for ${order.orderCode}. Inventory remains reserved. Reason: ${reason}`)));
   }
 }

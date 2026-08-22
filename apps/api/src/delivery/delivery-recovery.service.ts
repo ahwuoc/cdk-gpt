@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
@@ -6,7 +6,7 @@ import { InventoryItem, InventoryRepository, Order } from '@store/database';
 import { ActorType, WalletReferenceType } from '@store/database';
 import { DeliveryStatus, InventoryStatus, OrderStatus, OutOfStockError, WalletTransactionType } from '@store/shared';
 import { WalletService } from '../wallet/wallet.service';
-import { DeliveryQueue } from './delivery.queue';
+import { DELIVERY_QUEUE, type DeliveryQueueClient } from './delivery.queue';
 
 @Injectable()
 export class DeliveryRecoveryService {
@@ -16,7 +16,7 @@ export class DeliveryRecoveryService {
     @InjectModel('InventoryItem') private readonly items: Model<InventoryItem>,
     private readonly inventory: InventoryRepository,
     private readonly wallet: WalletService,
-    private readonly queue: DeliveryQueue,
+    @Inject(DELIVERY_QUEUE) private readonly queue: DeliveryQueueClient,
   ) {}
 
   async resend(orderId: string, adminId: string) {

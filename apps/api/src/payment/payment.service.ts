@@ -1,24 +1,166 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
-import { randomBytes } from 'node:crypto';
-import { ActorType, PaymentRequest, type PaymentRequestDocument, WalletReferenceType } from '@store/database';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { ActorType, PaymentRequest, type PaymentRequestDocument, RuntimeLease, WalletReferenceType } from '@store/database';
 import { PaymentRequestStatus, WalletTransactionType } from '@store/shared';
 import { isMongoDuplicateKey } from '@store/shared';
+import { isServerlessRuntime, loadConfig } from '@store/config';
+import { BotConfigService, type RuntimeBankConfig } from '../bot-config/bot-config.service';
 import { WalletService } from '../wallet/wallet.service';
 
-@Injectable()
-export class PaymentService {
-  constructor(@InjectConnection() private readonly connection: Connection,
-    @InjectModel('PaymentRequest') private readonly requests: Model<PaymentRequest>, private readonly wallet: WalletService) {}
+const BANK_PROVIDER = 'BANK_API';
+// Vercel functions are capped at 60 seconds. Leave a small margin so a slow
+// history response cannot make a second instance acquire the same lease while
+// the first invocation is still finalizing its wallet transactions.
+const SERVERLESS_BANK_LEASE_MS = 75_000;
 
-  create(userId: string, amount: number, provider: string, idempotencyKey: string) {
-    return this.requests.findOneAndUpdate({ idempotencyKey }, { $setOnInsert: {
+interface BankTransaction {
+  transactionID: string | number;
+  amount: number | string;
+  description?: string;
+  transactionDate?: string;
+  type?: string;
+}
+
+interface BankPollResult {
+  configured: boolean;
+  examined: number;
+  approved: number;
+}
+
+@Injectable()
+export class PaymentService implements OnModuleInit, OnModuleDestroy {
+  private readonly config = loadConfig();
+  private bankPollTimer?: ReturnType<typeof setInterval>;
+  /** A single shared poll prevents simultaneous button clicks from hitting the provider twice. */
+  private bankPollInFlight?: Promise<BankPollResult>;
+
+  constructor(@InjectConnection() private readonly connection: Connection,
+    @InjectModel('PaymentRequest') private readonly requests: Model<PaymentRequest>, private readonly wallet: WalletService,
+    @Optional() private readonly bankConfig?: BotConfigService,
+    @Optional() @InjectModel('RuntimeLease') private readonly leases?: Model<RuntimeLease>) {}
+
+  onModuleInit() {
+    // Serverless instances freeze after the HTTP response. A setInterval here
+    // would be unreliable and can keep a function invocation open. The cron
+    // route (and the customer's Check button) calls pollBankHistory instead.
+    if (!this.bankConfig || isServerlessRuntime()) return;
+    void this.pollBankHistory();
+    this.bankPollTimer = setInterval(() => void this.pollBankHistory(), this.config.bankPollSeconds * 1000);
+  }
+
+  onModuleDestroy() { if (this.bankPollTimer) clearInterval(this.bankPollTimer); }
+
+  async create(userId: string, amount: number, provider: string, idempotencyKey: string) {
+    if (!Types.ObjectId.isValid(userId) || !Number.isSafeInteger(amount) || amount <= 0) {
+      throw new BadRequestException('Invalid payment request');
+    }
+    const objectUserId = new Types.ObjectId(userId);
+    const request = await this.requests.findOneAndUpdate({ idempotencyKey }, { $setOnInsert: {
       requestCode: `PAY-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`,
-      userId: new Types.ObjectId(userId), amount, provider, status: PaymentRequestStatus.PENDING,
+      userId: objectUserId, amount, provider, status: PaymentRequestStatus.PENDING,
       proofUrls: [], idempotencyKey, metadata: {}, deletedAt: null,
     } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    if (!request) throw new Error('Payment request could not be created');
+    if (!request.userId.equals(objectUserId) || request.amount !== amount || request.provider !== provider) {
+      throw new BadRequestException('Payment idempotency key was already used for another request');
+    }
+    return request;
+  }
+
+  async createBankDeposit(userId: string, amount: number, idempotencyKey: string) {
+    const bank = await this.requireBankConfig();
+    if (!Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid user');
+    if (!Number.isSafeInteger(amount) || amount <= 0) throw new BadRequestException('Invalid deposit amount');
+    const objectUserId = new Types.ObjectId(userId);
+    const requestCode = this.bankRequestCode();
+    const transferContent = requestCode;
+    const expiresAt = new Date(Date.now() + this.config.bankTopupTtlMinutes * 60_000);
+    const request = await this.requests.findOneAndUpdate({ idempotencyKey }, { $setOnInsert: {
+      requestCode, userId: objectUserId, amount, provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
+      proofUrls: [], idempotencyKey,
+      metadata: { source: 'telegram-bank-topup', transferContent, expiresAt: expiresAt.toISOString() }, deletedAt: null,
+    } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    if (!request) throw new Error('Bank deposit could not be created');
+    if (!request.userId.equals(objectUserId) || request.amount !== amount || request.provider !== BANK_PROVIDER) {
+      throw new BadRequestException('Deposit idempotency key was already used for another request');
+    }
+    const content = transferContentFrom(request) ?? transferContent;
+    return {
+      id: request._id.toString(), requestCode: request.requestCode, amount: request.amount, status: request.status,
+      transferContent: content, expiresAt: expirationFrom(request) ?? expiresAt.toISOString(),
+      bank: { bankId: bank.bankId, accountNo: bank.accountNo, accountName: bank.accountName, template: bank.template },
+      qrUrl: vietQrUrl(bank, request.amount, content),
+    };
+  }
+
+  async checkBankDeposit(requestId: string, userId: string) {
+    if (!Types.ObjectId.isValid(requestId) || !Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid payment request');
+    await this.expireBankTopups();
+    await this.pollBankHistory();
+    const request = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).lean();
+    if (!request) throw new NotFoundException('Payment request not found');
+    return { id: request._id.toString(), requestCode: request.requestCode, amount: request.amount,
+      status: request.status, transferContent: transferContentFrom(request), expiresAt: expirationFrom(request) };
+  }
+
+  async pollBankHistory() {
+    if (!this.bankConfig) return { configured: false, examined: 0, approved: 0 };
+    if (this.bankPollInFlight) return this.bankPollInFlight;
+    const poll = isServerlessRuntime() ? this.runServerlessBankPoll() : this.runBankHistoryPoll();
+    const sharedPoll = poll.finally(() => { this.bankPollInFlight = undefined; });
+    this.bankPollInFlight = sharedPoll;
+    return sharedPoll;
+  }
+
+  private async runServerlessBankPoll(): Promise<BankPollResult> {
+    // Vercel cron/manual check requests can overlap across instances. A Mongo
+    // lease avoids spending the history API quota twice; database idempotency
+    // still remains the final protection against duplicate wallet credit.
+    if (!this.leases) return this.runBankHistoryPoll();
+    const token = randomUUID(); const now = new Date();
+    try {
+      const lease = await this.leases.findOneAndUpdate({ _id: 'bank-history-poll', expiresAt: { $lte: now } }, {
+        $set: { token, expiresAt: new Date(now.getTime() + SERVERLESS_BANK_LEASE_MS) },
+      }, { upsert: true, new: true, setDefaultsOnInsert: true });
+      if (!lease || lease.token !== token) return { configured: true, examined: 0, approved: 0 };
+    } catch (error) {
+      // A competing first upsert receives Mongo's duplicate _id error and did
+      // acquire the lease; it is not an application failure.
+      if (isMongoDuplicateKey(error)) return { configured: true, examined: 0, approved: 0 };
+      throw error;
+    }
+    try { return await this.runBankHistoryPoll(); }
+    finally { await this.leases.updateOne({ _id: 'bank-history-poll', token }, { $set: { expiresAt: new Date() } }); }
+  }
+
+  private async runBankHistoryPoll(): Promise<BankPollResult> {
+    const bankConfig = this.bankConfig;
+    if (!bankConfig) return { configured: false, examined: 0, approved: 0 };
+    try {
+      await this.expireBankTopups();
+      const bank = await bankConfig.getBankConfigForRuntime();
+      if (!bank) return { configured: false, examined: 0, approved: 0 };
+      const hasPendingDeposit = await this.requests.exists({ provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
+        deletedAt: null, 'metadata.expiresAt': { $gt: new Date().toISOString() } });
+      // Do not spend the bank-history API quota when no user is waiting for a deposit.
+      if (!hasPendingDeposit) return { configured: true, examined: 0, approved: 0 };
+      const response = await fetch(`${this.config.bankHistoryApiUrl}/${encodeURIComponent(bank.token)}`, { signal: AbortSignal.timeout(12_000) });
+      if (!response.ok) throw new Error(`Bank history endpoint returned HTTP ${response.status}`);
+      const body = await response.json() as { status?: string; message?: string; transactions?: BankTransaction[] };
+      if (body.status !== 'success' || !Array.isArray(body.transactions)) throw new Error(body.message ?? 'Bank history response is invalid');
+      let approved = 0;
+      for (const transaction of body.transactions) {
+        if (String(transaction.type ?? '').toUpperCase() !== 'IN') continue;
+        if (await this.processBankTransaction(transaction)) approved++;
+      }
+      return { configured: true, examined: body.transactions.length, approved };
+    } catch (error) {
+      console.error({ event: 'bank-history-poll-failed', message: error instanceof Error ? error.message : 'unknown error' });
+      return { configured: true, examined: 0, approved: 0 };
+    }
   }
 
   async approve(requestId: string, adminId: string, idempotencyKey: string) {
@@ -43,6 +185,71 @@ export class PaymentService {
     return this.approveAs(request._id.toString(), { actorType: ActorType.WEBHOOK, idempotencyKey: webhookKey });
   }
 
+  private async processBankTransaction(transaction: BankTransaction) {
+    const reference = String(transaction.transactionID ?? '').trim();
+    const amount = Number(transaction.amount);
+    const description = transaction.description ?? '';
+    if (!reference || !Number.isSafeInteger(amount) || amount <= 0 || !description) return false;
+    const candidates = await this.requests.find({ provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
+      amount, deletedAt: null, providerReference: { $exists: false }, 'metadata.expiresAt': { $gt: new Date().toISOString() } })
+      .sort({ createdAt: 1 }).limit(100).lean();
+    const request = candidates.find((candidate) => {
+      const content = transferContentFrom(candidate);
+      return Boolean(content && hasTransferContent(description, content));
+    });
+    if (!request) return false;
+    return this.approveBankRequest(request._id.toString(), reference, transaction);
+  }
+
+  private async approveBankRequest(requestId: string, providerReference: string, transaction: BankTransaction) {
+    const session = await this.connection.startSession(); let approved = false;
+    try {
+      await session.withTransaction(async () => {
+        const existing = await this.requests.findById(requestId).session(session);
+        if (!existing || existing.provider !== BANK_PROVIDER) return;
+        if (existing.status === PaymentRequestStatus.APPROVED) { approved = existing.providerReference === providerReference; return; }
+        if (existing.status !== PaymentRequestStatus.PENDING) return;
+        const alreadyUsed = await this.requests.exists({ provider: BANK_PROVIDER, providerReference }).session(session);
+        if (alreadyUsed) return;
+        const request = await this.requests.findOneAndUpdate({ _id: existing._id, status: PaymentRequestStatus.PENDING,
+          providerReference: { $exists: false } }, { $set: {
+          status: PaymentRequestStatus.APPROVED, providerReference, reviewedAt: new Date(),
+          // Transaction descriptions can contain a sender's name. Keep only the non-sensitive reference/date.
+          metadata: { ...existing.metadata, bankTransaction: { id: providerReference, date: transaction.transactionDate } },
+        } }, { new: true, session });
+        if (!request) return;
+        const walletTransaction = await this.wallet.credit({ userId: request.userId, amount: request.amount,
+          type: WalletTransactionType.DEPOSIT, reason: `Bank deposit ${request.requestCode}`,
+          referenceType: WalletReferenceType.PAYMENT_REQUEST, referenceId: request._id,
+          idempotencyKey: `deposit:bank:${providerReference}`, actorType: ActorType.WEBHOOK,
+          metadata: { provider: BANK_PROVIDER, transactionId: providerReference } }, session);
+        request.walletTransactionId = walletTransaction._id;
+        await request.save({ session });
+        approved = true;
+      });
+      return approved;
+    } catch (error) {
+      if (isMongoDuplicateKey(error)) return false;
+      throw error;
+    } finally { await session.endSession(); }
+  }
+
+  private async requireBankConfig() {
+    const bank = await this.bankConfig?.getBankConfigForRuntime();
+    if (!bank) throw new BadRequestException('Nạp tiền chưa được cấu hình ngân hàng');
+    return bank;
+  }
+
+  private requestCode() { return `PAY-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`; }
+  private bankRequestCode() { return `NAP${randomBytes(8).toString('hex').toUpperCase()}`; }
+
+  private async expireBankTopups() {
+    await this.requests.updateMany({ provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
+      'metadata.expiresAt': { $lte: new Date().toISOString() } }, {
+      $set: { status: PaymentRequestStatus.EXPIRED },
+    });
+  }
+
   private async approveAs(requestId: string, actor: {
     actorType: typeof ActorType[keyof typeof ActorType]; actorId?: Types.ObjectId; idempotencyKey: string;
   }) {
@@ -64,4 +271,23 @@ export class PaymentService {
       return result;
     } finally { await session.endSession(); }
   }
+}
+
+function transferContentFrom(request: { metadata?: Record<string, unknown> }) {
+  const value = request.metadata?.transferContent;
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+function expirationFrom(request: { metadata?: Record<string, unknown> }) {
+  const value = request.metadata?.expiresAt;
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : undefined;
+}
+
+function hasTransferContent(description: string, content: string) {
+  const escaped = content.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^A-Z0-9])${escaped}(?=$|[^A-Z0-9])`, 'i').test(description);
+}
+
+function vietQrUrl(bank: RuntimeBankConfig, amount: number, description: string) {
+  return `https://img.vietqr.io/image/${encodeURIComponent(bank.bankId)}-${encodeURIComponent(bank.accountNo)}-${encodeURIComponent(bank.template)}.png?amount=${amount}&addInfo=${encodeURIComponent(description)}&accountName=${encodeURIComponent(bank.accountName)}`;
 }

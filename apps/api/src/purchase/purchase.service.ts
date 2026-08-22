@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
@@ -8,7 +8,7 @@ import {
   WalletReferenceType, WalletTransactionRepository,
 } from '@store/database';
 import { IdempotencyConflictError, InsufficientBalanceError, InventoryStatus, OrderStatus, OutOfStockError, ProductStatus, WalletTransactionType, isMongoDuplicateKey } from '@store/shared';
-import { DeliveryQueue } from '../delivery/delivery.queue';
+import { DELIVERY_QUEUE, type DeliveryQueueClient } from '../delivery/delivery.queue';
 import { InventoryReservationService } from '../inventory/inventory-reservation.service';
 import type { PurchaseDto } from './purchase.dto';
 
@@ -22,7 +22,7 @@ export class PurchaseService {
     private readonly inventory: InventoryReservationService,
     private readonly orders: OrderRepository,
     private readonly walletTransactions: WalletTransactionRepository,
-    private readonly deliveryQueue: DeliveryQueue,
+    @Inject(DELIVERY_QUEUE) private readonly deliveryQueue: DeliveryQueueClient,
   ) {}
 
   async purchase(input: PurchaseDto) {

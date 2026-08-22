@@ -1,5 +1,7 @@
 export * from './admin.schema';
+export * from './category.schema';
 export * from './audit-log.schema';
+export * from './bot-session.schema';
 export * from './import-batch.schema';
 export * from './inventory-item.schema';
 export * from './migration.schema';
@@ -10,6 +12,7 @@ export * from './product.schema';
 export * from './referral.schema';
 export * from './refresh-token.schema';
 export * from './role.schema';
+export * from './runtime-lease.schema';
 export * from './setting.schema';
 export * from './support-ticket.schema';
 export * from './user.schema';

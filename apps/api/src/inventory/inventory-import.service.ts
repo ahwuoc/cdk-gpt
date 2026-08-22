@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Model } from 'mongoose';
 import { EncryptionService, createMaskedPreview } from '@store/encryption';
 import { ImportBatch, ImportBatchStatus, InventoryItem, Product } from '@store/database';
 import { InventoryStatus, isMongoDuplicateKey } from '@store/shared';
+import { STOCK_ALERT_QUEUE, type StockAlertQueueClient } from './stock-alert.queue';
 
 interface PreparedRow { line: number; normalized: Record<string, unknown>; hash: string; maskedPreview: Record<string, unknown>; }
 interface ImportError { line: number; reason: string; }
@@ -16,6 +17,7 @@ export class InventoryImportService {
     @InjectModel('Product') private readonly products: Model<Product>,
     @InjectModel('InventoryItem') private readonly inventory: Model<InventoryItem>,
     @InjectModel('ImportBatch') private readonly batches: Model<ImportBatch>,
+    @Optional() @Inject(STOCK_ALERT_QUEUE) private readonly stockAlerts?: StockAlertQueueClient,
   ) {}
 
   async preview(productId: string, rows: Record<string, unknown>[]) {
@@ -78,8 +80,18 @@ export class InventoryImportService {
     batch.importedRows = importedRows; batch.duplicateRows += runtimeErrors.filter((item) => item.reason.includes('Duplicate')).length;
     batch.rowErrors.push(...runtimeErrors); batch.status = importedRows === report.prepared.length ? ImportBatchStatus.COMPLETED : ImportBatchStatus.PARTIAL;
     await batch.save();
+    let restockNotificationQueued = false;
+    if (importedRows > 0 && this.stockAlerts) {
+      try {
+        await this.stockAlerts.enqueue({ productId, importBatchId: batch._id.toString(), importedRows });
+        restockNotificationQueued = true;
+      } catch (error) {
+        // Stock import remains successful even if Redis is temporarily unavailable; no inventory is rolled back.
+        console.error({ event: 'product-restock-alert-queue-failed', message: error instanceof Error ? error.message : 'unknown error' });
+      }
+    }
     return { batchId: batch._id, totalRows: batch.totalRows, validRows: batch.validRows, invalidRows: batch.invalidRows,
-      duplicateRows: batch.duplicateRows, importedRows, skipped: batch.rowErrors };
+      duplicateRows: batch.duplicateRows, importedRows, skipped: batch.rowErrors, restockNotificationQueued };
   }
 
   private normalize(row: Record<string, unknown>, fields: Product['fieldDefinitions']) {

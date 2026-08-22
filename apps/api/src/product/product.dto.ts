@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize, ArrayMinSize, ArrayUnique, IsArray, IsBoolean, IsIn, IsInt, IsOptional,
-  IsString, IsUrl, Length, Matches, Max, Min, ValidateNested,
+  IsMongoId, IsString, IsUrl, Length, Matches, Max, Min, ValidateNested,
 } from 'class-validator';
 import { ProductFieldType } from '@store/database';
 import { ProductStatus } from '@store/shared';
@@ -45,6 +45,9 @@ export class SaveProductDto {
   @IsIn([ProductStatus.DRAFT, ProductStatus.ACTIVE, ProductStatus.INACTIVE])
   status!: typeof ProductStatus.DRAFT | typeof ProductStatus.ACTIVE | typeof ProductStatus.INACTIVE;
 
+  @IsOptional() @IsMongoId()
+  categoryId?: string;
+
   @IsArray() @ArrayMaxSize(20) @IsUrl({}, { each: true })
   imageUrls!: string[];
 
@@ -63,6 +66,9 @@ export class SaveProductDto {
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50) @ArrayUnique((field: ProductFieldDefinitionDto) => field.key)
   @ValidateNested({ each: true }) @Type(() => ProductFieldDefinitionDto)
   fieldDefinitions!: ProductFieldDefinitionDto[];
+
+  @IsOptional() @IsString() @Length(1, 500)
+  inventoryPattern?: string;
 
   @IsInt() @Min(0)
   purchaseLimitPerUser!: number;

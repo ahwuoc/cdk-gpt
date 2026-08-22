@@ -2,7 +2,7 @@
   "name": "@store/admin-web",
   "version": "1.0.0",
   "private": true,
-  "scripts": { "dev": "next dev", "build": "next build", "start": "next start" },
+  "scripts": { "dev": "next dev", "build": "next build --webpack", "start": "next start" },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.0",
     "tailwindcss": "^4.3.0",

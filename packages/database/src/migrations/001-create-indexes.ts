@@ -4,7 +4,7 @@ import '../schemas';
 import type { MongoMigration } from './types';
 
 const collections = [
-  'admins', 'roles', 'users', 'products', 'inventory_items', 'orders', 'wallet_transactions',
+  'admins', 'roles', 'users', 'products', 'categories', 'inventory_items', 'orders', 'wallet_transactions',
   'payment_requests', 'support_tickets', 'warranty_requests', 'referrals', 'settings',
   'notifications', 'audit_logs', 'refresh_tokens', 'import_batches',
 ];

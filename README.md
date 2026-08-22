@@ -8,13 +8,13 @@ Monorepo bán và giao sản phẩm số qua Telegram. Backend dùng NestJS + Mo
 
 ```text
 apps/
-  api/                 NestJS REST API + Swagger
-  bot/                 Telegraf bot + BullMQ delivery worker
-  admin-web/           Next.js/React/Tailwind admin
+  api/                 NestJS REST API + Swagger / serverless bridge
+  bot/                 Telegraf bot + delivery/restock processors
+  admin-web/           Next.js/React/Tailwind admin + Vercel routes
 packages/
   config/              Kiểm tra biến môi trường
   database/
-    src/schemas/       16 schema nghiệp vụ + migration record
+    src/schemas/       nghiệp vụ + migration record, bot session và runtime lease
     src/repositories/  Repository và atomic inventory operations
     src/migrations/    MongoDB migration runner
   encryption/          AES-256-GCM, versioned key ring, HMAC duplicate hash
@@ -22,7 +22,7 @@ packages/
 tests/integration/     12 bài kiểm thử trên MongoMemoryReplSet
 ```
 
-Các collection chính: `admins`, `roles`, `users`, `products`, `inventory_items`, `orders`, `wallet_transactions`, `payment_requests`, `support_tickets`, `warranty_requests`, `referrals`, `settings`, `notifications`, `audit_logs`, `refresh_tokens`, và `import_batches`.
+Các collection chính: `admins`, `roles`, `users`, `products`, `inventory_items`, `orders`, `wallet_transactions`, `payment_requests`, `support_tickets`, `warranty_requests`, `referrals`, `settings`, `notifications`, `audit_logs`, `refresh_tokens`, `import_batches`, `bot_sessions`, và `runtime_leases`.
 
 ## Bất biến an toàn
 
@@ -31,10 +31,12 @@ Các collection chính: `admins`, `roles`, `users`, `products`, `inventory_items
 - Mỗi đơn vị hàng hóa là một document riêng. Unique `{ productId, payloadHash }` chặn nhập trùng.
 - `findOneAndUpdate({ productId, status: AVAILABLE, deletedAt: null })` giữ đúng một item trong cùng transaction tạo order/trừ tiền.
 - Wallet chỉ dùng integer minor unit. Mỗi biến động tạo một `wallet_transactions` có `balanceBefore`, `balanceAfter` và unique `idempotencyKey`.
-- Job BullMQ có `jobId = orderId`. Retry không tạo order và không trừ tiền lại.
+- Docker/VPS dùng BullMQ `jobId = orderId`; Vercel dùng QStash at-least-once với cùng idempotency/order-state, nên retry không tạo order và không trừ tiền lại.
 - Nếu kết quả gửi Telegram không rõ ràng, item vẫn `RESERVED` và order chuyển sang `DELIVERY_FAILED` để admin xử lý; hệ thống không tự đưa item về kho.
 - API đọc payload đầy đủ yêu cầu `inventory.read_sensitive` và tạo audit log không chứa payload.
 - Production đặt `autoIndex: false`; index được tạo bằng migration thay vì `syncIndexes()`.
+- Telegram webhook lưu trạng thái nhập số lượng/nạp tiền vào MongoDB TTL thay vì RAM, nên cold start không làm mất hội thoại.
+- Poll ngân hàng serverless dùng MongoDB lease; wallet ledger, `providerReference` và idempotency key vẫn là lớp chống cộng tiền trùng cuối cùng.
 
 ## Development bằng Docker Compose
 
@@ -66,6 +68,51 @@ bun run dev:admin
 ```
 
 MongoDB local vẫn phải là Replica Set và Redis phải đang chạy.
+
+## Deploy Vercel không cần VPS
+
+Code hỗ trợ hai runtime:
+
+| Runtime | Hạ tầng | Queue/bot |
+| --- | --- | --- |
+| `APP_RUNTIME=server` | Docker/VPS + Redis | Telegraf long-polling + BullMQ worker (giữ nguyên để tương thích) |
+| `APP_RUNTIME=serverless` | Vercel + MongoDB Atlas Replica Set + QStash | Telegram webhook + QStash HTTP task; **không cần Redis** |
+
+Để chạy hoàn toàn serverless, cần MongoDB Atlas/managed **Replica Set** (transaction mua hàng và cộng ví không chạy trên MongoDB standalone), một QStash token, và một domain HTTPS trên Vercel.
+
+1. Tạo Vercel project, chọn **Root Directory** là `apps/admin-web` và bật **Include source files outside the Root Directory in the Build Step** vì Route Handler dùng chung source tại `apps/api` và `packages/*`. `apps/admin-web/vercel.json` đã khai báo Next build, Node.js functions 60 giây và cron bảo trì.
+2. Trong Vercel Environment Variables (Production), đặt tối thiểu:
+
+   ```dotenv
+   NODE_ENV=production
+   APP_RUNTIME=serverless
+   MONGODB_URI=mongodb+srv://.../digital_store?retryWrites=true&w=majority
+   MONGODB_MAX_POOL_SIZE=5
+   WEB_APP_URL=https://shop.example.com
+   BOT_API_SECRET=<random-secret-cho-Bot API noi bo>
+   JWT_ACCESS_SECRET=<random>
+   JWT_REFRESH_SECRET=<random>
+   ENCRYPTION_KEY=<32-byte-key>
+   PAYLOAD_HASH_KEY=<32-byte-HMAC-key>
+   TELEGRAM_WEBHOOK_SECRET=<url-safe-random-secret-HMAC-seed>
+   TASK_QUEUE_SECRET=<random-secret>
+   CRON_SECRET=<random-secret>
+   ```
+
+   Không đặt `NEXT_PUBLIC_API_URL`: admin mặc định gọi cùng origin `/api`, tránh CORS và giữ refresh cookie ổn định. `REDIS_URL` không cần có ở chế độ này.
+3. Chạy migration **một lần** từ máy local/CI với Atlas URI trước khi deploy (không chạy migration trong Vercel build):
+
+   ```bash
+   APP_RUNTIME=serverless MONGODB_URI='mongodb+srv://...' bun run migration:up
+   ```
+
+4. Deploy lần đầu, vào `/admin` → **Bot & thanh toán** → **Cấu hình runtime** để lưu tên shop, admin Telegram ID, API URL, Telegram webhook URL, QStash URL/token và task base URL vào MongoDB. QStash token được mã hóa và có thể đổi realtime; để trống token khi sửa lần sau sẽ giữ token cũ. Sau đó lưu Telegram token. API xác minh token, lưu mã hóa và gọi `setWebhook` tới URL vừa lưu. Header secret Telegram được HMAC riêng theo từng bot từ `TELEGRAM_WEBHOOK_SECRET`; khi đổi bot, webhook bot cũ được tắt trước nên update cũ/in-flight không bị xử lý bằng token bot mới.
+   Các giá trị thường đổi như `TOKEN_API_BANK` cũng lưu từ form. Chỉ khóa bootstrap (`MONGODB_URI`, `ENCRYPTION_KEY`, JWT, `BOT_API_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, `TASK_QUEUE_SECRET`, `CRON_SECRET`) phải nằm trong Vercel Environment Variables.
+5. Tạo một đơn thử, nhập kho và thử `/start`, nạp tiền, giao hàng. QStash sẽ gọi các route nội bộ có `TASK_QUEUE_SECRET`; không public secret vào frontend.
+
+`/api/internal/cron` quét lịch sử bank, nhả reservation hết hạn và republish delivery bị lỡ sau commit. `vercel.json` đặt lịch mỗi phút, nên **cần Vercel Pro** cho auto-credit khoảng một phút. Vercel Hobby chỉ cho cron hằng ngày: trên Hobby hãy dùng nút **Kiểm tra tiền** hoặc tạo QStash Schedule gọi endpoint cron cùng `Authorization: Bearer $CRON_SECRET`; không thể giữ polling 20 giây thuần Vercel.
+
+Không deploy `apps/bot/src/main.ts` hay worker Docker lên Vercel: chúng dành cho runtime `server` chạy dài hạn. Sau khi đã test webhook/QStash/cron ở Production, có thể tắt VPS và Redis.
 
 ## Migration và seed
 
@@ -105,9 +152,9 @@ Không gửi plaintext vào log, BullMQ job, notification hay audit log.
 4. atomic debit số dư;
 5. tạo wallet ledger và gắn vào order;
 6. commit với majority write concern;
-7. enqueue delivery sau commit.
+7. enqueue delivery sau commit (BullMQ ở `server`; QStash ở `serverless`).
 
-Worker claim order, giải mã trong memory, render template rồi gửi đúng `telegramId`. Sau xác nhận gửi thành công, transaction thứ hai chuyển inventory sang `SOLD` và order sang `DELIVERED`. Lỗi 429/5xx retry exponential; blocked/chat-not-found/dữ liệu-key lỗi dừng retry; lỗi timeout hoặc crash sau send được xem là mơ hồ và yêu cầu admin xử lý.
+Worker/task claim order, giải mã trong memory, render template rồi gửi đúng `telegramId`. Sau xác nhận gửi thành công, transaction thứ hai chuyển inventory sang `SOLD` và order sang `DELIVERED`. Lỗi 429/5xx retry exponential; blocked/chat-not-found/dữ liệu-key lỗi dừng retry; lỗi timeout hoặc crash sau send được xem là mơ hồ và yêu cầu admin xử lý.
 
 ## JWT admin
 
@@ -131,7 +178,7 @@ Mở trang admin, vào thẻ **Telegram bot token**, dán token mới từ `@Bot
 2. mã hóa token bằng AES-256-GCM rồi lưu tại setting `telegram.bot_token`;
 3. chỉ trả masked token về giao diện;
 4. ghi audit log `TELEGRAM_BOT_TOKEN_UPDATED` không chứa token;
-5. bot tự kiểm tra setting và chuyển sang token mới trong tối đa `BOT_CONFIG_POLL_SECONDS` giây.
+5. runtime Docker tự kiểm tra setting và chuyển token trong tối đa `BOT_CONFIG_POLL_SECONDS` giây; runtime Vercel cấu hình Telegram webhook ngay khi lưu.
 
 Không cần build image hoặc restart container. `BOT_TOKEN` trong environment chỉ là token bootstrap/fallback khi database chưa có cấu hình. Chỉ role có quyền `bot.manage` được xem trạng thái hoặc cập nhật token.
 
@@ -162,9 +209,11 @@ Integration suite khởi tạo MongoDB Replica Set thật bằng `MongoMemoryRep
 
 - Dùng MongoDB managed hoặc Replica Set ít nhất 3 data-bearing nodes; **không dùng standalone**.
 - Chạy migration trước khi rollout API mới; chỉ bật một migration job.
-- Tách API, bot/worker và admin-web thành deployment riêng; scale worker bằng BullMQ concurrency.
-- Dùng Redis HA/persistence, TLS, password/ACL và không public port.
+- Với Docker/VPS: tách API, bot/worker và admin-web; scale worker bằng BullMQ concurrency; dùng Redis HA/persistence, TLS, password/ACL và không public port.
+- Với Vercel: dùng `APP_RUNTIME=serverless`, MongoDB Atlas Replica Set, QStash và Telegram webhook; không chạy polling/worker process dài hạn hoặc Redis chỉ để queue.
+- Vercel Pro cho cron mỗi phút; Vercel Hobby cần QStash Schedule/external scheduler hoặc chấp nhận kiểm tra bank thủ công. Không có serverless cron nào bảo đảm polling 20 giây.
 - Terminate TLS ở load balancer/Nginx, rate-limit login/webhook, verify webhook signature ở edge.
 - Không bake `.env` vào image. Dùng secret manager cho JWT, Telegram, webhook và encryption keys.
+- `TOKEN_API_BANK` là token tùy chọn cho API lịch sử giao dịch ngân hàng; đặt trong secret manager hoặc `.env`, tuyệt đối không commit giá trị thật.
 - Theo dõi order `DELIVERY_FAILED`, reservation quá hạn, low stock, queue stalled và transaction abort rate.
 - Backup MongoDB và kiểm thử restore cùng toàn bộ encryption key version còn cần thiết.

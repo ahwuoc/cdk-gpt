@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '@store/database';
-import { loadConfig } from '@store/config';
 import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
 import { InventoryModule } from './inventory/inventory.module';
@@ -9,8 +8,9 @@ import { PurchaseModule } from './purchase/purchase.module';
 import { WalletModule } from './wallet/wallet.module';
 import { BotConfigModule } from './bot-config/bot-config.module';
 import { ProductModule } from './product/product.module';
+import { CategoryModule } from './category/category.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
-const config = loadConfig();
-@Module({ imports: [DatabaseModule.forRoot(config.mongoUri, config.nodeEnv !== 'production'), AuthModule,
-  WalletModule, InventoryModule, PaymentModule, PurchaseModule, BotConfigModule, ProductModule], controllers: [AppController] })
+@Module({ imports: [DatabaseModule.forRoot(), AuthModule,
+  WalletModule, InventoryModule, PaymentModule, PurchaseModule, BotConfigModule, ProductModule, CategoryModule, AnalyticsModule], controllers: [AppController] })
 export class AppModule {}

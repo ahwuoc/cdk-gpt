@@ -40,11 +40,24 @@ export class AuthService {
     }
     const admin = await this.admins.findOne({ _id: claims.sub, status: 'ACTIVE', deletedAt: null });
     if (!admin) throw new UnauthorizedException('Admin account unavailable');
+    const revokedAt = new Date();
+    const claimed = await this.refreshTokens.findOneAndUpdate({ _id: stored._id, revokedAt: { $exists: false }, expiresAt: { $gt: revokedAt } },
+      { $set: { revokedAt, revokedByIp: context.ip } }, { new: false }).select('+tokenHash');
+    if (!claimed) {
+      await this.refreshTokens.updateMany({ familyId: claims.familyId, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date(), revokedByIp: context.ip } });
+      throw new UnauthorizedException('Refresh token reuse detected');
+    }
     const pair = await this.issuePair(admin, claims.familyId, context);
-    stored.revokedAt = new Date(); stored.revokedByIp = context.ip; stored.replacedByTokenHash = this.hash(pair.refreshToken);
-    await stored.save();
+    await this.refreshTokens.updateOne({ _id: claimed._id }, { $set: { replacedByTokenHash: this.hash(pair.refreshToken) } });
     return pair;
   }
+
+  async logout(rawToken: string, context: { ip?: string }) {
+    const hash = this.hash(rawToken);
+    await this.refreshTokens.updateOne({ tokenHash: hash, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date(), revokedByIp: context.ip } });
+  }
+
+  refreshCookieMaxAgeSeconds() { return Math.floor(parseDuration(this.config.jwtRefreshExpiresIn) / 1000); }
 
   async verifyAccess(token: string) {
     const claims = await this.jwt.verifyAsync<AdminClaims>(token, { secret: this.config.jwtAccessSecret });

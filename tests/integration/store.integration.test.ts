@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { Module } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { getModelToken } from '@nestjs/mongoose';
 import mongoose, { Types } from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { Queue, Worker } from 'bullmq';
@@ -10,17 +13,19 @@ import { redisConnectionOptions } from '@store/config';
 import {
   AdminModel, AuditLogModel, ImportBatchModel, InventoryItemModel, InventoryRepository, NotificationModel,
   OrderModel, OrderRepository, PaymentRequestModel, ProductModel, RoleModel, SettingModel, UserModel,
-  UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel,
+  UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel, DatabaseModule,
 } from '@store/database';
-import { InventoryStatus, ProductStatus, UserStatus } from '@store/shared';
+import { InventoryStatus, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
 import { PurchaseService } from '../../apps/api/src/purchase/purchase.service';
 import { DeliveryQueue } from '../../apps/api/src/delivery/delivery.queue';
 import { WalletService } from '../../apps/api/src/wallet/wallet.service';
 import { PaymentService } from '../../apps/api/src/payment/payment.service';
 import { DeliveryProcessor } from '../../apps/bot/src/delivery.processor';
+import { StockAlertProcessor } from '../../apps/bot/src/stock-alert.processor';
 import { InventoryReservationService } from '../../apps/api/src/inventory/inventory-reservation.service';
 import { InventoryImportService } from '../../apps/api/src/inventory/inventory-import.service';
 import { InventoryAdminService } from '../../apps/api/src/inventory/inventory-admin.service';
+import { StockAlertQueue } from '../../apps/api/src/inventory/stock-alert.queue';
 import { DeliveryRecoveryService } from '../../apps/api/src/delivery/delivery-recovery.service';
 import { BotConfigService } from '../../apps/api/src/bot-config/bot-config.service';
 import { ProductService } from '../../apps/api/src/product/product.service';
@@ -101,6 +106,27 @@ integration('digital store on a MongoDB replica set', () => {
     expect((await UserModel.findById(first._id))!.walletBalance + (await UserModel.findById(second._id))!.walletBalance).toBe(1900);
   }, 30_000);
 
+  test('serverless Nest injection shares the static Mongoose model connection used by bot tasks', async () => {
+    const previousRuntime = process.env.APP_RUNTIME;
+    const previousPoolSize = process.env.MONGODB_MAX_POOL_SIZE;
+    process.env.APP_RUNTIME = 'serverless';
+    process.env.MONGODB_MAX_POOL_SIZE = '3';
+    class ServerlessDatabaseTestModule {}
+    Module({ imports: [DatabaseModule.forRoot(mongoUri, true)] })(ServerlessDatabaseTestModule);
+    const app = await NestFactory.createApplicationContext(ServerlessDatabaseTestModule, { logger: false });
+    try {
+      const injectedProduct = app.get<typeof ProductModel>(getModelToken('Product'));
+      expect(injectedProduct).toBe(ProductModel);
+      expect(injectedProduct.db).toBe(ProductModel.db);
+    } finally {
+      await app.close();
+      if (previousRuntime === undefined) delete process.env.APP_RUNTIME;
+      else process.env.APP_RUNTIME = previousRuntime;
+      if (previousPoolSize === undefined) delete process.env.MONGODB_MAX_POOL_SIZE;
+      else process.env.MONGODB_MAX_POOL_SIZE = previousPoolSize;
+    }
+  });
+
   test('2. concurrent duplicate requests from one customer are idempotent', async () => {
     const { product, user } = await fixture(2);
     const input = { userId: user._id.toString(), productId: product._id.toString(), expectedUnitPrice: 100, idempotencyKey: 'same-user-request' };
@@ -131,6 +157,34 @@ integration('digital store on a MongoDB replica set', () => {
     expect((await UserModel.findById(user._id))!.walletBalance).toBe(700);
     expect(await PaymentRequestModel.countDocuments()).toBe(1);
     expect(await WalletTransactionModel.countDocuments()).toBe(1);
+  });
+
+  test('bank polling is single-flight and one bank transaction credits a wallet exactly once', async () => {
+    const { user } = await fixture(0, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig);
+    const deposit = await service.createBankDeposit(user._id.toString(), 2_500, 'bank-topup-race-test');
+    let fetchCalls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response(JSON.stringify({ status: 'success', transactions: [
+        { transactionID: 991122, amount: 2500, description: `TRANSFER ${deposit.transferContent}`, type: 'IN' },
+        { transactionID: 991122, amount: 2500, description: `TRANSFER ${deposit.transferContent}`, type: 'IN' },
+      ] }));
+    }) as unknown as typeof fetch;
+    try {
+      await Promise.all(Array.from({ length: 8 }, () => service.pollBankHistory()));
+      await service.pollBankHistory();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(fetchCalls).toBe(1);
+    expect((await UserModel.findById(user._id))!.walletBalance).toBe(2_500);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id })).toBe(1);
+    expect((await PaymentRequestModel.findById(deposit.id))!.status).toBe(PaymentRequestStatus.APPROVED);
   });
 
   test('5. rerunning a completed delivery job does not resend or resell', async () => {
@@ -239,6 +293,44 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await InventoryItemModel.countDocuments()).toBe(1);
   });
 
+  test('successful stock import queues one restock announcement batch', async () => {
+    const { product, adminId } = await fixture(0);
+    const queuedAlerts: Array<{ productId: string; importBatchId: string; importedRows: number }> = [];
+    const alerts = { enqueue: async (job: { productId: string; importBatchId: string; importedRows: number }) => {
+      queuedAlerts.push(job); return { id: job.importBatchId };
+    } } as unknown as StockAlertQueue;
+    const importer = new InventoryImportService(ProductModel, InventoryItemModel, ImportBatchModel, alerts);
+    const result = await importer.commit(product._id.toString(), [{ login: 'restock@example.invalid', password: 'secret' }], adminId.toString(), 'restock.txt');
+    expect(result.importedRows).toBe(1);
+    expect(result.restockNotificationQueued).toBeTrue();
+    expect(queuedAlerts).toHaveLength(1);
+    expect(queuedAlerts[0]).toMatchObject({ productId: product._id.toString(), importedRows: 1 });
+  });
+
+  test('restock queue uses a BullMQ-safe idempotency key', async () => {
+    let options: { jobId?: string } | undefined;
+    const queue = { add: async (_name: string, _job: unknown, next: { jobId?: string }) => {
+      options = next; return { id: next.jobId };
+    } };
+    const alerts = new StockAlertQueue(queue as never);
+    await alerts.enqueue({ productId: new Types.ObjectId().toString(), importBatchId: new Types.ObjectId().toString(), importedRows: 1 });
+    expect(options?.jobId).toStartWith('product-restocked-');
+    expect(options?.jobId).not.toContain(':');
+  });
+
+  test('a restock batch notifies each Telegram customer at most once', async () => {
+    const { product, user } = await fixture(0);
+    let messages = 0;
+    const processor = new StockAlertProcessor({ telegram: { sendMessage: async () => {
+      messages++; return { message_id: 1 };
+    } } } as never);
+    const job = { id: 'restock-batch-test', data: { productId: product._id.toString(), importBatchId: new Types.ObjectId().toString(), importedRows: 3 } } as never;
+    await processor.process(job);
+    await processor.process(job);
+    expect(messages).toBe(1);
+    expect(await NotificationModel.countDocuments({ userId: user._id, channel: 'TELEGRAM', status: 'SENT' })).toBe(1);
+  });
+
   test('11. an unknown encryption key version cannot be decrypted', () => {
     const old = new EncryptionService({ 1: '0123456789abcdef0123456789abcdef' }, 1);
     const encrypted = old.encrypt({ secret: 'value' });
@@ -285,6 +377,29 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await AuditLogModel.countDocuments({ action: 'TELEGRAM_BOT_TOKEN_UPDATED' })).toBe(1);
   });
 
+  test('admin runtime configuration hot-reloads and never exposes the QStash token', async () => {
+    const adminId = new Types.ObjectId();
+    const rawQstashToken = 'qstash-runtime-secret-that-must-not-be-returned';
+    const service = new BotConfigService(SettingModel, AuditLogModel, async () => ({
+      id: 123456789, username: 'fixture_bot', first_name: 'Fixture',
+    }));
+    const saved = await service.updateRuntimeConfig({
+      shopName: 'Runtime Shop', adminTelegramIds: '123456789,987654321', apiUrl: 'http://api:3001',
+      telegramWebhookUrl: '', qstashUrl: 'https://qstash-us-east-1.upstash.io', taskBaseUrl: '',
+      qstashToken: rawQstashToken,
+    }, adminId.toString(), 'request-runtime-config');
+    expect(saved.runtime.maskedQstashToken).toEndWith('rned');
+    expect(JSON.stringify(saved)).not.toContain(rawQstashToken);
+    const setting = await SettingModel.findOne({ key: 'runtime.operational_config' }).lean();
+    expect(JSON.stringify(setting!.value)).not.toContain(rawQstashToken);
+    const runtime = await service.getRuntimeOperationalConfig();
+    expect(runtime).toMatchObject({ shopName: 'Runtime Shop', apiUrl: 'http://api:3001',
+      adminTelegramIds: ['123456789', '987654321'], qstashToken: rawQstashToken, source: 'database' });
+    const publicConfig = await service.getPublicConfig();
+    expect(JSON.stringify(publicConfig)).not.toContain(rawQstashToken);
+    expect(await AuditLogModel.countDocuments({ action: 'RUNTIME_CONFIG_UPDATED' })).toBe(1);
+  });
+
   test('admin can create, list, update, and archive products', async () => {
     const adminId = new Types.ObjectId();
     const service = new ProductService(mongoose.connection, ProductModel, InventoryItemModel, AuditLogModel);
@@ -309,6 +424,15 @@ integration('digital store on a MongoDB replica set', () => {
       { name: 'Ghi chú', key: 'note', type: 'STRING' as const, sensitive: false, visibleToCustomer: true, required: false, sortOrder: 2 }];
     await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
       fieldDefinitions: compatibleFields }, adminId.toString(), 'compatible-fields');
+    const renamedFields = compatibleFields.map((field) => field.key === 'login' ? { ...field, key: 'api' } : field);
+    const renamed = await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
+      fieldDefinitions: renamedFields, inventoryPattern: 'login----note' }, adminId.toString(), 'rename-login-to-api');
+    expect(renamed.inventoryPattern).toBe('api----note');
+    expect(renamed.deliveryTemplate).toContain('{{api}}');
+    const renamedItem = await InventoryItemModel.findOne({ productId: created._id }).select('+encryptedPayload +payloadHash');
+    expect(encryption.decrypt<Record<string, unknown>>(renamedItem!.encryptedPayload)).toEqual({ api: 'managed@example.invalid' });
+    expect(renamedItem!.maskedPreview).toMatchObject({ api: 'managed@example.invalid' });
+    expect(renamedItem!.payloadHash).toBe(encryption.normalizedHash({ api: 'managed@example.invalid' }));
     await expect(service.update(created._id.toString(), { ...input, deliveryTemplate: 'Static', fieldDefinitions: [compatibleFields[1]!] },
       adminId.toString(), 'unsafe-fields')).rejects.toThrow('cannot be removed');
     await expect(service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
@@ -318,6 +442,76 @@ integration('digital store on a MongoDB replica set', () => {
     expect((await validate(archivedInput)).some((error) => error.property === 'status')).toBeTrue();
     await service.archive(created._id.toString(), adminId.toString(), 'archive-product');
     expect(await service.list()).toHaveLength(0);
-    expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(4);
+    expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(5);
+  });
+
+  test('a rejected key rename leaves every product and inventory payload unchanged', async () => {
+    const adminId = new Types.ObjectId();
+    const product = await ProductModel.create({ name: 'Rename rollback', slug: `rename-rollback-${new Types.ObjectId()}`,
+      description: 'Rename rollback fixture', price: 100, status: ProductStatus.ACTIVE, imageUrls: [], warrantyDays: 0,
+      deliveryTemplate: 'Login: {{login}}', inventoryPattern: 'login', fieldDefinitions: [
+        { name: 'Login', key: 'login', type: 'STRING', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 1 },
+      ], purchaseLimitPerUser: 0, lowStockThreshold: 1, sortOrder: 0, createdBy: adminId, updatedBy: adminId, deletedAt: null });
+    const validPayload = { login: 'still-here' };
+    const valid = await InventoryItemModel.create({ productId: product._id, encryptedPayload: encryption.encrypt(validPayload),
+      maskedPreview: { login: 'st******re' }, payloadHash: encryption.normalizedHash(validPayload), status: InventoryStatus.AVAILABLE,
+      createdBy: adminId, deletedAt: null });
+    await InventoryItemModel.create({ productId: product._id, encryptedPayload: encryption.encrypt({}), maskedPreview: {},
+      payloadHash: encryption.normalizedHash({}), status: InventoryStatus.AVAILABLE, createdBy: adminId, deletedAt: null });
+    const service = new ProductService(mongoose.connection, ProductModel, InventoryItemModel, AuditLogModel);
+    const renamedInput = {
+      name: product.name, slug: product.slug, description: product.description, price: product.price, status: ProductStatus.ACTIVE,
+      imageUrls: [], instructions: '', warrantyPolicy: '', warrantyDays: 0, deliveryTemplate: 'Login: {{login}}', inventoryPattern: 'login',
+      fieldDefinitions: [{ name: 'API', key: 'api', type: 'STRING' as const, sensitive: true, visibleToCustomer: true, required: true, sortOrder: 1 }],
+      purchaseLimitPerUser: 0, lowStockThreshold: 1, sortOrder: 0,
+    };
+    await expect(service.update(product._id.toString(), renamedInput, adminId.toString(), 'rename-rollback')).rejects.toThrow('missing required field login');
+    expect((await ProductModel.findById(product._id))!.fieldDefinitions[0]!.key).toBe('login');
+    const unchanged = await InventoryItemModel.findById(valid._id).select('+encryptedPayload +payloadHash');
+    expect(encryption.decrypt<Record<string, unknown>>(unchanged!.encryptedPayload)).toEqual(validPayload);
+    expect(unchanged!.payloadHash).toBe(encryption.normalizedHash(validPayload));
+  });
+
+  test('admin inventory list is paginated, masked, and can search an import batch safely', async () => {
+    const { product, adminId } = await fixture(0);
+    const imported = await new InventoryImportService(ProductModel, InventoryItemModel, ImportBatchModel).commit(product._id.toString(), [
+      { login: 'listed-one@example.invalid', password: 'raw-password-one' },
+      { login: 'listed-two@example.invalid', password: 'raw-password-two' },
+      { login: 'listed-three@example.invalid', password: 'raw-password-three' },
+    ], adminId.toString(), 'listed.txt');
+    const service = new InventoryAdminService(InventoryItemModel, AuditLogModel, mongoose.connection, ImportBatchModel);
+    const page = await service.list({ page: 1, limit: 2, search: imported.batchId.toString() });
+    expect(page).toMatchObject({ page: 1, limit: 2, total: 3, totalPages: 2 });
+    expect(page.items).toHaveLength(2);
+    expect(page.items[0]).toMatchObject({ productId: product._id.toString(), status: InventoryStatus.AVAILABLE, importBatchId: imported.batchId.toString() });
+    expect(JSON.stringify(page.items)).not.toContain('raw-password-one');
+    expect((await service.list({ page: 2, limit: 2, query: imported.batchId.toString() })).items).toHaveLength(1);
+  });
+
+  test('admin can remove only available inventory and bulk removal preserves reserved and sold rows', async () => {
+    const { product, adminId } = await fixture(0);
+    const imported = await new InventoryImportService(ProductModel, InventoryItemModel, ImportBatchModel).commit(product._id.toString(), [
+      { login: 'remove-one@example.invalid', password: 'delete-me-1' },
+      { login: 'remove-two@example.invalid', password: 'delete-me-2' },
+      { login: 'reserved@example.invalid', password: 'protect-reserved' },
+      { login: 'sold@example.invalid', password: 'protect-sold' },
+    ], adminId.toString(), 'mistake.txt');
+    const rows = await InventoryItemModel.find({ importBatchId: imported.batchId }).sort({ createdAt: 1, _id: 1 });
+    const [firstAvailable, secondAvailable, reserved, sold] = rows;
+    await InventoryItemModel.updateOne({ _id: reserved!._id }, { $set: { status: InventoryStatus.RESERVED } });
+    await InventoryItemModel.updateOne({ _id: sold!._id }, { $set: { status: InventoryStatus.SOLD } });
+    const service = new InventoryAdminService(InventoryItemModel, AuditLogModel, mongoose.connection, ImportBatchModel);
+
+    expect(await service.removeItem(firstAvailable!._id.toString(), adminId.toString(), 'remove-one')).toMatchObject({ removed: true });
+    expect((await InventoryItemModel.findById(firstAvailable!._id))!.deletedAt).toBeTruthy();
+    await expect(service.removeItem(reserved!._id.toString(), adminId.toString(), 'remove-reserved')).rejects.toThrow('Chỉ có thể xóa hàng đang có sẵn');
+
+    const cleared = await service.removeBatch(imported.batchId.toString(), adminId.toString(), 'remove-batch');
+    expect(cleared).toMatchObject({ removedCount: 1, protectedCount: 2 });
+    expect((await InventoryItemModel.findById(secondAvailable!._id))!.deletedAt).toBeTruthy();
+    expect((await InventoryItemModel.findById(reserved!._id))!).toMatchObject({ status: InventoryStatus.RESERVED, deletedAt: null });
+    expect((await InventoryItemModel.findById(sold!._id))!).toMatchObject({ status: InventoryStatus.SOLD, deletedAt: null });
+    expect(await AuditLogModel.countDocuments({ action: 'INVENTORY_ITEM_REMOVED' })).toBe(1);
+    expect(await AuditLogModel.countDocuments({ action: 'INVENTORY_BATCH_AVAILABLE_REMOVED' })).toBe(1);
   });
 });

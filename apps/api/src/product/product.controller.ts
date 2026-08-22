@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, Headers, Param, Post, Put, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Post, Put, Query, Req } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import type { AdminClaims } from '../auth/auth.service';
 import { RequireAnyPermission, RequirePermissions } from '../auth/permissions.guard';
 import { SaveProductDto } from './product.dto';
+import { ProductQueryDto } from './product-query.dto';
 import { ProductService } from './product.service';
 
 @Controller('admin/products')
@@ -11,7 +12,7 @@ export class ProductController {
   constructor(private readonly products: ProductService) {}
 
   @Get() @RequirePermissions() @RequireAnyPermission('products.manage', 'inventory.import')
-  list() { return this.products.list(); }
+  list(@Query() query: ProductQueryDto) { return this.products.list(query); }
 
   @Post()
   create(@Body() body: SaveProductDto, @Req() request: FastifyRequest & { admin: AdminClaims },
