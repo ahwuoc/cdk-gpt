@@ -1,9 +1,11 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Boxes, Eye, FileUp, KeyRound, LayoutDashboard, LogOut, PackageOpen, QrCode, RefreshCw, Settings2, ShieldCheck } from 'lucide-react';
+import { Activity, Bot, Boxes, CircleDollarSign, Eye, FileUp, KeyRound, LayoutDashboard, ListChecks, LogOut,
+  Package, QrCode, RefreshCw, ServerCog, ShoppingCart, Tags, Users, WalletCards } from 'lucide-react';
 import { CategoryManager } from './category-manager';
 import { InventoryManager } from './inventory-manager';
+import { ManagementHub } from './management-hub';
 import { OperationsDashboard } from './operations-dashboard';
 import { ProductManager, type CategoryRecord, type ProductPagination, type ProductRecord } from './product-manager';
 import { requestId } from './request-id';
@@ -32,7 +34,8 @@ interface BotConfig {
   encryptionKeyVersion?: number; updatedAt?: string; reloadWithinSeconds?: number; welcomeMessage?: string;
   bank?: BankConfig; runtime?: RuntimeConfig;
 }
-type AdminSection = 'dashboard' | 'catalog' | 'inventory' | 'configuration';
+type AdminSection = 'dashboard' | 'orders' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
+  | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
 
 export default function AdminPage() {
   const [tokens, setTokens] = useState<Tokens | null>(null);
@@ -54,13 +57,23 @@ export default function AdminPage() {
   const [bankAccountName, setBankAccountName] = useState(''); const [bankAmount, setBankAmount] = useState(0);
   const [bankDescription, setBankDescription] = useState(''); const [bankOptions, setBankOptions] = useState<BankOption[]>([]);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>({ shopName: 'Digital Store', adminTelegramIds: '',
-    apiUrl: '', telegramWebhookUrl: '', qstashUrl: 'https://qstash-us-east-1.upstash.io', taskBaseUrl: '' });
+    apiUrl: '', telegramWebhookUrl: '', qstashUrl: 'https://qstash.upstash.io', taskBaseUrl: '' });
   const [qstashToken, setQstashToken] = useState('');
   const [botBusy, setBotBusy] = useState(false);
   const [botMessage, setBotMessage] = useState(''); const [botMessageKind, setBotMessageKind] = useState<'error' | 'success'>('success');
   const [message, setMessage] = useState('');
   const [section, setSection] = useState<AdminSection>('dashboard');
   const selectedProduct = products.find((product) => product._id === productId);
+
+  const navigate = useCallback((next: AdminSection) => {
+    setSection(next);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href); url.searchParams.set('view', next);
+      url.searchParams.delete('userId');
+      window.history.pushState({ view: next }, '', url);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, []);
 
   const persistTokens = useCallback((next: Tokens) => {
     const safe = { accessToken: next.accessToken };
@@ -135,6 +148,12 @@ export default function AdminPage() {
   }, [refreshSession]);
 
   useEffect(() => {
+    const sync = () => setSection(adminSectionFromLocation());
+    sync(); window.addEventListener('popstate', sync);
+    return () => window.removeEventListener('popstate', sync);
+  }, []);
+
+  useEffect(() => {
     if (!tokens?.accessToken) return;
     const controller = new AbortController();
     queueMicrotask(() => void Promise.all([loadProducts(controller.signal), loadCategories(controller.signal)])
@@ -205,7 +224,7 @@ export default function AdminPage() {
       setBankToken(''); setBankId(body.bank?.bankId ?? ''); setBankAccountNo(body.bank?.accountNo ?? '');
       setBankTemplate(body.bank?.template ?? 'compact2'); setBankAccountName(body.bank?.accountName ?? '');
       setBankAmount(body.bank?.amount ?? 0); setBankDescription(body.bank?.description ?? '');
-      if (body.runtime) setRuntimeConfig(body.runtime);
+      if (body.runtime) setRuntimeConfig(runtimeWithPublicDefaults(body.runtime));
       setQstashToken('');
       await loadBankOptions();
       setBotMessageKind('success'); setBotMessage(body.configured ? 'Đã tải trạng thái bot.' : 'Chưa có token Telegram nào được lưu.');
@@ -302,32 +321,37 @@ export default function AdminPage() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
-          <button type="button" onClick={() => setSection('dashboard')} className="flex min-w-0 items-center gap-3 text-left">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-indigo-500/15 text-indigo-300"><ShieldCheck size={21} /></span>
-            <span className="min-w-0"><span className="block truncate font-semibold text-slate-50">Digital Store</span><span className="block truncate text-xs text-slate-500">Quản trị shop & bot Telegram</span></span>
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
+          <button type="button" onClick={() => navigate('dashboard')} className="flex min-w-0 items-center gap-3 text-left">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-indigo-500/15 text-indigo-300"><LayoutDashboard size={21} /></span>
+            <span className="min-w-0"><span className="block truncate font-semibold text-slate-50">Digital Store</span><span className="block truncate text-xs text-slate-500">Trung tâm quản trị</span></span>
           </button>
           <button onClick={logout} className="button-secondary inline-flex shrink-0 items-center gap-2 px-3 py-2"><LogOut size={16} /><span className="hidden sm:inline">Đăng xuất</span></button>
         </div>
-        <div className="mx-auto max-w-7xl overflow-x-auto px-4 sm:px-6">
-          <nav className="flex min-w-max gap-1 pb-3" aria-label="Điều hướng quản trị">
-            <AdminNav active={section === 'dashboard'} onClick={() => setSection('dashboard')} icon={<LayoutDashboard size={16} />}>Tổng quan</AdminNav>
-            <AdminNav active={section === 'catalog'} onClick={() => setSection('catalog')} icon={<PackageOpen size={16} />}>Sản phẩm</AdminNav>
-            <AdminNav active={section === 'inventory'} onClick={() => setSection('inventory')} icon={<Boxes size={16} />}>Kho hàng</AdminNav>
-            <AdminNav active={section === 'configuration'} onClick={() => setSection('configuration')} icon={<Settings2 size={16} />}>Bot & thanh toán</AdminNav>
-          </nav>
-        </div>
       </header>
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mx-auto grid max-w-[1500px] gap-6 px-4 py-5 sm:px-6 lg:grid-cols-[240px_minmax(0,1fr)] lg:py-7">
+        <AdminSidebar section={section} navigate={navigate} />
+        <div className="min-w-0">
         {message && <div role="status" className="mb-5 flex items-start justify-between gap-3 rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-sm text-indigo-100"><span>{message}</span><button type="button" onClick={() => setMessage('')} className="text-indigo-200 hover:text-white" aria-label="Đóng thông báo">×</button></div>}
 
-        {section === 'dashboard' && <OperationsDashboard authorized={authorized} setMessage={setMessage} onOpenCatalog={() => setSection('catalog')} onOpenInventory={() => setSection('inventory')} />}
+        {(['dashboard', 'orders', 'deposits'] as AdminSection[]).includes(section) && <OperationsDashboard
+          view={section === 'orders' ? 'orders' : section === 'deposits' ? 'deposits' : 'overview'}
+          authorized={authorized} setMessage={setMessage}
+          onOpenCatalog={() => navigate('products')} onOpenInventory={() => navigate('inventory')}
+          onOpenOrders={() => navigate('orders')} onOpenDeposits={() => navigate('deposits')} />}
 
-        {section === 'catalog' && <section className="space-y-6">
-          <PageHeading eyebrow="Danh mục & sản phẩm" title="Tạo sản phẩm, gán danh mục và quản lý tồn kho" description="Đi từ trên xuống: tạo danh mục → tạo sản phẩm → qua mục Kho hàng để nhập tài khoản." />
+        {(['users', 'ledger', 'audit'] as AdminSection[]).includes(section) && <ManagementHub
+          view={section as 'users' | 'ledger' | 'audit'} authorized={authorized} setMessage={setMessage} />}
+
+        {section === 'categories' && <section className="space-y-6">
+          <PageHeading eyebrow="Hàng hóa" title="Quản lý danh mục" description="Tổ chức sản phẩm theo nhóm để khách tìm nhanh hơn trên Telegram." />
           <CategoryManager categories={categories} authorized={authorized} reload={loadCategories} setMessage={setMessage} />
+        </section>}
+
+        {section === 'products' && <section className="space-y-6">
+          <PageHeading eyebrow="Hàng hóa" title="Quản lý sản phẩm" description="Tạo, chỉnh sửa, gán danh mục và kiểm soát trạng thái bán của từng sản phẩm." />
           <ProductManager products={products} categories={categories} pagination={pagination} authorized={authorized}
-            reload={loadProducts} selectProduct={(id) => { setProductId(id); setSection('inventory'); }} setMessage={setMessage} onPageChange={setProductPage} />
+            reload={loadProducts} selectProduct={(id) => { setProductId(id); navigate('inventory'); }} setMessage={setMessage} onPageChange={setProductPage} />
         </section>}
 
         {section === 'inventory' && <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
@@ -362,9 +386,8 @@ export default function AdminPage() {
           </aside>
         </section>}
 
-        {section === 'configuration' && <section className="space-y-6">
-          <PageHeading eyebrow="Cấu hình" title="Bot Telegram và nhận tiền" description="Lưu token, chỉnh lời chào /start và tạo QR nạp tiền ngay trên web — không cần build lại ứng dụng." />
-          <div className="grid gap-6 xl:grid-cols-2">
+        {section === 'bot' && <section className="space-y-6">
+          <PageHeading eyebrow="Kênh bán hàng" title="Bot Telegram" description="Kiểm tra trạng thái bot, đổi token và chỉnh lời chào /start mà không cần deploy lại." />
           <Panel icon={<Bot />} title="Bot Telegram" subtitle="Đổi token đã mã hóa; bot tự nạp lại cấu hình.">
             {botConfig && <div className="mb-4 rounded-xl bg-slate-950 p-3 text-xs text-slate-300">
               <div className="flex items-center justify-between"><span>Trạng thái</span><span className="text-emerald-400">{botConfig.configured ? 'Đã cấu hình' : 'Chưa cấu hình'}</span></div>
@@ -389,6 +412,10 @@ export default function AdminPage() {
             {botMessage && <div role="status" className={`mt-4 rounded-xl border p-3 text-sm ${botMessageKind === 'error' ? 'border-rose-500/30 bg-rose-500/10 text-rose-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'}`}>{botMessage}</div>}
             <p className="mt-3 text-xs leading-5 text-slate-500">Token được kiểm tra với Telegram, mã hóa AES-256-GCM và không bao giờ hiển thị lại dưới dạng đầy đủ.</p>
           </Panel>
+        </section>}
+
+        {section === 'payments' && <section className="space-y-6">
+          <PageHeading eyebrow="Thanh toán" title="Nạp tiền & VietQR" description="Quản lý tài khoản nhận tiền, Cake callback và xem trước mã QR của shop." />
           <Panel icon={<QrCode />} title="Nạp tiền & VietQR" subtitle="Nhập token API ngân hàng và thông tin tài khoản để tạo Quick Link QR.">
             <form onSubmit={saveBankConfig} className="space-y-4">
               <div><label className="label">TOKEN_API_BANK</label><input className="input font-mono" type="password" autoComplete="off" value={bankToken}
@@ -410,8 +437,11 @@ export default function AdminPage() {
               <button type="submit" disabled={botBusy} className="button-primary w-full">{botBusy ? 'Đang lưu…' : 'Lưu cấu hình ngân hàng'}</button>
             </form>
           </Panel>
-          </div>
-          <Panel icon={<Settings2 />} title="Cấu hình runtime — không cần deploy lại" subtitle="Các endpoint và token QStash được lưu trong MongoDB; giá trị bí mật được mã hóa trước khi lưu.">
+        </section>}
+
+        {section === 'system' && <section className="space-y-6">
+          <PageHeading eyebrow="Hạ tầng" title="Runtime & kết nối" description="Cấu hình endpoint Telegram, QStash và các địa chỉ serverless dùng trong production." />
+          <Panel icon={<ServerCog />} title="Cấu hình runtime — không cần deploy lại" subtitle="Các endpoint và token QStash được lưu trong MongoDB; giá trị bí mật được mã hóa trước khi lưu.">
             <form onSubmit={saveRuntimeConfig} className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
                 <div><label className="label">Tên shop</label><input className="input" value={runtimeConfig.shopName}
@@ -423,7 +453,7 @@ export default function AdminPage() {
                 <div><label className="label">Telegram webhook URL</label><input className="input font-mono text-xs" value={runtimeConfig.telegramWebhookUrl}
                   onChange={(event) => setRuntimeConfig((current) => ({ ...current, telegramWebhookUrl: event.target.value }))} placeholder="https://shop.vercel.app/api/telegram/webhook" /></div>
                 <div><label className="label">QStash URL</label><input className="input font-mono text-xs" value={runtimeConfig.qstashUrl}
-                  onChange={(event) => setRuntimeConfig((current) => ({ ...current, qstashUrl: event.target.value }))} placeholder="https://qstash-us-east-1.upstash.io" /></div>
+                  onChange={(event) => setRuntimeConfig((current) => ({ ...current, qstashUrl: event.target.value }))} placeholder="https://qstash.upstash.io" /></div>
                 <div><label className="label">Task base URL</label><input className="input font-mono text-xs" value={runtimeConfig.taskBaseUrl}
                   onChange={(event) => setRuntimeConfig((current) => ({ ...current, taskBaseUrl: event.target.value }))} placeholder="https://shop.vercel.app" /></div>
               </div>
@@ -440,6 +470,7 @@ export default function AdminPage() {
             </form>
           </Panel>
         </section>}
+        </div>
       </div>
     </main>
   );
@@ -454,8 +485,38 @@ function Login(props: { email: string; password: string; busy: boolean; message:
   </form></main>;
 }
 
-function AdminNav({ active, icon, children, onClick }: { active: boolean; icon: React.ReactNode; children: React.ReactNode; onClick(): void }) {
-  return <button type="button" onClick={onClick} className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition ${active ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-950/50' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}>{icon}{children}</button>;
+function AdminSidebar({ section, navigate }: { section: AdminSection; navigate(next: AdminSection): void }) {
+  const groups: Array<{ label: string; items: Array<{ id: AdminSection; label: string; icon: React.ReactNode }> }> = [
+    { label: 'Vận hành', items: [
+      { id: 'dashboard', label: 'Tổng quan', icon: <LayoutDashboard size={17} /> },
+      { id: 'orders', label: 'Đơn hàng', icon: <ShoppingCart size={17} /> },
+      { id: 'deposits', label: 'Lịch sử nạp', icon: <WalletCards size={17} /> },
+      { id: 'users', label: 'Khách hàng', icon: <Users size={17} /> },
+    ] },
+    { label: 'Hàng hóa', items: [
+      { id: 'categories', label: 'Danh mục', icon: <Tags size={17} /> },
+      { id: 'products', label: 'Sản phẩm', icon: <Package size={17} /> },
+      { id: 'inventory', label: 'Kho hàng', icon: <Boxes size={17} /> },
+    ] },
+    { label: 'Kiểm soát', items: [
+      { id: 'ledger', label: 'Sổ cái ví', icon: <CircleDollarSign size={17} /> },
+      { id: 'audit', label: 'Nhật ký & tracing', icon: <Activity size={17} /> },
+    ] },
+    { label: 'Cấu hình', items: [
+      { id: 'bot', label: 'Bot Telegram', icon: <Bot size={17} /> },
+      { id: 'payments', label: 'Thanh toán', icon: <QrCode size={17} /> },
+      { id: 'system', label: 'Runtime & QStash', icon: <ServerCog size={17} /> },
+    ] },
+  ];
+  const items = groups.flatMap((group) => group.items);
+  return <aside className="rounded-2xl border border-slate-800 bg-slate-900/80 p-3 shadow-xl lg:sticky lg:top-24 lg:self-start">
+    <label className="flex items-center gap-3 lg:hidden"><ListChecks size={18} className="shrink-0 text-indigo-300" /><span className="sr-only">Chọn chức năng quản trị</span><select value={section} onChange={(event) => navigate(event.target.value as AdminSection)} className="input h-11 flex-1 py-2">{items.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+    <div className="hidden lg:block"><div className="mb-3 flex items-center gap-2 px-2 py-2 text-sm font-medium text-slate-200"><ListChecks size={17} className="text-indigo-300" />Chức năng quản trị</div>
+    <nav className="space-y-4" aria-label="Điều hướng quản trị">
+      {groups.map((group) => <div key={group.label}><p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">{group.label}</p><div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-1">{group.items.map((item) => <button key={item.id} type="button" onClick={() => navigate(item.id)} className={`flex min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${section === item.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-950/50' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}><span className="shrink-0">{item.icon}</span><span className="truncate">{item.label}</span></button>)}</div></div>)}
+    </nav>
+    </div>
+  </aside>;
 }
 
 function PageHeading({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) {
@@ -528,6 +589,26 @@ function apiErrorMessage(body: unknown, fallback: string) {
   const value = body.message;
   if (Array.isArray(value)) return value.filter((message): message is string => typeof message === 'string').join('. ') || fallback;
   return typeof value === 'string' ? value : fallback;
+}
+
+function adminSectionFromLocation(): AdminSection {
+  if (typeof window === 'undefined') return 'dashboard';
+  const value = new URL(window.location.href).searchParams.get('view');
+  const sections: AdminSection[] = ['dashboard', 'orders', 'deposits', 'users', 'categories', 'products', 'inventory', 'ledger', 'audit', 'bot', 'payments', 'system'];
+  return sections.includes(value as AdminSection) ? value as AdminSection : 'dashboard';
+}
+
+function runtimeWithPublicDefaults(config: RuntimeConfig): RuntimeConfig {
+  if (typeof window === 'undefined') return config;
+  const origin = window.location.origin.replace(/\/+$/, '');
+  const productionOrigin = origin.startsWith('https://');
+  return {
+    ...config,
+    apiUrl: productionOrigin && !config.apiUrl.startsWith('https://') ? origin : config.apiUrl || origin,
+    telegramWebhookUrl: config.telegramWebhookUrl || `${origin}/api/telegram/webhook`,
+    qstashUrl: config.qstashUrl || 'https://qstash.upstash.io',
+    taskBaseUrl: config.taskBaseUrl || origin,
+  };
 }
 
 async function readApiBody(response: Response): Promise<unknown> {

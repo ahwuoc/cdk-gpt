@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsDateString, IsIn, IsInt, IsMongoId, IsOptional, IsString, Length, Max, Min } from 'class-validator';
-import { DeliveryStatus, OrderStatus, PaymentRequestStatus } from '@store/shared';
+import { DeliveryStatus, OrderStatus, PaymentRequestStatus, UserStatus, WalletTransactionType } from '@store/shared';
 
 class PaginatedHistoryQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1)
@@ -42,4 +42,34 @@ export class DepositHistoryQueryDto extends PaginatedHistoryQueryDto {
 
   @IsOptional() @IsString() @Length(1, 50)
   provider?: string;
+}
+
+export class UserHistoryQueryDto extends PaginatedHistoryQueryDto {
+  @IsOptional() @IsIn(Object.values(UserStatus))
+  status?: typeof UserStatus[keyof typeof UserStatus];
+}
+
+export class WalletHistoryQueryDto extends PaginatedHistoryQueryDto {
+  @IsOptional() @IsMongoId()
+  userId?: string;
+
+  @IsOptional() @IsIn(Object.values(WalletTransactionType))
+  type?: typeof WalletTransactionType[keyof typeof WalletTransactionType];
+
+  @IsOptional() @IsIn(['USER', 'ADMIN', 'SYSTEM', 'WEBHOOK'])
+  actorType?: 'USER' | 'ADMIN' | 'SYSTEM' | 'WEBHOOK';
+}
+
+export class AuditHistoryQueryDto extends PaginatedHistoryQueryDto {
+  @IsOptional() @IsIn(['ADMIN', 'USER', 'SYSTEM'])
+  actorType?: 'ADMIN' | 'USER' | 'SYSTEM';
+
+  @IsOptional() @IsString() @Length(1, 100)
+  action?: string;
+
+  @IsOptional() @IsString() @Length(1, 100)
+  resourceType?: string;
+
+  @IsOptional() @IsString() @Length(1, 128)
+  requestId?: string;
 }

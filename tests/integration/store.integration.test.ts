@@ -30,6 +30,7 @@ import { DeliveryRecoveryService } from '../../apps/api/src/delivery/delivery-re
 import { BotConfigService } from '../../apps/api/src/bot-config/bot-config.service';
 import { ProductService } from '../../apps/api/src/product/product.service';
 import { SaveProductDto } from '../../apps/api/src/product/product.dto';
+import { AnalyticsService } from '../../apps/api/src/analytics/analytics.service';
 
 process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef';
 process.env.PAYLOAD_HASH_KEY = 'abcdef0123456789abcdef0123456789';
@@ -58,6 +59,8 @@ function purchaseService() {
 }
 function walletService() { return new WalletService(mongoose.connection, userRepository(), walletRepository()); }
 function paymentService() { return new PaymentService(mongoose.connection, PaymentRequestModel, walletService()); }
+function analyticsService() { return new AnalyticsService(OrderModel, PaymentRequestModel, UserModel, ProductModel,
+  InventoryItemModel, WalletTransactionModel, AuditLogModel); }
 
 async function fixture(stock = 1, balance = 1000, purchaseLimit = 0) {
   const adminId = new Types.ObjectId();
@@ -173,6 +176,28 @@ integration('digital store on a MongoDB replica set', () => {
     expect((await UserModel.findById(user._id))!.walletBalance).toBe(3_000);
     expect(await PaymentRequestModel.countDocuments({ providerReference: '479740339', status: PaymentRequestStatus.APPROVED })).toBe(1);
     expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+  });
+
+  test('admin history pages expose users, wallet ledger, and redacted audit traces', async () => {
+    const { user, adminId } = await fixture(0, 500);
+    user.displayName = 'Trace Customer'; await user.save();
+    await WalletTransactionModel.create({ userId: user._id, balanceBefore: 500, balanceAfter: 700, amount: 200,
+      type: 'ADMIN_CREDIT', reason: 'History test credit', referenceType: 'USER', referenceId: user._id,
+      idempotencyKey: 'history-test-credit', actorType: 'ADMIN', actorId: adminId, metadata: {} });
+    await AuditLogModel.create({ actorType: 'ADMIN', actorId: adminId, action: 'HISTORY_TESTED', resourceType: 'User',
+      resourceId: user._id, requestId: 'trace-history-test', metadata: {
+        token: 'must-not-leak', authorization: 'Bearer secret', apiKey: 'private-api-key',
+        nested: { credential: 'private-credential' }, safe: 'visible',
+      } });
+    const analytics = analyticsService();
+    const users = await analytics.users({ page: 1, limit: 20, search: user.telegramId });
+    const ledger = await analytics.walletTransactions({ page: 1, limit: 20, search: 'History test' });
+    const traces = await analytics.auditLogs({ page: 1, limit: 20, requestId: 'trace-history-test' });
+    expect(users.items).toHaveLength(1); expect(users.items[0]?.walletBalance).toBe(500);
+    expect(ledger.items).toHaveLength(1); expect(ledger.items[0]?.idempotencyKey).toBe('history-test-credit');
+    expect(traces.items).toHaveLength(1);
+    expect(traces.items[0]?.metadata).toEqual({ token: '[REDACTED]', authorization: '[REDACTED]',
+      apiKey: '[REDACTED]', nested: { credential: '[REDACTED]' }, safe: 'visible' });
   });
 
   test('5. rerunning a completed delivery job does not resend or resell', async () => {

@@ -168,6 +168,10 @@ Worker/task claim order, giải mã trong memory, render template rồi gửi đ
 - `orders.delivery_recover`
 - `bot.manage`
 - `products.manage`
+- `analytics.read`
+- `users.read`
+- `wallet.read`
+- `audit.read`
 
 Delivery retry được cấu hình bằng `DELIVERY_ATTEMPTS` và `DELIVERY_BACKOFF_MS`. BullMQ bắt buộc sử dụng engine Redis tương thích IORedis ở bên trong; ứng dụng không khởi tạo IORedis trực tiếp vì BullMQ chưa hỗ trợ `Bun.RedisClient` làm connection adapter.
 

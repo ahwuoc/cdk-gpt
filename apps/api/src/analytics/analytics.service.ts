@@ -3,12 +3,12 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { FilterQuery, Model, PipelineStage, Types as MongooseTypes } from 'mongoose';
 import {
-  InventoryItem, Order, PaymentRequest, Product, User,
+  AuditLog, InventoryItem, Order, PaymentRequest, Product, User, WalletTransaction,
 } from '@store/database';
 import {
   DeliveryStatus, InventoryStatus, OrderStatus, PaymentRequestStatus, ProductStatus,
 } from '@store/shared';
-import { DepositHistoryQueryDto, OrderHistoryQueryDto } from './analytics.dto';
+import { AuditHistoryQueryDto, DepositHistoryQueryDto, OrderHistoryQueryDto, UserHistoryQueryDto, WalletHistoryQueryDto } from './analytics.dto';
 
 const RECENT_ACTIVITY_LIMIT = 8;
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1_000;
@@ -56,6 +56,25 @@ interface DepositHistoryRecord {
   user?: JoinedUser | null;
 }
 
+interface UserHistoryRecord extends User { _id: MongooseTypes.ObjectId; }
+
+interface WalletHistoryRecord extends WalletTransaction {
+  _id: MongooseTypes.ObjectId;
+  user?: JoinedUser | null;
+}
+
+interface JoinedAdmin {
+  _id: MongooseTypes.ObjectId;
+  username?: string;
+  email?: string;
+}
+
+interface AuditHistoryRecord extends AuditLog {
+  _id: MongooseTypes.ObjectId;
+  adminActor?: JoinedAdmin | null;
+  userActor?: JoinedUser | null;
+}
+
 interface FacetResult<T> {
   items: T[];
   meta: Array<{ total: number }>;
@@ -72,6 +91,8 @@ export class AnalyticsService {
     @InjectModel('User') private readonly userModel: Model<User>,
     @InjectModel('Product') private readonly productModel: Model<Product>,
     @InjectModel('InventoryItem') private readonly inventoryModel: Model<InventoryItem>,
+    @InjectModel('WalletTransaction') private readonly walletTransactionModel: Model<WalletTransaction>,
+    @InjectModel('AuditLog') private readonly auditLogModel: Model<AuditLog>,
   ) {}
 
   async summary() {
@@ -132,13 +153,7 @@ export class AnalyticsService {
     if (query.deliveryStatus) match.deliveryStatus = query.deliveryStatus;
     this.addCreatedAtRange(match, query.from, query.to);
 
-    const pipeline = this.orderJoinPipeline(match, query.search);
-    pipeline.push({
-      $facet: {
-        items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit }],
-        meta: [{ $count: 'total' }],
-      },
-    });
+    const pipeline = this.orderJoinPipeline(match, query.search, page, limit);
     const [result] = await this.orderModel.aggregate<FacetResult<OrderHistoryRecord>>(pipeline).exec();
     const total = result?.meta[0]?.total ?? 0;
     return {
@@ -159,13 +174,7 @@ export class AnalyticsService {
     if (query.provider) match.provider = query.provider.trim();
     this.addCreatedAtRange(match, query.from, query.to);
 
-    const pipeline = this.depositJoinPipeline(match, query.search);
-    pipeline.push({
-      $facet: {
-        items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit }],
-        meta: [{ $count: 'total' }],
-      },
-    });
+    const pipeline = this.depositJoinPipeline(match, query.search, page, limit);
     const [result] = await this.paymentRequestModel.aggregate<FacetResult<DepositHistoryRecord>>(pipeline).exec();
     const total = result?.meta[0]?.total ?? 0;
     return {
@@ -177,39 +186,140 @@ export class AnalyticsService {
     };
   }
 
-  private orderJoinPipeline(match: FilterQuery<Order>, search?: string): PipelineStage[] {
+  async users(query: UserHistoryQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const match: FilterQuery<User> = { deletedAt: null };
+    if (query.status) match.status = query.status;
+    this.addCreatedAtRange(match, query.from, query.to);
+    const regex = searchRegex(query.search);
+    if (regex) Object.assign(match, { $or: [
+      { telegramId: regex }, { username: regex }, { displayName: regex }, { referralCode: regex },
+    ] });
+    const [result] = await this.userModel.aggregate<FacetResult<UserHistoryRecord>>([
+      { $match: match },
+      { $facet: {
+        items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit }],
+        meta: [{ $count: 'total' }],
+      } },
+    ]).exec();
+    const total = result?.meta[0]?.total ?? 0;
+    return {
+      items: (result?.items ?? []).map((user) => ({
+        id: user._id.toString(), telegramId: user.telegramId, username: user.username ?? null,
+        displayName: user.displayName ?? null, status: user.status, walletBalance: user.walletBalance,
+        referralCode: user.referralCode, purchaseCount: user.purchaseCount, createdAt: user.createdAt, updatedAt: user.updatedAt,
+      })),
+      page, limit, total, totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async walletTransactions(query: WalletHistoryQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const match: FilterQuery<WalletTransaction> = {};
+    if (query.userId) match.userId = new Types.ObjectId(query.userId);
+    if (query.type) match.type = query.type;
+    if (query.actorType) match.actorType = query.actorType;
+    this.addCreatedAtRange(match, query.from, query.to);
+    const pipeline: PipelineStage[] = [];
+    if (Object.keys(match).length) pipeline.push({ $match: match });
+    const joins = userJoinStages();
+    const regex = searchRegex(query.search);
+    if (regex) pipeline.push(...joins, { $match: { $or: [
+        { reason: regex }, { idempotencyKey: regex }, { referenceType: regex },
+        { 'user.displayName': regex }, { 'user.username': regex }, { 'user.telegramId': regex },
+      ] } });
+    pipeline.push({ $facet: {
+      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
+        ...(!regex ? joins : [])],
+      meta: [{ $count: 'total' }],
+    } });
+    const [result] = await this.walletTransactionModel.aggregate<FacetResult<WalletHistoryRecord>>(pipeline).exec();
+    const total = result?.meta[0]?.total ?? 0;
+    return {
+      items: (result?.items ?? []).map((entry) => ({
+        id: entry._id.toString(), amount: entry.amount, balanceBefore: entry.balanceBefore, balanceAfter: entry.balanceAfter,
+        type: entry.type, reason: entry.reason, referenceType: entry.referenceType,
+        referenceId: entry.referenceId?.toString() ?? null, idempotencyKey: entry.idempotencyKey,
+        actorType: entry.actorType, actorId: entry.actorId?.toString() ?? null, createdAt: entry.createdAt,
+        user: toUserIdentifier(entry.user),
+      })),
+      page, limit, total, totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async auditLogs(query: AuditHistoryQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const match: FilterQuery<AuditLog> = {};
+    if (query.actorType) match.actorType = query.actorType;
+    if (query.action) match.action = query.action.trim();
+    if (query.resourceType) match.resourceType = query.resourceType.trim();
+    if (query.requestId) match.requestId = query.requestId.trim();
+    this.addCreatedAtRange(match, query.from, query.to);
+    const pipeline: PipelineStage[] = [];
+    if (Object.keys(match).length) pipeline.push({ $match: match });
+    const joins = auditActorJoinStages();
+    const regex = searchRegex(query.search);
+    if (regex) pipeline.push(...joins, { $match: { $or: [
+        { action: regex }, { resourceType: regex }, { requestId: regex },
+        { 'adminActor.username': regex }, { 'adminActor.email': regex },
+        { 'userActor.displayName': regex }, { 'userActor.username': regex }, { 'userActor.telegramId': regex },
+      ] } });
+    pipeline.push({ $facet: {
+      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
+        ...(!regex ? joins : [])],
+      meta: [{ $count: 'total' }],
+    } });
+    const [result] = await this.auditLogModel.aggregate<FacetResult<AuditHistoryRecord>>(pipeline).exec();
+    const total = result?.meta[0]?.total ?? 0;
+    return {
+      items: (result?.items ?? []).map((entry) => ({
+        id: entry._id.toString(), actorType: entry.actorType, action: entry.action,
+        resourceType: entry.resourceType, resourceId: entry.resourceId?.toString() ?? null,
+        requestId: entry.requestId ?? null, createdAt: entry.createdAt,
+        actor: auditActor(entry), changes: redactSensitive(entry.changes), metadata: redactSensitive(entry.metadata),
+      })),
+      page, limit, total, totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  private orderJoinPipeline(match: FilterQuery<Order>, search: string | undefined, page: number, limit: number): PipelineStage[] {
     const pipeline: PipelineStage[] = [];
     if (Object.keys(match).length > 0) pipeline.push({ $match: match });
-    pipeline.push(
-      { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
-      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
-      { $lookup: { from: 'products', localField: 'productId', foreignField: '_id', as: 'product' } },
-      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-    );
+    const joins = orderJoinStages();
     const regex = searchRegex(search);
     if (regex) {
-      pipeline.push({ $match: { $or: [
+      pipeline.push(...joins, { $match: { $or: [
         { orderCode: regex }, { 'user.displayName': regex }, { 'user.username': regex }, { 'user.telegramId': regex },
         { 'product.name': regex }, { 'product.slug': regex },
       ] } });
     }
+    pipeline.push({ $facet: {
+      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
+        ...(!regex ? joins : [])],
+      meta: [{ $count: 'total' }],
+    } });
     return pipeline;
   }
 
-  private depositJoinPipeline(match: FilterQuery<PaymentRequest>, search?: string): PipelineStage[] {
+  private depositJoinPipeline(match: FilterQuery<PaymentRequest>, search: string | undefined, page: number, limit: number): PipelineStage[] {
     const pipeline: PipelineStage[] = [];
     if (Object.keys(match).length > 0) pipeline.push({ $match: match });
-    pipeline.push(
-      { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
-      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
-    );
+    const joins = userJoinStages();
     const regex = searchRegex(search);
     if (regex) {
-      pipeline.push({ $match: { $or: [
+      pipeline.push(...joins, { $match: { $or: [
         { requestCode: regex }, { provider: regex }, { providerReference: regex },
         { 'user.displayName': regex }, { 'user.username': regex }, { 'user.telegramId': regex },
       ] } });
     }
+    pipeline.push({ $facet: {
+      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
+        ...(!regex ? joins : [])],
+      meta: [{ $count: 'total' }],
+    } });
     return pipeline;
   }
 
@@ -260,6 +370,30 @@ export class AnalyticsService {
   }
 }
 
+function userJoinStages(): PipelineStage.FacetPipelineStage[] {
+  return [
+    { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+    { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+  ];
+}
+
+function orderJoinStages(): PipelineStage.FacetPipelineStage[] {
+  return [
+    ...userJoinStages(),
+    { $lookup: { from: 'products', localField: 'productId', foreignField: '_id', as: 'product' } },
+    { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+  ];
+}
+
+function auditActorJoinStages(): PipelineStage.FacetPipelineStage[] {
+  return [
+    { $lookup: { from: 'admins', localField: 'actorId', foreignField: '_id', as: 'adminActor' } },
+    { $unwind: { path: '$adminActor', preserveNullAndEmptyArrays: true } },
+    { $lookup: { from: 'users', localField: 'actorId', foreignField: '_id', as: 'userActor' } },
+    { $unwind: { path: '$userActor', preserveNullAndEmptyArrays: true } },
+  ];
+}
+
 function toOrderHistoryItem(order: OrderHistoryRecord) {
   return {
     id: order._id.toString(),
@@ -307,6 +441,23 @@ function toUserIdentifier(user?: JoinedUser | null) {
 function toProductIdentifier(product?: JoinedProduct | null) {
   if (!product) return null;
   return { id: product._id.toString(), name: product.name ?? null, slug: product.slug ?? null };
+}
+
+function auditActor(entry: AuditHistoryRecord) {
+  if (entry.adminActor) return { id: entry.adminActor._id.toString(),
+    name: entry.adminActor.username ?? entry.adminActor.email ?? 'Admin', kind: 'ADMIN' };
+  if (entry.userActor) return { id: entry.userActor._id.toString(),
+    name: entry.userActor.displayName ?? entry.userActor.username ?? entry.userActor.telegramId ?? 'User', kind: 'USER' };
+  return entry.actorId ? { id: entry.actorId.toString(), name: entry.actorType, kind: entry.actorType } : null;
+}
+
+function redactSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (!value || typeof value !== 'object') return value ?? null;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+    key, /token|secret|password|passphrase|payload|encrypted|authorization|cookie|signature|credential|api[-_]?key|private[-_]?key|email|login/i.test(key)
+      ? '[REDACTED]' : redactSensitive(item),
+  ]));
 }
 
 function transferContent(metadata?: Record<string, unknown>) {

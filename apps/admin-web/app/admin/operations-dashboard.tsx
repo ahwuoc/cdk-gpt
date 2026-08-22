@@ -1,9 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import {
   ArrowUpRight,
-  Banknote,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -20,7 +19,7 @@ import {
 } from 'lucide-react';
 
 export type AuthorizedRequest = (path: string, init?: RequestInit) => Promise<Response>;
-type HubView = 'overview' | 'orders' | 'deposits';
+export type OperationsView = 'overview' | 'orders' | 'deposits';
 
 interface PageResult<T> {
   items: T[];
@@ -78,20 +77,24 @@ interface DepositRecord {
 const pageSize = 12;
 const blankPage = <T,>(): PageResult<T> => ({ items: [], page: 1, limit: pageSize, total: 0, totalPages: 0 });
 
-export function OperationsDashboard({ authorized, onOpenCatalog, onOpenInventory, setMessage }: {
+export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInventory, onOpenOrders, onOpenDeposits, setMessage }: {
+  view: OperationsView;
   authorized: AuthorizedRequest;
   onOpenCatalog(): void;
   onOpenInventory(): void;
+  onOpenOrders(): void;
+  onOpenDeposits(): void;
   setMessage(message: string): void;
 }) {
-  const [view, setView] = useState<HubView>('overview');
   const [summary, setSummary] = useState<Summary | null>(null);
   const [orders, setOrders] = useState<PageResult<OrderRecord>>(blankPage);
   const [deposits, setDeposits] = useState<PageResult<DepositRecord>>(blankPage);
   const [summaryBusy, setSummaryBusy] = useState(true);
   const [historyBusy, setHistoryBusy] = useState(false);
-  const [ordersQuery, setOrdersQuery] = useState({ search: '', status: '', from: '', to: '', page: 1 });
-  const [depositsQuery, setDepositsQuery] = useState({ search: '', status: '', provider: '', from: '', to: '', page: 1 });
+  const [ordersQuery, setOrdersQuery] = useState({ search: '', userId: '', status: '', from: '', to: '', page: 1 });
+  const [depositsQuery, setDepositsQuery] = useState({ search: '', userId: '', status: '', provider: '', from: '', to: '', page: 1 });
+  const historyRequest = useRef<AbortController | null>(null);
+  const urlFilterApplied = useRef(false);
 
   const loadSummary = useCallback(async (quiet = false) => {
     if (!quiet) setSummaryBusy(true);
@@ -108,43 +111,60 @@ export function OperationsDashboard({ authorized, onOpenCatalog, onOpenInventory
   }, [authorized, setMessage]);
 
   const loadOrders = useCallback(async () => {
+    historyRequest.current?.abort();
+    const controller = new AbortController();
+    historyRequest.current = controller;
     setHistoryBusy(true);
     try {
       const query = paramsFor({ ...ordersQuery, limit: String(pageSize) });
-      const response = await authorized(`/admin/orders?${query}`);
+      const response = await authorized(`/admin/orders?${query}`, { signal: controller.signal });
       const body = await readApiBody<PageResult<OrderRecord>>(response);
       if (!response.ok) throw new Error(messageFromBody(body, 'Không thể tải lịch sử đơn hàng.'));
-      setOrders(normalizePage(body));
+      if (!controller.signal.aborted) setOrders(normalizePage(body));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Không thể tải lịch sử đơn hàng.');
+      if (!(error instanceof Error && error.name === 'AbortError')) setMessage(error instanceof Error ? error.message : 'Không thể tải lịch sử đơn hàng.');
     } finally {
-      setHistoryBusy(false);
+      if (historyRequest.current === controller) { historyRequest.current = null; setHistoryBusy(false); }
     }
   }, [authorized, ordersQuery, setMessage]);
 
   const loadDeposits = useCallback(async () => {
+    historyRequest.current?.abort();
+    const controller = new AbortController();
+    historyRequest.current = controller;
     setHistoryBusy(true);
     try {
       const query = paramsFor({ ...depositsQuery, limit: String(pageSize) });
-      const response = await authorized(`/admin/deposits?${query}`);
+      const response = await authorized(`/admin/deposits?${query}`, { signal: controller.signal });
       const body = await readApiBody<PageResult<DepositRecord>>(response);
       if (!response.ok) throw new Error(messageFromBody(body, 'Không thể tải lịch sử nạp tiền.'));
-      setDeposits(normalizePage(body));
+      if (!controller.signal.aborted) setDeposits(normalizePage(body));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Không thể tải lịch sử nạp tiền.');
+      if (!(error instanceof Error && error.name === 'AbortError')) setMessage(error instanceof Error ? error.message : 'Không thể tải lịch sử nạp tiền.');
     } finally {
-      setHistoryBusy(false);
+      if (historyRequest.current === controller) { historyRequest.current = null; setHistoryBusy(false); }
     }
   }, [authorized, depositsQuery, setMessage]);
 
-  useEffect(() => { queueMicrotask(() => void loadSummary()); }, [loadSummary]);
+  useEffect(() => {
+    if (urlFilterApplied.current) return;
+    urlFilterApplied.current = true;
+    const userId = new URL(window.location.href).searchParams.get('userId')?.trim();
+    if (!userId) return;
+    queueMicrotask(() => {
+      setOrdersQuery((current) => ({ ...current, userId, page: 1 }));
+      setDepositsQuery((current) => ({ ...current, userId, page: 1 }));
+    });
+  }, []);
+
+  useEffect(() => { if (view === 'overview') queueMicrotask(() => void loadSummary()); }, [loadSummary, view]);
   useEffect(() => {
     if (view === 'overview') return;
     const timer = window.setTimeout(() => {
       if (view === 'orders') void loadOrders();
       if (view === 'deposits') void loadDeposits();
     }, 250);
-    return () => window.clearTimeout(timer);
+    return () => { window.clearTimeout(timer); historyRequest.current?.abort(); };
   }, [loadDeposits, loadOrders, view]);
 
   const stats = useMemo(() => [
@@ -155,7 +175,7 @@ export function OperationsDashboard({ authorized, onOpenCatalog, onOpenInventory
   ], [summary]);
 
   return <section className="space-y-5" aria-label="Vận hành cửa hàng">
-    <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/50 p-5 shadow-xl sm:p-6">
+    {view === 'overview' && <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/50 p-5 shadow-xl sm:p-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <p className="text-sm font-medium text-indigo-300">Trung tâm vận hành</p>
@@ -174,19 +194,13 @@ export function OperationsDashboard({ authorized, onOpenCatalog, onOpenInventory
         <QuickAction icon={<Coins size={18} />} title="Nhập hàng vào kho" description={`${number(summary?.inventory?.available)} tài khoản còn sẵn`} action="Nhập kho" onClick={onOpenInventory} />
         <QuickAction icon={<TriangleAlert size={18} />} title="Cần chú ý" description={`${number(summary?.inventory?.lowStock)} sản phẩm sắp hết hàng`} action="Kiểm tra kho" onClick={onOpenCatalog} danger={Number(summary?.inventory?.lowStock ?? 0) > 0} />
       </div>
-    </div>
-
-    <div className="flex gap-2 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900 p-2" role="tablist" aria-label="Thống kê và lịch sử">
-      <HubTab active={view === 'overview'} onClick={() => setView('overview')} icon={<Banknote size={16} />}>Tổng quan</HubTab>
-      <HubTab active={view === 'orders'} onClick={() => setView('orders')} icon={<ClipboardList size={16} />}>Đơn hàng</HubTab>
-      <HubTab active={view === 'deposits'} onClick={() => setView('deposits')} icon={<WalletCards size={16} />}>Lịch sử nạp</HubTab>
-    </div>
+    </div>}
 
     {view === 'overview' && <Overview
       summary={summary}
       loading={summaryBusy}
-      onOrders={() => setView('orders')}
-      onDeposits={() => setView('deposits')}
+      onOrders={onOpenOrders}
+      onDeposits={onOpenDeposits}
     />}
     {view === 'orders' && <OrdersHistory
       data={orders}
@@ -219,11 +233,12 @@ function Overview({ summary, loading, onOrders, onDeposits }: { summary: Summary
 function OrdersHistory({ data, loading, query, setQuery, refresh }: {
   data: PageResult<OrderRecord>;
   loading: boolean;
-  query: { search: string; status: string; from: string; to: string; page: number };
-  setQuery: Dispatch<SetStateAction<{ search: string; status: string; from: string; to: string; page: number }>>;
+  query: { search: string; userId: string; status: string; from: string; to: string; page: number };
+  setQuery: Dispatch<SetStateAction<{ search: string; userId: string; status: string; from: string; to: string; page: number }>>;
   refresh(): Promise<void>;
 }) {
   return <HistoryPanel title="Lịch sử đơn hàng" subtitle="Tìm theo mã đơn, khách hàng hoặc sản phẩm." icon={<ClipboardList size={19} />} loading={loading} refresh={refresh}>
+    {query.userId && <ScopedUserFilter userId={query.userId} clear={() => { clearUrlUserFilter(); setQuery((current) => ({ ...current, userId: '', page: 1 })); }} />}
     <FilterBar>
       <SearchField value={query.search} onChange={(search) => setQuery((current) => ({ ...current, search, page: 1 }))} placeholder="Mã đơn, khách hoặc sản phẩm" />
       <select className="input h-11 py-2" value={query.status} onChange={(event) => setQuery((current) => ({ ...current, status: event.target.value, page: 1 }))} aria-label="Lọc trạng thái đơn hàng">
@@ -246,11 +261,12 @@ function OrdersHistory({ data, loading, query, setQuery, refresh }: {
 function DepositsHistory({ data, loading, query, setQuery, refresh }: {
   data: PageResult<DepositRecord>;
   loading: boolean;
-  query: { search: string; status: string; provider: string; from: string; to: string; page: number };
-  setQuery: Dispatch<SetStateAction<{ search: string; status: string; provider: string; from: string; to: string; page: number }>>;
+  query: { search: string; userId: string; status: string; provider: string; from: string; to: string; page: number };
+  setQuery: Dispatch<SetStateAction<{ search: string; userId: string; status: string; provider: string; from: string; to: string; page: number }>>;
   refresh(): Promise<void>;
 }) {
   return <HistoryPanel title="Lịch sử nạp tiền" subtitle="Theo dõi các yêu cầu nạp và trạng thái đã cộng tiền." icon={<WalletCards size={19} />} loading={loading} refresh={refresh}>
+    {query.userId && <ScopedUserFilter userId={query.userId} clear={() => { clearUrlUserFilter(); setQuery((current) => ({ ...current, userId: '', page: 1 })); }} />}
     <FilterBar>
       <SearchField value={query.search} onChange={(search) => setQuery((current) => ({ ...current, search, page: 1 }))} placeholder="Mã nạp, mã giao dịch hoặc khách" />
       <select className="input h-11 py-2" value={query.status} onChange={(event) => setQuery((current) => ({ ...current, status: event.target.value, page: 1 }))} aria-label="Lọc trạng thái nạp tiền">
@@ -330,10 +346,6 @@ function StatCard({ label, value, today, icon, tone, loading }: { label: string;
   </div>;
 }
 
-function HubTab({ active, onClick, icon, children }: { active: boolean; onClick(): void; icon: ReactNode; children: ReactNode }) {
-  return <button type="button" role="tab" aria-selected={active} onClick={onClick} className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition ${active ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-950/60' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}>{icon}{children}</button>;
-}
-
 function FilterBar({ children }: { children: ReactNode }) { return <div className="mt-5 grid gap-2 md:grid-cols-2 xl:grid-cols-5">{children}</div>; }
 function SearchField({ value, onChange, placeholder }: { value: string; onChange(value: string): void; placeholder: string }) { return <label className="relative md:col-span-2 xl:col-span-1"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-10" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={placeholder} /></label>; }
 function DateField({ label, value, onChange }: { label: string; value: string; onChange(value: string): void }) { return <label className="relative"><CalendarDays size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-9" type="date" value={value} onChange={(event) => onChange(event.target.value)} aria-label={label} /></label>; }
@@ -357,6 +369,8 @@ function StatusBadge({ value, type }: { value: string; type: 'order' | 'deposit'
 
 function EmptyState({ icon, text }: { icon: ReactNode; text: string }) { return <div className="flex min-h-40 flex-col items-center justify-center gap-3 px-4 py-8 text-center text-sm text-slate-500"><span className="text-slate-600">{icon}</span><p>{text}</p></div>; }
 function LoadingRows() { return <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-slate-400"><LoaderCircle size={18} className="animate-spin" />Đang tải dữ liệu…</div>; }
+function ScopedUserFilter({ userId, clear }: { userId: string; clear(): void }) { return <div className="mt-5 flex flex-wrap items-center gap-2 rounded-xl border border-indigo-500/20 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-100"><span>Lịch sử riêng của khách <code>{userId}</code></span><button type="button" onClick={clear} className="rounded-lg bg-slate-950/60 px-2 py-1 text-indigo-200 hover:text-white">Bỏ lọc</button></div>; }
+function clearUrlUserFilter() { const url = new URL(window.location.href); url.searchParams.delete('userId'); window.history.replaceState(window.history.state, '', url); }
 
 function number(value: number | undefined) { return new Intl.NumberFormat('vi-VN').format(value ?? 0); }
 function money(value: number | undefined) { return `${number(value)} đ`; }
