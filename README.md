@@ -108,9 +108,10 @@ Code hỗ trợ hai runtime:
 
 4. Deploy lần đầu, vào `/admin` → **Bot & thanh toán** → **Cấu hình runtime** để lưu tên shop, admin Telegram ID, API URL, Telegram webhook URL, QStash URL/token và task base URL vào MongoDB. QStash token được mã hóa và có thể đổi realtime; để trống token khi sửa lần sau sẽ giữ token cũ. Sau đó lưu Telegram token. API xác minh token, lưu mã hóa và gọi `setWebhook` tới URL vừa lưu. Header secret Telegram được HMAC riêng theo từng bot từ `TELEGRAM_WEBHOOK_SECRET`; khi đổi bot, webhook bot cũ được tắt trước nên update cũ/in-flight không bị xử lý bằng token bot mới.
    Các giá trị thường đổi như `TOKEN_API_BANK` cũng lưu từ form. Chỉ khóa bootstrap (`MONGODB_URI`, `ENCRYPTION_KEY`, JWT, `BOT_API_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, `TASK_QUEUE_SECRET`, `CRON_SECRET`) phải nằm trong Vercel Environment Variables.
-5. Tạo một đơn thử, nhập kho và thử `/start`, nạp tiền, giao hàng. QStash sẽ gọi các route nội bộ có `TASK_QUEUE_SECRET`; không public secret vào frontend.
+5. Trong nhà cung cấp Cake, đặt Webhook Callback là `POST https://<domain>/api/webhooks/bank/cake`, `Content-Type: application/json` và header `signature` bằng đúng `TOKEN_API_BANK` đã lưu. Callback lặp được khử trùng theo `transactionID`; không tạo cron/QStash Schedule để quét giao dịch bank.
+6. Tạo một đơn thử, nhập kho và thử `/start`, nạp tiền, giao hàng. QStash sẽ gọi các route nội bộ có `TASK_QUEUE_SECRET`; không public secret vào frontend.
 
-`/api/internal/cron` quét lịch sử bank, nhả reservation hết hạn và republish delivery bị lỡ sau commit. `vercel.json` dùng lịch `0 0 * * *` (mỗi ngày lúc 00:00 UTC) để deploy được trên **Vercel Hobby**. Muốn auto-credit khoảng một phút mà không nâng Pro, tạo QStash Schedule `* * * * *` gọi `POST https://<domain>/api/internal/cron` với header `Authorization: Bearer $CRON_SECRET`. Nếu không tạo schedule, hãy dùng nút **Kiểm tra tiền**; không thể giữ polling 20 giây thuần Vercel.
+`/api/internal/cron` **không kiểm tra giao dịch bank**. Lịch `0 0 * * *` chỉ chạy bảo trì mỗi ngày lúc 00:00 UTC: nhả reservation hết hạn và republish delivery bị lỡ sau commit, nên tương thích Vercel Hobby. Nút **Kiểm tra tiền** trên bot chỉ đọc trạng thái mới nhất đã được Cake callback cập nhật.
 
 Không deploy `apps/bot/src/main.ts` hay worker Docker lên Vercel: chúng dành cho runtime `server` chạy dài hạn. Sau khi đã test webhook/QStash/cron ở Production, có thể tắt VPS và Redis.
 
@@ -211,9 +212,9 @@ Integration suite khởi tạo MongoDB Replica Set thật bằng `MongoMemoryRep
 - Chạy migration trước khi rollout API mới; chỉ bật một migration job.
 - Với Docker/VPS: tách API, bot/worker và admin-web; scale worker bằng BullMQ concurrency; dùng Redis HA/persistence, TLS, password/ACL và không public port.
 - Với Vercel: dùng `APP_RUNTIME=serverless`, MongoDB Atlas Replica Set, QStash và Telegram webhook; không chạy polling/worker process dài hạn hoặc Redis chỉ để queue.
-- Vercel Pro cho cron mỗi phút; Vercel Hobby cần QStash Schedule/external scheduler hoặc chấp nhận kiểm tra bank thủ công. Không có serverless cron nào bảo đảm polling 20 giây.
+- Cấu hình callback Cake có header `signature`; không dùng timer, Vercel Cron hay QStash Schedule để quét lịch sử giao dịch ngân hàng.
 - Terminate TLS ở load balancer/Nginx, rate-limit login/webhook, verify webhook signature ở edge.
 - Không bake `.env` vào image. Dùng secret manager cho JWT, Telegram, webhook và encryption keys.
-- `TOKEN_API_BANK` là token tùy chọn cho API lịch sử giao dịch ngân hàng; đặt trong secret manager hoặc `.env`, tuyệt đối không commit giá trị thật.
+- `TOKEN_API_BANK` là bí mật dùng để xác thực header `signature` của callback Cake; đặt trong form quản trị hoặc secret manager, tuyệt đối không commit giá trị thật.
 - Theo dõi order `DELIVERY_FAILED`, reservation quá hạn, low stock, queue stalled và transaction abort rate.
 - Backup MongoDB và kiểm thử restore cùng toàn bộ encryption key version còn cần thiết.

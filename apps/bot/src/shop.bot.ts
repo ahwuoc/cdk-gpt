@@ -426,10 +426,7 @@ function isPendingQuantity(value: Record<string, unknown>): value is PendingQuan
 
 function formatMoney(value: number) { return new Intl.NumberFormat('vi-VN').format(value) + ' đ'; }
 function bankPollingHint() {
-  const serverless = isServerlessRuntime();
-  return serverless
-    ? 'Chuyển ĐÚNG số tiền và ĐÚNG nội dung; hệ thống tự kiểm tra theo lịch khoảng 1 phút. Bạn cũng có thể bấm “Kiểm tra tiền” ngay.'
-    : 'Chuyển ĐÚNG số tiền và ĐÚNG nội dung; hệ thống tự cộng tiền trong khoảng 20 giây.';
+  return 'Chuyển ĐÚNG số tiền và ĐÚNG nội dung. Cake sẽ gửi callback và hệ thống tự cộng tiền; nút “Kiểm tra tiền” chỉ làm mới trạng thái.';
 }
 /** Keep one webhook invocation below Vercel's 60-second limit; users can repeat safely. */
 function maximumTelegramPurchaseQuantity() { return isServerlessRuntime() ? 5 : 100; }

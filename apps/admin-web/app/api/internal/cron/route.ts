@@ -5,9 +5,9 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 /**
- * Configure this path from Vercel Cron (Pro, minutely) or an external scheduler.
- * Vercel automatically sends `Authorization: Bearer $CRON_SECRET` when that
- * environment variable is set.
+ * Daily Vercel Hobby maintenance only; bank credit uses the signed Cake
+ * callback and never depends on this route. Vercel automatically sends
+ * `Authorization: Bearer $CRON_SECRET`.
  */
 async function handleCron(request: Request) {
   if (!cronRequestIsAuthorized(request)) return Response.json({ message: 'Unauthorized cron request' }, { status: 401 });

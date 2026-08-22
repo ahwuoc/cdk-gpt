@@ -1,22 +1,17 @@
-import { BadRequestException, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, Model } from 'mongoose';
-import { randomBytes, randomUUID } from 'node:crypto';
-import { ActorType, PaymentRequest, type PaymentRequestDocument, RuntimeLease, WalletReferenceType } from '@store/database';
+import { randomBytes } from 'node:crypto';
+import { ActorType, PaymentRequest, type PaymentRequestDocument, WalletReferenceType } from '@store/database';
 import { PaymentRequestStatus, WalletTransactionType } from '@store/shared';
 import { isMongoDuplicateKey } from '@store/shared';
-import { isServerlessRuntime, loadConfig } from '@store/config';
+import { loadConfig } from '@store/config';
 import { BotConfigService, type RuntimeBankConfig } from '../bot-config/bot-config.service';
 import { WalletService } from '../wallet/wallet.service';
 
 const BANK_PROVIDER = 'BANK_API';
-// Vercel functions are capped at 60 seconds. Leave a small margin so a slow
-// history response cannot make a second instance acquire the same lease while
-// the first invocation is still finalizing its wallet transactions.
-const SERVERLESS_BANK_LEASE_MS = 75_000;
-
-interface BankTransaction {
+export interface BankTransaction {
   transactionID: string | number;
   amount: number | string;
   description?: string;
@@ -24,34 +19,13 @@ interface BankTransaction {
   type?: string;
 }
 
-interface BankPollResult {
-  configured: boolean;
-  examined: number;
-  approved: number;
-}
-
 @Injectable()
-export class PaymentService implements OnModuleInit, OnModuleDestroy {
+export class PaymentService {
   private readonly config = loadConfig();
-  private bankPollTimer?: ReturnType<typeof setInterval>;
-  /** A single shared poll prevents simultaneous button clicks from hitting the provider twice. */
-  private bankPollInFlight?: Promise<BankPollResult>;
 
   constructor(@InjectConnection() private readonly connection: Connection,
     @InjectModel('PaymentRequest') private readonly requests: Model<PaymentRequest>, private readonly wallet: WalletService,
-    @Optional() private readonly bankConfig?: BotConfigService,
-    @Optional() @InjectModel('RuntimeLease') private readonly leases?: Model<RuntimeLease>) {}
-
-  onModuleInit() {
-    // Serverless instances freeze after the HTTP response. A setInterval here
-    // would be unreliable and can keep a function invocation open. The cron
-    // route (and the customer's Check button) calls pollBankHistory instead.
-    if (!this.bankConfig || isServerlessRuntime()) return;
-    void this.pollBankHistory();
-    this.bankPollTimer = setInterval(() => void this.pollBankHistory(), this.config.bankPollSeconds * 1000);
-  }
-
-  onModuleDestroy() { if (this.bankPollTimer) clearInterval(this.bankPollTimer); }
+    @Optional() private readonly bankConfig?: BotConfigService) {}
 
   async create(userId: string, amount: number, provider: string, idempotencyKey: string) {
     if (!Types.ObjectId.isValid(userId) || !Number.isSafeInteger(amount) || amount <= 0) {
@@ -99,68 +73,25 @@ export class PaymentService implements OnModuleInit, OnModuleDestroy {
   async checkBankDeposit(requestId: string, userId: string) {
     if (!Types.ObjectId.isValid(requestId) || !Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid payment request');
     await this.expireBankTopups();
-    await this.pollBankHistory();
     const request = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).lean();
     if (!request) throw new NotFoundException('Payment request not found');
     return { id: request._id.toString(), requestCode: request.requestCode, amount: request.amount,
       status: request.status, transferContent: transferContentFrom(request), expiresAt: expirationFrom(request) };
   }
 
-  async pollBankHistory() {
-    if (!this.bankConfig) return { configured: false, examined: 0, approved: 0 };
-    if (this.bankPollInFlight) return this.bankPollInFlight;
-    const poll = isServerlessRuntime() ? this.runServerlessBankPoll() : this.runBankHistoryPoll();
-    const sharedPoll = poll.finally(() => { this.bankPollInFlight = undefined; });
-    this.bankPollInFlight = sharedPoll;
-    return sharedPoll;
-  }
-
-  private async runServerlessBankPoll(): Promise<BankPollResult> {
-    // Vercel cron/manual check requests can overlap across instances. A Mongo
-    // lease avoids spending the history API quota twice; database idempotency
-    // still remains the final protection against duplicate wallet credit.
-    if (!this.leases) return this.runBankHistoryPoll();
-    const token = randomUUID(); const now = new Date();
-    try {
-      const lease = await this.leases.findOneAndUpdate({ _id: 'bank-history-poll', expiresAt: { $lte: now } }, {
-        $set: { token, expiresAt: new Date(now.getTime() + SERVERLESS_BANK_LEASE_MS) },
-      }, { upsert: true, new: true, setDefaultsOnInsert: true });
-      if (!lease || lease.token !== token) return { configured: true, examined: 0, approved: 0 };
-    } catch (error) {
-      // A competing first upsert receives Mongo's duplicate _id error and did
-      // acquire the lease; it is not an application failure.
-      if (isMongoDuplicateKey(error)) return { configured: true, examined: 0, approved: 0 };
-      throw error;
+  /**
+   * Cake delivers at least once and retries non-2xx responses. Matching and
+   * wallet credit remain transactionally idempotent on transactionID.
+   */
+  async processCakeCallback(transactions: BankTransaction[]) {
+    await this.expireBankTopups();
+    let approved = 0; let incoming = 0;
+    for (const transaction of transactions) {
+      if (String(transaction.type ?? 'IN').toUpperCase() !== 'IN') continue;
+      incoming++;
+      if (await this.processBankTransaction(transaction)) approved++;
     }
-    try { return await this.runBankHistoryPoll(); }
-    finally { await this.leases.updateOne({ _id: 'bank-history-poll', token }, { $set: { expiresAt: new Date() } }); }
-  }
-
-  private async runBankHistoryPoll(): Promise<BankPollResult> {
-    const bankConfig = this.bankConfig;
-    if (!bankConfig) return { configured: false, examined: 0, approved: 0 };
-    try {
-      await this.expireBankTopups();
-      const bank = await bankConfig.getBankConfigForRuntime();
-      if (!bank) return { configured: false, examined: 0, approved: 0 };
-      const hasPendingDeposit = await this.requests.exists({ provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
-        deletedAt: null, 'metadata.expiresAt': { $gt: new Date().toISOString() } });
-      // Do not spend the bank-history API quota when no user is waiting for a deposit.
-      if (!hasPendingDeposit) return { configured: true, examined: 0, approved: 0 };
-      const response = await fetch(`${this.config.bankHistoryApiUrl}/${encodeURIComponent(bank.token)}`, { signal: AbortSignal.timeout(12_000) });
-      if (!response.ok) throw new Error(`Bank history endpoint returned HTTP ${response.status}`);
-      const body = await response.json() as { status?: string; message?: string; transactions?: BankTransaction[] };
-      if (body.status !== 'success' || !Array.isArray(body.transactions)) throw new Error(body.message ?? 'Bank history response is invalid');
-      let approved = 0;
-      for (const transaction of body.transactions) {
-        if (String(transaction.type ?? '').toUpperCase() !== 'IN') continue;
-        if (await this.processBankTransaction(transaction)) approved++;
-      }
-      return { configured: true, examined: body.transactions.length, approved };
-    } catch (error) {
-      console.error({ event: 'bank-history-poll-failed', message: error instanceof Error ? error.message : 'unknown error' });
-      return { configured: true, examined: 0, approved: 0 };
-    }
+    return { status: true, msg: 'OK', examined: transactions.length, incoming, approved };
   }
 
   async approve(requestId: string, adminId: string, idempotencyKey: string) {

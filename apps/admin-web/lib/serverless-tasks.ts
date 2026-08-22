@@ -7,7 +7,6 @@ import { BotConfigService } from '../../api/src/bot-config/bot-config.service';
 import { sharedSecretMatches } from '../../api/src/auth/shared-secret';
 import { DELIVERY_QUEUE, type DeliveryQueueClient } from '../../api/src/delivery/delivery.queue';
 import { InventoryReservationService } from '../../api/src/inventory/inventory-reservation.service';
-import { PaymentService } from '../../api/src/payment/payment.service';
 import { getServerlessApi } from '../../api/src/serverless';
 import { QStashTaskPublisher } from '../../api/src/serverless/qstash';
 import { DeliveryProcessor } from '../../bot/src/delivery.processor';
@@ -81,22 +80,21 @@ export async function processRestockTask(task: StockAlertBatch) {
 }
 
 /**
- * Scheduled maintenance is deliberately idempotent. It handles automatic bank
- * checks, expired reservations, and re-publishes pending deliveries if a task
- * publish acknowledgement was lost after a Mongo transaction committed.
+ * Scheduled maintenance is deliberately idempotent. Bank credit is callback-
+ * driven; this route only releases expired reservations and re-publishes a
+ * delivery if a task acknowledgement was lost after a Mongo transaction.
  */
 export async function runServerlessMaintenance() {
   const app = await getServerlessApi();
-  const payments = app.get(PaymentService);
   const reservations = app.get(InventoryReservationService);
   const queue = app.get<DeliveryQueueClient>(DELIVERY_QUEUE);
-  const [bank, released] = await Promise.all([payments.pollBankHistory(), reservations.releaseExpired(100)]);
+  const released = await reservations.releaseExpired(100);
   const pending = await OrderModel.find({ status: OrderStatus.PENDING_DELIVERY, deliveryStatus: DeliveryStatus.PENDING })
     // Keep the cron below Vercel's 60-second deadline even if QStash is slow.
     // The next minute picks up the next page; queue publishing is idempotent.
     .select('_id').sort({ createdAt: 1 }).limit(PENDING_DELIVERY_RECOVERY_LIMIT).lean();
   const republished = await republishPendingDeliveries(queue, pending.map((order) => order._id.toString()));
-  return { bank, reservations: released, pendingDeliveriesRepublished: republished };
+  return { reservations: released, pendingDeliveriesRepublished: republished };
 }
 
 async function republishPendingDeliveries(queue: DeliveryQueueClient, orderIds: string[]) {

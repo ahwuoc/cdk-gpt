@@ -159,32 +159,20 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await WalletTransactionModel.countDocuments()).toBe(1);
   });
 
-  test('bank polling is single-flight and one bank transaction credits a wallet exactly once', async () => {
+  test('repeated Cake callbacks credit a matching bank deposit exactly once', async () => {
     const { user } = await fixture(0, 0);
     const bankConfig = {
       getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
     } as unknown as BotConfigService;
     const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig);
-    const deposit = await service.createBankDeposit(user._id.toString(), 2_500, 'bank-topup-race-test');
-    let fetchCalls = 0;
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
-      fetchCalls++;
-      return new Response(JSON.stringify({ status: 'success', transactions: [
-        { transactionID: 991122, amount: 2500, description: `TRANSFER ${deposit.transferContent}`, type: 'IN' },
-        { transactionID: 991122, amount: 2500, description: `TRANSFER ${deposit.transferContent}`, type: 'IN' },
-      ] }));
-    }) as unknown as typeof fetch;
-    try {
-      await Promise.all(Array.from({ length: 8 }, () => service.pollBankHistory()));
-      await service.pollBankHistory();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-    expect(fetchCalls).toBe(1);
-    expect((await UserModel.findById(user._id))!.walletBalance).toBe(2_500);
-    expect(await WalletTransactionModel.countDocuments({ userId: user._id })).toBe(1);
-    expect((await PaymentRequestModel.findById(deposit.id))!.status).toBe(PaymentRequestStatus.APPROVED);
+    const deposit = await service.createBankDeposit(user._id.toString(), 3_000, 'cake-callback-deposit');
+    const transaction = { transactionID: '479740339', amount: 3_000,
+      description: `BUI THANH PHUONG ${deposit.transferContent}`, transactionDate: '08/08/2026', type: 'IN' };
+    await Promise.all(Array.from({ length: 5 }, () => service.processCakeCallback([transaction])));
+    await service.processCakeCallback([{ ...transaction, transactionID: '479740340', type: 'OUT' }]);
+    expect((await UserModel.findById(user._id))!.walletBalance).toBe(3_000);
+    expect(await PaymentRequestModel.countDocuments({ providerReference: '479740339', status: PaymentRequestStatus.APPROVED })).toBe(1);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
   });
 
   test('5. rerunning a completed delivery job does not resend or resell', async () => {

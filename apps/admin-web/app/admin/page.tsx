@@ -294,6 +294,8 @@ export default function AdminPage() {
 
   const bankQrUrl = buildBankQrUrl({ bankId, accountNo: bankAccountNo, template: bankTemplate,
     accountName: bankAccountName, amount: bankAmount, description: bankDescription });
+  const cakeCallbackUrl = runtimeConfig.apiUrl.trim()
+    ? `${runtimeConfig.apiUrl.trim().replace(/\/+$/, '')}/api/webhooks/bank/cake` : '';
 
   if (!tokens) return <Login email={email} password={password} busy={busy} message={message} setEmail={setEmail} setPassword={setPassword} submit={login} />;
 
@@ -391,6 +393,11 @@ export default function AdminPage() {
             <form onSubmit={saveBankConfig} className="space-y-4">
               <div><label className="label">TOKEN_API_BANK</label><input className="input font-mono" type="password" autoComplete="off" value={bankToken}
                 onChange={(event) => setBankToken(event.target.value)} placeholder="Để trống nếu giữ token hiện tại" /></div>
+              {cakeCallbackUrl && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+                <p className="text-xs font-medium text-emerald-200">Webhook Callback Cake</p>
+                <code className="mt-2 block break-all text-xs text-slate-300">{cakeCallbackUrl}</code>
+                <p className="mt-2 text-[11px] leading-5 text-slate-500">Cấu hình Method POST, Content-Type application/json và header <code>signature</code> bằng đúng TOKEN_API_BANK. Callback được chống cộng tiền trùng theo transactionID.</p>
+              </div>}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div><label className="label">Mã ngân hàng (BANK_ID)</label><select className="input" value={bankId} onChange={(event) => setBankId(event.target.value)} required><option value="">Chọn ngân hàng</option>{bankOptions.map((bank) => <option key={`${bank.code}-${bank.bin}`} value={bank.code}>{bank.shortName} ({bank.code} · {bank.bin})</option>)}{bankId && !bankOptions.some((bank) => bank.code === bankId) && <option value={bankId}>{bankId} (đã nhập)</option>}</select><p className="mt-1 text-[11px] text-slate-500">Danh sách lấy từ API VietQR; có thể dùng code hoặc BIN.</p></div>
                 <div><label className="label">Số tài khoản</label><input className="input font-mono" value={bankAccountNo} onChange={(event) => setBankAccountNo(event.target.value)} placeholder="113366668888" required /></div>

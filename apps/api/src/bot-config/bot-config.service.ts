@@ -121,6 +121,14 @@ export class BotConfigService {
     }));
   }
 
+  /** Shared secret used by the Cake callback `signature` header. */
+  async getBankApiTokenForRuntime(): Promise<string | undefined> {
+    const setting = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
+    const stored = isStoredBankConfig(setting?.value) ? setting.value : undefined;
+    if (stored?.encryptedToken) return this.encryption.decrypt<string>(stored.encryptedToken);
+    return process.env.TOKEN_API_BANK?.trim() || undefined;
+  }
+
   async getBankConfigForRuntime(): Promise<RuntimeBankConfig | undefined> {
     const setting = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
     const stored = isStoredBankConfig(setting?.value) ? setting.value : undefined;
@@ -170,7 +178,7 @@ export class BotConfigService {
       accountName: input.accountName.trim(), amount: input.amount, description: input.description.trim(),
     };
     const setting = await this.settings.findOneAndUpdate({ key: 'bank.api_config' }, { $set: {
-      value, description: 'Encrypted bank history API token and VietQR settings', public: false, updatedBy: adminObjectId,
+      value, description: 'Encrypted Cake callback signature token and VietQR settings', public: false, updatedBy: adminObjectId,
     } }, { upsert: true, new: true, setDefaultsOnInsert: true });
     await this.audits.create({ actorType: 'ADMIN', actorId: adminObjectId, action: 'BANK_API_CONFIG_UPDATED',
       resourceType: 'Setting', resourceId: setting._id, requestId,

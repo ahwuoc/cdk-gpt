@@ -18,10 +18,6 @@ export interface AppConfig {
   webAppUrl: string;
   apiUrl: string;
   shopName: string;
-  /** Optional token for the external bank transaction-history provider. */
-  tokenApiBank: string;
-  bankHistoryApiUrl: string;
-  bankPollSeconds: number;
   bankTopupTtlMinutes: number;
   deliveryAttempts: number;
   deliveryBackoffMs: number;
@@ -71,7 +67,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const deliveryAttempts = Number(env.DELIVERY_ATTEMPTS ?? 6);
   const deliveryBackoffMs = Number(env.DELIVERY_BACKOFF_MS ?? 5000);
   const botConfigPollSeconds = Number(env.BOT_CONFIG_POLL_SECONDS ?? 15);
-  const bankPollSeconds = Number(env.BANK_POLL_SECONDS ?? 20);
   const bankTopupTtlMinutes = Number(env.BANK_TOPUP_TTL_MINUTES ?? 20);
   const mongoMaxPoolSize = Number(env.MONGODB_MAX_POOL_SIZE ?? (appRuntime === 'serverless' ? 5 : 20));
   if (!Number.isSafeInteger(deliveryAttempts) || deliveryAttempts < 1 || !Number.isSafeInteger(deliveryBackoffMs) || deliveryBackoffMs < 0) {
@@ -79,9 +74,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
   if (!Number.isSafeInteger(botConfigPollSeconds) || botConfigPollSeconds < 5) {
     throw new Error('BOT_CONFIG_POLL_SECONDS must be an integer of at least 5 seconds');
-  }
-  if (!Number.isSafeInteger(bankPollSeconds) || bankPollSeconds < 10) {
-    throw new Error('BANK_POLL_SECONDS must be an integer of at least 10 seconds');
   }
   if (!Number.isSafeInteger(bankTopupTtlMinutes) || bankTopupTtlMinutes < 5 || bankTopupTtlMinutes > 24 * 60) {
     throw new Error('BANK_TOPUP_TTL_MINUTES must be an integer between 5 and 1440');
@@ -110,9 +102,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     webAppUrl: env.WEB_APP_URL ?? 'http://localhost:3000',
     apiUrl: env.API_URL ?? 'http://localhost:3001',
     shopName: env.SHOP_NAME ?? 'Digital Store',
-    tokenApiBank: env.TOKEN_API_BANK ?? '',
-    bankHistoryApiUrl: (env.BANK_HISTORY_API_URL ?? 'https://thueapibank.vn/historyapicakev2').replace(/\/+$/, ''),
-    bankPollSeconds,
     bankTopupTtlMinutes,
     deliveryAttempts,
     deliveryBackoffMs,
