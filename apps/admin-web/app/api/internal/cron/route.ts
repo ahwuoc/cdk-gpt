@@ -9,7 +9,11 @@ export const maxDuration = 60;
  * Vercel automatically sends `Authorization: Bearer $CRON_SECRET` when that
  * environment variable is set.
  */
-export async function GET(request: Request) {
+async function handleCron(request: Request) {
   if (!cronRequestIsAuthorized(request)) return Response.json({ message: 'Unauthorized cron request' }, { status: 401 });
   return Response.json(await runServerlessMaintenance());
 }
+
+/** Vercel Cron uses GET; QStash Schedule normally delivers with POST. */
+export const GET = handleCron;
+export const POST = handleCron;

@@ -110,7 +110,7 @@ Code hỗ trợ hai runtime:
    Các giá trị thường đổi như `TOKEN_API_BANK` cũng lưu từ form. Chỉ khóa bootstrap (`MONGODB_URI`, `ENCRYPTION_KEY`, JWT, `BOT_API_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, `TASK_QUEUE_SECRET`, `CRON_SECRET`) phải nằm trong Vercel Environment Variables.
 5. Tạo một đơn thử, nhập kho và thử `/start`, nạp tiền, giao hàng. QStash sẽ gọi các route nội bộ có `TASK_QUEUE_SECRET`; không public secret vào frontend.
 
-`/api/internal/cron` quét lịch sử bank, nhả reservation hết hạn và republish delivery bị lỡ sau commit. `vercel.json` đặt lịch mỗi phút, nên **cần Vercel Pro** cho auto-credit khoảng một phút. Vercel Hobby chỉ cho cron hằng ngày: trên Hobby hãy dùng nút **Kiểm tra tiền** hoặc tạo QStash Schedule gọi endpoint cron cùng `Authorization: Bearer $CRON_SECRET`; không thể giữ polling 20 giây thuần Vercel.
+`/api/internal/cron` quét lịch sử bank, nhả reservation hết hạn và republish delivery bị lỡ sau commit. `vercel.json` dùng lịch `0 0 * * *` (mỗi ngày lúc 00:00 UTC) để deploy được trên **Vercel Hobby**. Muốn auto-credit khoảng một phút mà không nâng Pro, tạo QStash Schedule `* * * * *` gọi `POST https://<domain>/api/internal/cron` với header `Authorization: Bearer $CRON_SECRET`. Nếu không tạo schedule, hãy dùng nút **Kiểm tra tiền**; không thể giữ polling 20 giây thuần Vercel.
 
 Không deploy `apps/bot/src/main.ts` hay worker Docker lên Vercel: chúng dành cho runtime `server` chạy dài hạn. Sau khi đã test webhook/QStash/cron ở Production, có thể tắt VPS và Redis.
 
