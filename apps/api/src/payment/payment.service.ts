@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import { randomBytes } from 'node:crypto';
 import { ActorType, PaymentRequest, type PaymentRequestDocument, WalletReferenceType } from '@store/database';
-import { PaymentRequestStatus, WalletTransactionType } from '@store/shared';
+import { MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY, PaymentRequestStatus, WalletTransactionType } from '@store/shared';
 import { isMongoDuplicateKey } from '@store/shared';
 import { loadConfig } from '@store/config';
 import { BotConfigService, type RuntimeBankConfig } from '../bot-config/bot-config.service';
@@ -28,6 +28,8 @@ interface QuickCheckoutMetadata {
   totalAmount: number;
   idempotencyPrefix: string;
   status: 'PENDING_PAYMENT' | 'PROCESSING' | 'FULFILLED' | 'FAILED';
+  /** Missing means a legacy checkout whose inventory was held at QR creation. */
+  reservationMode?: 'SOFT';
   orderIds?: string[];
   orderCodes?: string[];
   fulfillmentError?: string;
@@ -91,10 +93,16 @@ export class PaymentService {
     const bank = await this.requireBankConfig();
     if (!this.purchases) throw new BadRequestException('Thanh toán nhanh chưa sẵn sàng');
     if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(productId)) throw new BadRequestException('Thông tin thanh toán không hợp lệ');
+    if (!Number.isSafeInteger(expectedUnitPrice) || expectedUnitPrice < 0) {
+      throw new BadRequestException('Giá thanh toán không hợp lệ');
+    }
     const prior = await this.requests.findOne({ idempotencyKey, deletedAt: null });
     if (prior) {
       const priorCheckout = this.assertSameBankCheckout(prior, userId, productId, quantity, expectedUnitPrice);
       return bankCheckoutResponse(prior, priorCheckout, bank);
+    }
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY) {
+      throw new BadRequestException(`Mỗi đơn thanh toán nhanh chỉ được mua tối đa ${MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY} sản phẩm`);
     }
     const objectUserId = new Types.ObjectId(userId);
     const requestId = new Types.ObjectId();
@@ -107,12 +115,19 @@ export class PaymentService {
       await session.withTransaction(async () => {
         const existing = await this.requests.findOne({ idempotencyKey, deletedAt: null }).session(session);
         if (existing) { request = existing; return; }
-        const quote = await this.purchases!.reserveBatchForPayment({ userId, productId, quantity, expectedUnitPrice,
-          paymentRequestId: requestId.toString(), expiresAt }, session);
+        const quote = await this.purchases!.quoteBatchForPayment({ userId, productId, quantity,
+          expectedUnitPrice }, session);
+        const activeCheckout = await this.requests.exists({ userId: objectUserId, provider: BANK_PROVIDER,
+          status: PaymentRequestStatus.PENDING, deletedAt: null,
+          'metadata.quickCheckout': { $exists: true }, 'metadata.expiresAt': { $gt: new Date().toISOString() } })
+          .session(session);
+        if (activeCheckout) {
+          throw new BadRequestException('Bạn đã có mã thanh toán đang chờ. Hãy dùng mã hiện tại hoặc đợi mã hết hạn.');
+        }
         const checkout: QuickCheckoutMetadata = {
           productId: quote.productId, productName: quote.productName, quantity: quote.quantity,
           unitPrice: quote.unitPrice, totalAmount: quote.totalAmount,
-          idempotencyPrefix: `quickpay:${requestCode}`, status: 'PENDING_PAYMENT',
+          idempotencyPrefix: `quickpay:${requestCode}`, status: 'PENDING_PAYMENT', reservationMode: 'SOFT',
         };
         request = (await this.requests.create([{ _id: requestId, requestCode, userId: objectUserId,
           amount: quote.totalAmount, provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
@@ -279,6 +294,54 @@ export class PaymentService {
     } finally { await session.endSession(); }
   }
 
+  /** If an expected stock/eligibility failure aborts the purchase transaction,
+   * claim the signed transfer in a fresh transaction and preserve every đồng
+   * in the customer's wallet. Unexpected database failures still surface so
+   * Cake retries rather than hiding infrastructure damage. */
+  private async reconcileFailedSoftCheckout(requestId: string, providerReference: string,
+    transaction: BankTransaction, failure: unknown) {
+    const session = await this.connection.startSession(); let reconciled = false;
+    try {
+      await session.withTransaction(async () => {
+        const existing = await this.requests.findById(requestId).session(session);
+        if (!existing || existing.provider !== BANK_PROVIDER) return;
+        const checkout = quickCheckoutFrom(existing);
+        if (checkout?.reservationMode !== 'SOFT') return;
+        if (existing.status === PaymentRequestStatus.APPROVED) {
+          reconciled = existing.providerReference === providerReference;
+          return;
+        }
+        if (existing.status !== PaymentRequestStatus.PENDING && existing.status !== PaymentRequestStatus.EXPIRED) return;
+        if (await this.requests.exists({ provider: BANK_PROVIDER, providerReference }).session(session)) return;
+        const failed: QuickCheckoutMetadata = { ...checkout, status: 'FAILED',
+          fulfillmentError: checkoutErrorMessage(failure) };
+        delete failed.processingAt;
+        const metadata: Record<string, unknown> = { ...existing.metadata, quickCheckout: failed,
+          bankTransaction: { id: providerReference, date: transaction.transactionDate }, fulfillmentFallback: true };
+        const request = await this.requests.findOneAndUpdate({ _id: existing._id,
+          status: { $in: [PaymentRequestStatus.PENDING, PaymentRequestStatus.EXPIRED] },
+          providerReference: { $exists: false } }, { $set: { status: PaymentRequestStatus.APPROVED,
+          providerReference, reviewedAt: new Date(), metadata } }, { new: true, session });
+        if (!request) return;
+        const walletTransaction = await this.wallet.creditReceivedFunds({ userId: request.userId,
+          amount: request.amount, type: WalletTransactionType.DEPOSIT,
+          reason: `Bank deposit ${request.requestCode} (checkout fallback)`,
+          referenceType: WalletReferenceType.PAYMENT_REQUEST, referenceId: request._id,
+          idempotencyKey: `deposit:bank:${providerReference}`, actorType: ActorType.WEBHOOK,
+          metadata: { provider: BANK_PROVIDER, transactionId: providerReference,
+            checkoutFallback: true } }, session);
+        request.walletTransactionId = walletTransaction._id;
+        await request.save({ session });
+        reconciled = true;
+      });
+      return reconciled;
+    } catch (error) {
+      if (!isMongoDuplicateKey(error)) throw error;
+      return Boolean(await this.requests.exists({ _id: requestId, provider: BANK_PROVIDER,
+        providerReference, status: PaymentRequestStatus.APPROVED }));
+    } finally { await session.endSession(); }
+  }
+
   private async approveBankRequest(requestId: string, providerReference: string, transaction: BankTransaction) {
     const session = await this.connection.startSession(); let approved = false; let resumeFulfillment = false;
     let createdOrders: Array<{ _id: Types.ObjectId; orderCode: string }> = [];
@@ -309,7 +372,20 @@ export class PaymentService {
           bankTransaction: { id: providerReference, date: transaction.transactionDate }, latePayment };
         let checkoutCanFulfill = Boolean(checkout && !latePayment);
         if (latePayment && checkout) metadata.quickCheckout = lateQuickCheckout(checkout);
-        else if (checkout) {
+        else if (checkout?.reservationMode === 'SOFT') {
+          const availability = await this.purchases?.softCheckoutAvailability({
+            userId: existing.userId.toString(), productId: checkout.productId, quantity: checkout.quantity,
+            expectedUnitPrice: checkout.unitPrice,
+          }, session);
+          if (availability !== 'AVAILABLE') {
+            checkoutCanFulfill = false;
+            metadata.quickCheckout = availability === 'USER_INACTIVE'
+              ? inactiveUserQuickCheckout(checkout)
+              : unavailableQuickCheckout(checkout, availability);
+          }
+        } else if (checkout) {
+          // Backward compatibility for QR requests created before soft
+          // reservations were introduced.
           const activeUser = await this.purchases?.bankCheckoutUserIsActive(existing.userId.toString(), session);
           const held = activeUser ? await this.purchases?.extendBankCheckoutReservation(existing._id.toString(),
             new Date(Date.now() + 15 * 60_000), session) : undefined;
@@ -340,6 +416,7 @@ export class PaymentService {
             userId: request.userId.toString(), productId: checkout.productId, quantity: checkout.quantity,
             expectedUnitPrice: checkout.unitPrice, idempotencyPrefix: checkout.idempotencyPrefix,
             paymentRequestId: request._id.toString(),
+            allowUnreservedPayment: checkout.reservationMode === 'SOFT',
           }, session);
           const fulfilled: QuickCheckoutMetadata = { ...checkout, status: 'FULFILLED',
             orderIds: createdOrders.map((order) => order._id.toString()),
@@ -361,6 +438,8 @@ export class PaymentService {
       return approved;
     } catch (error) {
       if (isMongoDuplicateKey(error)) return false;
+      if (isExpectedSoftCheckoutFailure(error) &&
+        await this.reconcileFailedSoftCheckout(requestId, providerReference, transaction, error)) return true;
       throw error;
     } finally { await session.endSession(); }
   }
@@ -412,6 +491,7 @@ export class PaymentService {
         userId: request.userId.toString(), productId: checkout.productId, quantity: checkout.quantity,
         expectedUnitPrice: checkout.unitPrice, idempotencyPrefix: checkout.idempotencyPrefix,
         paymentRequestId: request._id.toString(),
+        allowUnreservedPayment: checkout.reservationMode === 'SOFT',
       });
       const fulfilled: QuickCheckoutMetadata = { ...checkout, status: 'FULFILLED',
         orderIds: orders.map((order) => order._id.toString()), orderCodes: orders.map((order) => order.orderCode),
@@ -524,6 +604,7 @@ function quickCheckoutFrom(request: { metadata?: Record<string, unknown> }): Qui
     !Number.isSafeInteger(checkout.unitPrice) || (checkout.unitPrice ?? -1) < 0 ||
     !Number.isSafeInteger(checkout.totalAmount) || (checkout.totalAmount ?? 0) < 1 ||
     typeof checkout.idempotencyPrefix !== 'string' || !checkout.idempotencyPrefix ||
+    (checkout.reservationMode !== undefined && checkout.reservationMode !== 'SOFT') ||
     !['PENDING_PAYMENT', 'PROCESSING', 'FULFILLED', 'FAILED'].includes(checkout.status ?? '')) return undefined;
   return checkout as QuickCheckoutMetadata;
 }
@@ -559,6 +640,11 @@ function checkoutErrorMessage(error: unknown) {
   return translated.slice(0, 500);
 }
 
+function isExpectedSoftCheckoutFailure(error: unknown) {
+  const value = error as { code?: unknown; message?: unknown };
+  return value?.code === 'OUT_OF_STOCK';
+}
+
 function extractTransferCodes(description: string) {
   const matches = description.toUpperCase().matchAll(/(?:^|[^A-Z0-9])((?:NAP|DON)[A-F0-9]{16})(?=$|[^A-Z0-9])/g);
   return [...new Set([...matches].map((match) => match[1]).filter((value): value is string => Boolean(value)))];
@@ -566,14 +652,19 @@ function extractTransferCodes(description: string) {
 
 function lateQuickCheckout(checkout: QuickCheckoutMetadata): QuickCheckoutMetadata {
   const failed: QuickCheckoutMetadata = { ...checkout, status: 'FAILED',
-    fulfillmentError: 'Thanh toán sau thời hạn giữ hàng; tiền đã được cộng vào ví. Vui lòng đặt đơn mới.' };
+    fulfillmentError: 'Thanh toán sau thời hạn mã QR; tiền đã được cộng vào ví. Vui lòng đặt đơn mới.' };
   delete failed.processingAt;
   return failed;
 }
 
-function unavailableQuickCheckout(checkout: QuickCheckoutMetadata): QuickCheckoutMetadata {
+function unavailableQuickCheckout(checkout: QuickCheckoutMetadata, reason?: string): QuickCheckoutMetadata {
+  const message = reason === 'PURCHASE_LIMIT'
+    ? 'Đã đạt giới hạn mua sản phẩm; tiền đã được cộng vào ví. Vui lòng chọn sản phẩm khác.'
+    : reason === 'PRODUCT_UNAVAILABLE'
+      ? 'Sản phẩm không còn được kinh doanh; tiền đã được cộng vào ví. Vui lòng chọn sản phẩm khác.'
+      : 'Sản phẩm không còn đủ hàng; tiền đã được cộng vào ví. Vui lòng đặt đơn mới.';
   const failed: QuickCheckoutMetadata = { ...checkout, status: 'FAILED',
-    fulfillmentError: 'Không còn đủ hàng đã giữ; tiền đã được cộng vào ví. Vui lòng đặt đơn mới.' };
+    fulfillmentError: message };
   delete failed.processingAt;
   return failed;
 }

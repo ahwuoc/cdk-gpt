@@ -26,6 +26,8 @@ export class CreateBotDepositDto {
 export class CreateBotCheckoutDto {
   @IsMongoId() userId!: string;
   @IsMongoId() productId!: string;
+  // The service caps new requests at 5 but accepts idempotent retries for
+  // legacy in-flight checkouts created before that policy existed.
   @IsInt() @Min(1) @Max(100)
   quantity!: number;
   @IsInt() @Min(0)

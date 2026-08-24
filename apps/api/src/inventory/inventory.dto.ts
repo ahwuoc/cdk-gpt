@@ -1,11 +1,12 @@
 import { Type } from 'class-transformer';
-import { IsArray, IsEnum, IsInt, IsMongoId, IsObject, IsOptional, IsString, Length, Max, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsInt, IsMongoId, IsObject, IsOptional, IsString, Length, Max, Min } from 'class-validator';
 import { InventoryStatus } from '@store/shared';
 
 export class ImportInventoryDto {
   @IsMongoId() productId!: string;
   @IsArray() @IsObject({ each: true }) rows!: Record<string, unknown>[];
   @IsOptional() @IsString() @Length(1, 255) sourceName?: string;
+  @IsOptional() @IsBoolean() overwriteDuplicates = false;
 }
 
 /** Safe, paginated view of inventory. Payloads are never accepted or returned here. */

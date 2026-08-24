@@ -17,7 +17,8 @@ const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 interface Tokens { accessToken: string; refreshToken?: string; }
 interface ImportReport {
   batchId?: string; totalRows: number; validRows: number; invalidRows: number; duplicateRows: number;
-  importedRows?: number; preview?: Array<{ line: number; maskedPreview: Record<string, unknown> }>;
+  overwriteableRows?: number; importedRows?: number; overwrittenRows?: number;
+  preview?: Array<{ line: number; maskedPreview: Record<string, unknown> }>;
   errors?: Array<{ line: number; reason: string }>; skipped?: Array<{ line: number; reason: string }>;
   restockNotificationQueued?: boolean;
 }
@@ -30,6 +31,11 @@ interface RuntimeConfig {
   shopName: string; adminTelegramIds: string; apiUrl: string; telegramWebhookUrl: string;
   qstashUrl: string; taskBaseUrl: string; qstashConfigured?: boolean; qstashSource?: string;
   maskedQstashToken?: string; updatedAt?: string;
+}
+interface RevealedInventory {
+  productId: string;
+  inventoryPattern: string;
+  formatted: string;
 }
 interface BotConfig {
   configured: boolean; source?: string; botId?: number; botUsername?: string; maskedToken?: string;
@@ -51,7 +57,7 @@ export default function AdminPage() {
   const [pagination, setPagination] = useState<ProductPagination>({ page: 1, limit: 20, total: 0, totalPages: 0 });
   const [report, setReport] = useState<ImportReport | null>(null); const [busy, setBusy] = useState(false);
   const [inventoryVersion, setInventoryVersion] = useState(0);
-  const [itemId, setItemId] = useState(''); const [payload, setPayload] = useState<Record<string, unknown> | null>(null);
+  const [itemId, setItemId] = useState(''); const [payload, setPayload] = useState<RevealedInventory | null>(null);
   const [botConfig, setBotConfig] = useState<BotConfig | null>(null); const [botToken, setBotToken] = useState('');
   const [welcomeMessage, setWelcomeMessage] = useState('');
   const [bankToken, setBankToken] = useState(''); const [bankId, setBankId] = useState('');
@@ -187,11 +193,31 @@ export default function AdminPage() {
     setBusy(true); setMessage('');
     try {
       const rows = parseRows();
+      let overwriteDuplicates = false;
+      if (commit) {
+        const previewResponse = await authorized('/admin/inventory/import/preview', { method: 'POST',
+          headers: { 'content-type': 'application/json' }, body: JSON.stringify({ productId, rows }) });
+        const preview = await previewResponse.json() as ImportReport & { message?: string };
+        if (!previewResponse.ok) throw new Error(preview.message ?? 'Không thể kiểm tra dữ liệu trùng');
+        if (preview.duplicateRows > 0) {
+          const overwriteable = preview.overwriteableRows ?? 0;
+          const protectedRows = Math.max(0, preview.duplicateRows - overwriteable);
+          const confirmed = window.confirm(`Phát hiện ${preview.duplicateRows} dòng trùng. ` +
+            `Hệ thống sẽ ghi đè ${overwriteable} dòng còn “Có sẵn”` +
+            `${protectedRows ? ` và bỏ qua ${protectedRows} dòng đã bán/đang giữ hoặc trùng trong tệp` : ''}. Bạn có muốn tiếp tục?`);
+          if (!confirmed) {
+            setReport(preview); setMessage('Đã hủy nhập kho; chưa có dữ liệu nào bị thay đổi.'); return;
+          }
+          overwriteDuplicates = true;
+        }
+      }
       const response = await authorized(`/admin/inventory/import${commit ? '' : '/preview'}`, { method: 'POST',
-        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ productId, rows, sourceName: 'admin-web.jsonl' }) });
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ productId, rows, sourceName: 'admin-web.jsonl', overwriteDuplicates }) });
       const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Import failed');
       setReport(body); setMessage(commit
-        ? `Đã nhập ${body.importedRows} hàng${body.restockNotificationQueued ? ' và đã xếp hàng thông báo “hàng đã về” cho khách.' : '.'}`
+        ? `Đã nhập ${body.importedRows} hàng mới${body.overwrittenRows ? ` và ghi đè ${body.overwrittenRows} hàng trùng` : ''}` +
+          `${body.restockNotificationQueued ? '; đã xếp hàng thông báo “hàng đã về” cho khách.' : '.'}`
         : 'Đã tạo bản xem trước; chưa lưu dữ liệu.');
       if (commit) { await loadProducts(); setInventoryVersion((version) => version + 1); }
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Import failed'); }
@@ -204,7 +230,8 @@ export default function AdminPage() {
       const id = targetItemId.trim(); if (!id) throw new Error('Hãy chọn một hàng trong kho.');
       setItemId(id);
       const response = await authorized(`/admin/inventory/${id}/payload`, { headers: { 'x-request-id': requestId() } });
-      const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Access denied'); setPayload(body);
+      const body = await response.json() as RevealedInventory & { message?: string };
+      if (!response.ok) throw new Error(body.message ?? 'Access denied'); setPayload(body);
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to read item'); }
     finally { setBusy(false); }
   }
@@ -372,7 +399,7 @@ export default function AdminPage() {
               <div className="mt-4 flex flex-col gap-3 sm:flex-row"><button disabled={busy || !source.trim()} onClick={() => importRows(false)} className="button-secondary flex-1">Xem trước, chưa lưu</button><button disabled={busy || !source.trim() || !productId} onClick={() => importRows(true)} className="button-primary flex-1">{busy ? 'Đang xử lý…' : 'Nhập kho & báo khách'}</button></div>
             </Panel>
             {report && <Panel icon={<Boxes />} title="Kết quả nhập kho" subtitle={report.batchId ? `Mã lô: ${report.batchId}` : 'Bản xem trước — chưa lưu dữ liệu'}>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">{[['Tổng dòng', report.totalRows], ['Hợp lệ', report.validRows], ['Lỗi', report.invalidRows], ['Trùng', report.duplicateRows], ['Đã nhập', report.importedRows ?? '—']].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-950 p-3"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 text-xl font-semibold">{value}</p></div>)}</div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">{[['Tổng dòng', report.totalRows], ['Hợp lệ', report.validRows], ['Lỗi', report.invalidRows], ['Trùng', report.duplicateRows], ['Đã nhập', report.importedRows ?? '—'], ['Ghi đè', report.overwrittenRows ?? '—']].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-950 p-3"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 text-xl font-semibold">{value}</p></div>)}</div>
               {report.restockNotificationQueued && <p className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-200">Đã xếp hàng gửi thông báo “hàng đã về” cho khách qua bot.</p>}
               {!!report.preview?.length && <pre className="mt-4 max-h-80 overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-emerald-300">{JSON.stringify(report.preview, null, 2)}</pre>}
               {!!(report.errors ?? report.skipped)?.length && <pre className="mt-4 max-h-60 overflow-auto rounded-xl bg-rose-950/30 p-4 text-xs text-rose-300">{JSON.stringify(report.errors ?? report.skipped, null, 2)}</pre>}
@@ -382,7 +409,12 @@ export default function AdminPage() {
             <Panel icon={<Eye />} title="Tra cứu một dòng kho" subtitle="Dùng ObjectId để xem dữ liệu nhạy cảm. Mỗi lượt xem đều được ghi nhận.">
               <label className="label">Inventory ObjectId</label><input className="input font-mono text-xs" value={itemId} onChange={(event) => setItemId(event.target.value)} placeholder="Dán ID dòng kho" />
               <button disabled={busy || !itemId.trim()} onClick={() => void reveal()} className="button-primary mt-4 w-full">Xem dữ liệu</button>
-              {payload && <pre className="mt-4 max-h-80 overflow-auto rounded-xl bg-slate-950 p-4 text-xs text-amber-200">{JSON.stringify(payload, null, 2)}</pre>}
+              {payload && <div className="mt-4 rounded-xl bg-slate-950 p-4">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Định dạng sản phẩm</p>
+                <code className="mt-1 block break-all text-xs text-indigo-300">{payload.inventoryPattern}</code>
+                <p className="mt-4 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Dữ liệu đầy đủ</p>
+                <pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-all text-xs leading-6 text-amber-200">{payload.formatted}</pre>
+              </div>}
             </Panel>
             <Panel icon={<Boxes />} title="Mẹo nhập nhanh" subtitle="Để nhập không bị lỗi">
               <ul className="space-y-3 text-sm leading-6 text-slate-400"><li>• Đặt pattern trong phần Sản phẩm, ví dụ <code>email----password</code>.</li><li>• Mỗi dòng phải đủ các cột theo pattern.</li><li>• Bấm “Xem trước” nếu chưa chắc định dạng.</li></ul>

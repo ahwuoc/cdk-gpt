@@ -16,6 +16,7 @@ export const WalletTransactionType = {
   ADMIN_DEBIT: 'ADMIN_DEBIT', REFERRAL_COMMISSION: 'REFERRAL_COMMISSION', ADJUSTMENT: 'ADJUSTMENT',
 } as const;
 export const PaymentRequestStatus = { PENDING: 'PENDING', APPROVED: 'APPROVED', REJECTED: 'REJECTED', EXPIRED: 'EXPIRED' } as const;
+export const MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY = 5;
 export const ComplaintCategory = {
   NO_DELIVERY: 'NO_DELIVERY',
   INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
@@ -103,6 +104,18 @@ export function inventoryPatternExample(definition: InventoryPatternDefinition) 
   let output = definition.literals[0] ?? '';
   definition.keys.forEach((key, index) => {
     output += key === 'email' ? 'email@gmail.com' : key === 'password' ? 'matkhau' : key;
+    output += definition.literals[index + 1] ?? '';
+  });
+  return output;
+}
+
+/** Renders one decrypted inventory payload with the exact literals and field
+ * order configured for imports (for example email----password----2fa). */
+export function formatInventoryPatternPayload(payload: Record<string, unknown>, definition: InventoryPatternDefinition) {
+  let output = definition.literals[0] ?? '';
+  definition.keys.forEach((key, index) => {
+    const value = payload[key];
+    output += value === undefined || value === null ? '' : String(value);
     output += definition.literals[index + 1] ?? '';
   });
   return output;

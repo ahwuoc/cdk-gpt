@@ -15,7 +15,7 @@ import {
   OrderModel, OrderRepository, PaymentRequestModel, ProductModel, RoleModel, SettingModel, UserModel,
   UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel, DatabaseModule,
 } from '@store/database';
-import { InventoryStatus, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
+import { InventoryStatus, OutOfStockError, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
 import { PurchaseService } from '../../apps/api/src/purchase/purchase.service';
 import { DeliveryQueue } from '../../apps/api/src/delivery/delivery.queue';
 import { WalletService } from '../../apps/api/src/wallet/wallet.service';
@@ -196,11 +196,11 @@ integration('digital store on a MongoDB replica set', () => {
     expect(checkout).toMatchObject({ amount: 200, quantity: 2, unitPrice: 100, productName: product.name, status: PaymentRequestStatus.PENDING });
     expect(checkout.qrUrl).toContain('amount=200');
     expect(checkout.transferContent).toMatch(/^DON[A-F0-9]+$/);
-    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(0);
-    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.RESERVED,
-      reservedPaymentRequestId: checkout.id })).toBe(2);
-    await InventoryItemModel.updateMany({ reservedPaymentRequestId: checkout.id },
-      { $set: { reservationExpiresAt: new Date(Date.now() + 1_000) } });
+    // Creating a QR is only a payment intent. Unpaid customers must never be
+    // able to hold real inventory and block everyone else from buying it.
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(2);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      reservedPaymentRequestId: { $exists: true } })).toBe(0);
     await ProductModel.updateOne({ _id: product._id }, { $set: { price: 999, status: ProductStatus.INACTIVE } });
 
     const transaction = { transactionID: '579740339', amount: 200,
@@ -230,7 +230,7 @@ integration('digital store on a MongoDB replica set', () => {
     } as unknown as BotConfigService;
     const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
     const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-stock-race');
-    await InventoryItemModel.updateOne({ productId: product._id, reservedPaymentRequestId: checkout.id },
+    await InventoryItemModel.updateOne({ productId: product._id, status: InventoryStatus.AVAILABLE },
       { $set: { status: InventoryStatus.DISABLED } });
 
     await service.processCakeCallback([{ transactionID: '579740340', amount: 200,
@@ -246,6 +246,73 @@ integration('digital store on a MongoDB replica set', () => {
     expect(checked.checkout).toMatchObject({ status: 'FAILED', quantity: 2, totalAmount: 200 });
   });
 
+  test('an expected fulfillment failure still credits a paid QR in the same callback attempt', async () => {
+    const { product, user } = await fixture(1, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const realPurchases = purchaseService();
+    const faultingPurchases = new Proxy(realPurchases, { get(target, property, receiver) {
+      if (property === 'purchaseBatchInSession') return async () => { throw new OutOfStockError(); };
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig,
+      faultingPurchases);
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 1, 100,
+      'fallback-wallet-credit');
+
+    const result = await service.processCakeCallback([{ transactionID: '579740353', amount: 100,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
+
+    expect(result.approved).toBe(1);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(100);
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(0);
+    expect(await WalletTransactionModel.countDocuments({ type: 'DEPOSIT' })).toBe(1);
+    const payment = await PaymentRequestModel.findById(checkout.id).lean();
+    expect(payment?.providerReference).toBe('579740353');
+    expect((payment?.metadata.quickCheckout as { status?: string }).status).toBe('FAILED');
+  });
+
+  test('an in-flight legacy QR hold still fulfills after the soft-checkout deployment', async () => {
+    const { product, user } = await fixture(6, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const purchases = purchaseService();
+    const requestId = new Types.ObjectId();
+    const requestCode = 'DON1111111111111111';
+    const expiresAt = new Date(Date.now() + 10 * 60_000);
+    const session = await mongoose.connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await purchases.reserveBatchForPayment({ userId: user._id.toString(), productId: product._id.toString(),
+          quantity: 6, expectedUnitPrice: 100, paymentRequestId: requestId.toString(), expiresAt }, session);
+        await PaymentRequestModel.create([{ _id: requestId, requestCode, userId: user._id, amount: 600,
+          provider: 'BANK_API', status: PaymentRequestStatus.PENDING, proofUrls: [],
+          idempotencyKey: 'legacy-hard-hold-checkout', deletedAt: null, metadata: {
+            source: 'telegram-bank-quick-checkout', transferContent: requestCode,
+            expiresAt: expiresAt.toISOString(), quickCheckout: {
+              productId: product._id.toString(), productName: product.name, quantity: 6, unitPrice: 100,
+              totalAmount: 600, idempotencyPrefix: `quickpay:${requestCode}`, status: 'PENDING_PAYMENT',
+            },
+          } }], { session });
+      });
+    } finally { await session.endSession(); }
+
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchases);
+    const retried = await service.createBankCheckout(user._id.toString(), product._id.toString(), 6, 100,
+      'legacy-hard-hold-checkout');
+    expect(retried.id).toBe(requestId.toString());
+    await service.processCakeCallback([{ transactionID: '579740350', amount: 600,
+      description: `THANH TOAN ${requestCode}`, transactionDate: '25/08/2026', type: 'IN' }]);
+
+    expect(await OrderModel.countDocuments({ userId: user._id, productId: product._id })).toBe(6);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      reservedPaymentRequestId: { $exists: true } })).toBe(0);
+  });
+
   test('a late quick-checkout transfer credits the wallet but never consumes expired held stock', async () => {
     const { product, user } = await fixture(2, 0);
     const bankConfig = {
@@ -255,7 +322,6 @@ integration('digital store on a MongoDB replica set', () => {
     const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'late-quick-checkout');
     const past = new Date(Date.now() - 60_000);
     await PaymentRequestModel.updateOne({ _id: checkout.id }, { $set: { 'metadata.expiresAt': past.toISOString() } });
-    await InventoryItemModel.updateMany({ reservedPaymentRequestId: checkout.id }, { $set: { reservationExpiresAt: past } });
 
     const result = await service.processCakeCallback([{ transactionID: '579740341', amount: 200,
       description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
@@ -272,7 +338,7 @@ integration('digital store on a MongoDB replica set', () => {
     expect((payment?.metadata.quickCheckout as { fulfillmentError?: string }).fulfillmentError).toContain('sau thời hạn');
   });
 
-  test('a new checkout immediately reclaims an abandoned expired QR hold', async () => {
+  test('an expired QR can be replaced without ever holding inventory', async () => {
     const { product, user } = await fixture(2, 0);
     const bankConfig = {
       getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
@@ -281,17 +347,17 @@ integration('digital store on a MongoDB replica set', () => {
     const abandoned = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'abandoned-checkout');
     const past = new Date(Date.now() - 60_000);
     await PaymentRequestModel.updateOne({ _id: abandoned.id }, { $set: { 'metadata.expiresAt': past.toISOString() } });
-    await InventoryItemModel.updateMany({ reservedPaymentRequestId: abandoned.id }, { $set: { reservationExpiresAt: past } });
 
     const replacement = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'replacement-checkout');
 
     expect(replacement.id).not.toBe(abandoned.id);
     expect(await InventoryItemModel.countDocuments({ reservedPaymentRequestId: abandoned.id })).toBe(0);
-    expect(await InventoryItemModel.countDocuments({ reservedPaymentRequestId: replacement.id,
-      status: InventoryStatus.RESERVED })).toBe(2);
+    expect(await InventoryItemModel.countDocuments({ reservedPaymentRequestId: replacement.id })).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      status: InventoryStatus.AVAILABLE })).toBe(2);
   });
 
-  test('concurrent QR checkouts cannot bypass one active hold or the per-user purchase limit', async () => {
+  test('one customer can create only one active QR without holding inventory', async () => {
     const { product, user } = await fixture(4, 0, 2);
     const bankConfig = {
       getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
@@ -306,11 +372,13 @@ integration('digital store on a MongoDB replica set', () => {
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
     expect(await PaymentRequestModel.countDocuments({ userId: user._id, status: PaymentRequestStatus.PENDING })).toBe(1);
-    expect(await InventoryItemModel.countDocuments({ productId: product._id, reservedByUserId: user._id,
-      reservedPaymentRequestId: { $exists: true } })).toBe(2);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      status: InventoryStatus.AVAILABLE })).toBe(4);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      reservedPaymentRequestId: { $exists: true } })).toBe(0);
   });
 
-  test('an active QR hold counts toward the limit when the same user attempts a wallet purchase', async () => {
+  test('an unpaid QR does not block a wallet buyer and a later transfer is kept in their wallet', async () => {
     const { product, user } = await fixture(2, 100, 1);
     const bankConfig = {
       getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
@@ -321,12 +389,68 @@ integration('digital store on a MongoDB replica set', () => {
       'wallet-limit-active-qr');
 
     await expect(purchases.purchase({ userId: user._id.toString(), productId: product._id.toString(),
-      expectedUnitPrice: 100, idempotencyKey: 'wallet-during-active-qr' })).rejects.toThrow('Purchase limit reached');
+      expectedUnitPrice: 100, idempotencyKey: 'wallet-during-active-qr' })).resolves.toBeTruthy();
 
     await service.processCakeCallback([{ transactionID: '579740349', amount: 100,
       description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
     expect(await OrderModel.countDocuments({ userId: user._id, productId: product._id })).toBe(1);
     expect((await UserModel.findById(user._id))?.walletBalance).toBe(100);
+    const payment = await PaymentRequestModel.findById(checkout.id).lean();
+    expect((payment?.metadata.quickCheckout as { status?: string }).status).toBe('FAILED');
+  });
+
+  test('many unpaid customers cannot lock scarce stock and direct QR quantity is capped', async () => {
+    const { product } = await fixture(2, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const attackers = await UserModel.insertMany(Array.from({ length: 8 }, (_, index) => ({
+      telegramId: `90000000${index}`, status: UserStatus.ACTIVE, walletBalance: 0,
+      referralCode: `ATTACK${index}`, purchaseCount: 0, deletedAt: null,
+    })));
+
+    await Promise.all(attackers.map((user, index) => service.createBankCheckout(user._id.toString(),
+      product._id.toString(), 2, 100, `anti-hoarding-${index}`)));
+    await expect(service.createBankCheckout(attackers[0]!._id.toString(), product._id.toString(),
+      6, 100, 'anti-hoarding-too-many')).rejects.toThrow('tối đa 5');
+
+    expect(await PaymentRequestModel.countDocuments({ status: PaymentRequestStatus.PENDING })).toBe(8);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      status: InventoryStatus.AVAILABLE })).toBe(2);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      reservedPaymentRequestId: { $exists: true } })).toBe(0);
+  });
+
+  test('two paid QR callbacks racing for the last item create one order and preserve the losing transfer', async () => {
+    const { product, user: first } = await fixture(1, 0);
+    const second = await UserModel.create({ telegramId: '900000099', status: UserStatus.ACTIVE, walletBalance: 0,
+      referralCode: 'PAIDRACE', purchaseCount: 0, deletedAt: null });
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const [firstCheckout, secondCheckout] = await Promise.all([
+      service.createBankCheckout(first._id.toString(), product._id.toString(), 1, 100, 'paid-stock-race-first'),
+      service.createBankCheckout(second._id.toString(), product._id.toString(), 1, 100, 'paid-stock-race-second'),
+    ]);
+
+    const results = await Promise.all([
+      service.processCakeCallback([{ transactionID: '579740351', amount: 100,
+        description: `THANH TOAN ${firstCheckout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]),
+      service.processCakeCallback([{ transactionID: '579740352', amount: 100,
+        description: `THANH TOAN ${secondCheckout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]),
+    ]);
+
+    expect(results.every((result) => result.approved === 1)).toBeTrue();
+    expect(await OrderModel.countDocuments({ productId: product._id })).toBe(1);
+    expect((await UserModel.findById(first._id))!.walletBalance +
+      (await UserModel.findById(second._id))!.walletBalance).toBe(100);
+    expect(await WalletTransactionModel.countDocuments({ type: 'DEPOSIT' })).toBe(2);
+    expect(await WalletTransactionModel.countDocuments({ type: 'PURCHASE' })).toBe(1);
+    const requests = await PaymentRequestModel.find({ _id: { $in: [firstCheckout.id, secondCheckout.id] } }).lean();
+    expect(requests.map((request) => (request.metadata.quickCheckout as { status?: string }).status).sort())
+      .toEqual(['FAILED', 'FULFILLED']);
   });
 
   test('Cake matches a transfer code directly even after more than 100 equal-amount pending requests', async () => {
@@ -629,7 +753,7 @@ integration('digital store on a MongoDB replica set', () => {
     expect((await OrderModel.findById(order._id))!.status).toBe('CANCELLED');
   });
 
-  test('10. inventory import rejects duplicates in-file and in-database', async () => {
+  test('10. inventory import rejects duplicates by default and overwrites an available duplicate only after confirmation', async () => {
     const { product, adminId } = await fixture(0);
     const importer = new InventoryImportService(ProductModel, InventoryItemModel, ImportBatchModel);
     const row = { login: 'duplicate@example.invalid', password: 'secret' };
@@ -641,7 +765,33 @@ integration('digital store on a MongoDB replica set', () => {
     const second = await importer.commit(product._id.toString(), [row], adminId.toString(), 'second.csv');
     expect(first.importedRows).toBe(1); expect(first.duplicateRows).toBe(1);
     expect(second.importedRows).toBe(0); expect(second.duplicateRows).toBe(1);
+    const overwritten = await importer.commit(product._id.toString(), [row], adminId.toString(), 'confirmed.csv', true);
+    expect(overwritten).toMatchObject({ importedRows: 0, overwrittenRows: 1, duplicateRows: 1 });
     expect(await InventoryItemModel.countDocuments()).toBe(1);
+    const item = await InventoryItemModel.findOne().select('+encryptedPayload');
+    expect(item?.importBatchId?.toString()).toBe(overwritten.batchId.toString());
+    expect(encryption.decrypt<Record<string, unknown>>(item!.encryptedPayload)).toEqual(row);
+
+    const safeBatchId = item!.importBatchId!.toString();
+    const ciphertext = item!.encryptedPayload;
+    const beforeRace = await importer.preview(product._id.toString(), [row]);
+    expect(beforeRace).toMatchObject({ duplicateRows: 1, overwriteableRows: 1 });
+    await InventoryItemModel.updateOne({ _id: item!._id }, { $set: { status: InventoryStatus.RESERVED } });
+    const protectedReserved = await importer.commit(product._id.toString(), [row], adminId.toString(),
+      'reserved-protected.csv', true);
+    expect(protectedReserved).toMatchObject({ importedRows: 0, overwrittenRows: 0, duplicateRows: 1 });
+    expect(protectedReserved.skipped.some((entry) => entry.reason.includes('cannot be overwritten'))).toBeTrue();
+    let protectedItem = await InventoryItemModel.findById(item!._id).select('+encryptedPayload');
+    expect(protectedItem?.importBatchId?.toString()).toBe(safeBatchId);
+    expect(protectedItem?.encryptedPayload).toBe(ciphertext);
+
+    await InventoryItemModel.updateOne({ _id: item!._id }, { $set: { status: InventoryStatus.SOLD } });
+    const protectedSold = await importer.commit(product._id.toString(), [row], adminId.toString(),
+      'sold-protected.csv', true);
+    expect(protectedSold).toMatchObject({ importedRows: 0, overwrittenRows: 0, duplicateRows: 1 });
+    protectedItem = await InventoryItemModel.findById(item!._id).select('+encryptedPayload');
+    expect(protectedItem?.importBatchId?.toString()).toBe(safeBatchId);
+    expect(protectedItem?.encryptedPayload).toBe(ciphertext);
   });
 
   test('successful stock import queues one restock announcement batch', async () => {
@@ -853,13 +1003,22 @@ integration('digital store on a MongoDB replica set', () => {
       { login: 'listed-two@example.invalid', password: 'raw-password-two' },
       { login: 'listed-three@example.invalid', password: 'raw-password-three' },
     ], adminId.toString(), 'listed.txt');
-    const service = new InventoryAdminService(InventoryItemModel, AuditLogModel, mongoose.connection, ImportBatchModel);
+    const service = new InventoryAdminService(InventoryItemModel, AuditLogModel, mongoose.connection,
+      ImportBatchModel, ProductModel);
     const page = await service.list({ page: 1, limit: 2, search: imported.batchId.toString() });
     expect(page).toMatchObject({ page: 1, limit: 2, total: 3, totalPages: 2 });
     expect(page.items).toHaveLength(2);
     expect(page.items[0]).toMatchObject({ productId: product._id.toString(), status: InventoryStatus.AVAILABLE, importBatchId: imported.batchId.toString() });
     expect(JSON.stringify(page.items)).not.toContain('raw-password-one');
     expect((await service.list({ page: 2, limit: 2, query: imported.batchId.toString() })).items).toHaveLength(1);
+    const revealed = await service.readFullPayload(page.items[0]!.id, adminId.toString(),
+      ['inventory.read_sensitive'], 'formatted-reveal');
+    expect(revealed).toMatchObject({ productId: product._id.toString(),
+      inventoryPattern: '{{login}}----{{password}}' });
+    expect(revealed.formatted).toMatch(/^listed-(?:one|two|three)@example\.invalid----raw-password-(?:one|two|three)$/);
+    expect('payload' in revealed).toBeFalse();
+    expect(await AuditLogModel.countDocuments({ action: 'INVENTORY_PAYLOAD_READ',
+      requestId: 'formatted-reveal' })).toBe(1);
   });
 
   test('admin can remove only available inventory and bulk removal preserves reserved and sold rows', async () => {
@@ -874,7 +1033,8 @@ integration('digital store on a MongoDB replica set', () => {
     const [firstAvailable, secondAvailable, reserved, sold] = rows;
     await InventoryItemModel.updateOne({ _id: reserved!._id }, { $set: { status: InventoryStatus.RESERVED } });
     await InventoryItemModel.updateOne({ _id: sold!._id }, { $set: { status: InventoryStatus.SOLD } });
-    const service = new InventoryAdminService(InventoryItemModel, AuditLogModel, mongoose.connection, ImportBatchModel);
+    const service = new InventoryAdminService(InventoryItemModel, AuditLogModel, mongoose.connection,
+      ImportBatchModel, ProductModel);
 
     expect(await service.removeItem(firstAvailable!._id.toString(), adminId.toString(), 'remove-one')).toMatchObject({ removed: true });
     expect((await InventoryItemModel.findById(firstAvailable!._id))!.deletedAt).toBeTruthy();

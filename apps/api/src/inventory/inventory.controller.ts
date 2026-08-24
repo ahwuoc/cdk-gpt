@@ -19,7 +19,7 @@ export class InventoryController {
   preview(@Body() body: ImportInventoryDto) { return this.importer.preview(body.productId, body.rows); }
   @Post('import') @RequirePermissions('inventory.import')
   commit(@Body() body: ImportInventoryDto, @Req() req: FastifyRequest & { admin: AdminClaims }) {
-    return this.importer.commit(body.productId, body.rows, req.admin.sub, body.sourceName);
+    return this.importer.commit(body.productId, body.rows, req.admin.sub, body.sourceName, body.overwriteDuplicates);
   }
   @Get(':id/payload') @RequirePermissions('inventory.read_sensitive')
   payload(@Param('id') id: string, @Req() req: FastifyRequest & { admin: AdminClaims }, @Headers('x-request-id') requestId?: string) {

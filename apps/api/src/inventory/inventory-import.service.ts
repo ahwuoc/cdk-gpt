@@ -7,7 +7,13 @@ import { ImportBatch, ImportBatchStatus, InventoryItem, Product } from '@store/d
 import { InventoryStatus, isMongoDuplicateKey } from '@store/shared';
 import { STOCK_ALERT_QUEUE, type StockAlertQueueClient } from './stock-alert.queue';
 
-interface PreparedRow { line: number; normalized: Record<string, unknown>; hash: string; maskedPreview: Record<string, unknown>; }
+interface PreparedRow {
+  line: number;
+  normalized: Record<string, unknown>;
+  hash: string;
+  maskedPreview: Record<string, unknown>;
+  existingId?: Types.ObjectId;
+}
 interface ImportError { line: number; reason: string; }
 
 @Injectable()
@@ -25,15 +31,15 @@ export class InventoryImportService {
     return report;
   }
 
-  private async prepare(productId: string, rows: Record<string, unknown>[]) {
+  private async prepare(productId: string, rows: Record<string, unknown>[], overwriteDuplicates = false) {
     const product = await this.products.findOne({ _id: productId, deletedAt: null }).lean();
     if (!product) throw new Error('Product not found');
     const errors: ImportError[] = []; const prepared: PreparedRow[] = []; const seen = new Set<string>();
-    let duplicateRows = 0;
+    let duplicateRows = 0; let invalidRows = 0;
     rows.forEach((row, index) => {
       const line = index + 1;
       if (!row || Object.values(row).every((value) => value === '' || value === null || value === undefined)) {
-        errors.push({ line, reason: 'Blank row skipped' }); return;
+        invalidRows++; errors.push({ line, reason: 'Blank row skipped' }); return;
       }
       try {
         const normalized = this.normalize(row, product.fieldDefinitions);
@@ -41,27 +47,44 @@ export class InventoryImportService {
         if (seen.has(hash)) { duplicateRows++; errors.push({ line, reason: 'Duplicate row in import' }); return; }
         seen.add(hash);
         prepared.push({ line, normalized, hash, maskedPreview: createMaskedPreview(normalized, product.fieldDefinitions) });
-      } catch (error) { errors.push({ line, reason: error instanceof Error ? error.message : 'Invalid row' }); }
+      } catch (error) {
+        invalidRows++; errors.push({ line, reason: error instanceof Error ? error.message : 'Invalid row' });
+      }
     });
-    const databaseHashes = new Set((await this.inventory.find({ productId, payloadHash: { $in: prepared.map((row) => row.hash) }, deletedAt: null })
-      .select('+payloadHash').lean()).map((item) => item.payloadHash));
-    const importable = prepared.filter((row) => {
-      if (!databaseHashes.has(row.hash)) return true;
-      duplicateRows++; errors.push({ line: row.line, reason: 'Duplicate row already in inventory' }); return false;
+    const databaseRows = await this.inventory.find({ productId,
+      payloadHash: { $in: prepared.map((row) => row.hash) }, deletedAt: null })
+      .select('_id status +payloadHash').lean();
+    const existingByHash = new Map(databaseRows.map((item) => [item.payloadHash, item]));
+    let overwriteableRows = 0;
+    const importable = prepared.flatMap((row) => {
+      const existing = existingByHash.get(row.hash);
+      if (!existing) return [row];
+      duplicateRows++;
+      if (existing.status === InventoryStatus.AVAILABLE) {
+        overwriteableRows++;
+        if (overwriteDuplicates) return [{ ...row, existingId: existing._id }];
+        errors.push({ line: row.line, reason: 'Duplicate row already in inventory' });
+      } else {
+        errors.push({ line: row.line, reason: 'Duplicate row is sold or reserved and cannot be overwritten' });
+      }
+      return [];
     });
-    return { totalRows: rows.length, validRows: importable.length, invalidRows: errors.length - duplicateRows,
-      duplicateRows, preview: importable.slice(0, 100).map(({ line, maskedPreview }) => ({ line, maskedPreview })),
+    return { totalRows: rows.length, validRows: importable.length, invalidRows,
+      duplicateRows, overwriteableRows,
+      preview: importable.slice(0, 100).map(({ line, maskedPreview }) => ({ line, maskedPreview })),
       errors, prepared: importable };
   }
 
-  async commit(productId: string, rows: Record<string, unknown>[], adminId: string, sourceName?: string) {
-    const report = await this.prepare(productId, rows);
+  async commit(productId: string, rows: Record<string, unknown>[], adminId: string, sourceName?: string,
+    overwriteDuplicates = false) {
+    const report = await this.prepare(productId, rows, overwriteDuplicates);
     const batch = await this.batches.create({ productId, createdBy: adminId, status: ImportBatchStatus.PROCESSING,
       totalRows: report.totalRows, validRows: report.validRows, invalidRows: report.invalidRows,
       duplicateRows: report.duplicateRows, importedRows: 0, sourceName, rowErrors: report.errors });
-    let importedRows = 0; const runtimeErrors: ImportError[] = [];
-    for (let offset = 0; offset < report.prepared.length; offset += 500) {
-      const chunk = report.prepared.slice(offset, offset + 500);
+    let importedRows = 0; let overwrittenRows = 0; const runtimeErrors: ImportError[] = [];
+    const inserts = report.prepared.filter((row) => !row.existingId);
+    for (let offset = 0; offset < inserts.length; offset += 500) {
+      const chunk = inserts.slice(offset, offset + 500);
       try {
         const result = await this.inventory.bulkWrite(chunk.map((row) => ({ insertOne: { document: {
           productId: new Types.ObjectId(productId), encryptedPayload: this.encryption.encrypt(row.normalized),
@@ -77,8 +100,38 @@ export class InventoryImportService {
         if (!writeErrors.length && !isMongoDuplicateKey(error)) throw error;
       }
     }
-    batch.importedRows = importedRows; batch.duplicateRows += runtimeErrors.filter((item) => item.reason.includes('Duplicate')).length;
-    batch.rowErrors.push(...runtimeErrors); batch.status = importedRows === report.prepared.length ? ImportBatchStatus.COMPLETED : ImportBatchStatus.PARTIAL;
+    const overwrites = report.prepared.filter((row): row is PreparedRow & { existingId: Types.ObjectId } => Boolean(row.existingId));
+    for (let offset = 0; offset < overwrites.length; offset += 500) {
+      const chunk = overwrites.slice(offset, offset + 500);
+      const rejectedIndexes = new Set<number>();
+      try {
+        await this.inventory.bulkWrite(chunk.map((row) => ({ updateOne: {
+          filter: { _id: row.existingId, productId: new Types.ObjectId(productId), status: InventoryStatus.AVAILABLE,
+            deletedAt: null, payloadHash: row.hash },
+          update: { $set: { encryptedPayload: this.encryption.encrypt(row.normalized), maskedPreview: row.maskedPreview,
+            importBatchId: batch._id, updatedBy: new Types.ObjectId(adminId) } },
+        } })), { ordered: false });
+      } catch (error) {
+        const writeErrors = (error as { writeErrors?: Array<{ index: number }> }).writeErrors ?? [];
+        if (!writeErrors.length) throw error;
+        writeErrors.forEach((item) => {
+          rejectedIndexes.add(item.index);
+          runtimeErrors.push({ line: chunk[item.index]?.line ?? offset + item.index + 1,
+            reason: 'Database rejected duplicate overwrite' });
+        });
+      }
+      const candidates = chunk.filter((_, index) => !rejectedIndexes.has(index));
+      const updatedIds = new Set((await this.inventory.find({ _id: { $in: candidates.map((row) => row.existingId) },
+        importBatchId: batch._id }).select('_id').lean()).map((item) => item._id.toString()));
+      overwrittenRows += updatedIds.size;
+      candidates.filter((row) => !updatedIds.has(row.existingId.toString())).forEach((row) => runtimeErrors.push({
+        line: row.line, reason: 'Duplicate became sold or reserved before overwrite and was protected',
+      }));
+    }
+    batch.importedRows = importedRows;
+    batch.duplicateRows += runtimeErrors.filter((item) => item.reason === 'Duplicate inserted concurrently').length;
+    batch.rowErrors.push(...runtimeErrors); batch.status = importedRows + overwrittenRows === report.prepared.length
+      ? ImportBatchStatus.COMPLETED : ImportBatchStatus.PARTIAL;
     await batch.save();
     let restockNotificationQueued = false;
     if (importedRows > 0 && this.stockAlerts) {
@@ -91,7 +144,8 @@ export class InventoryImportService {
       }
     }
     return { batchId: batch._id, totalRows: batch.totalRows, validRows: batch.validRows, invalidRows: batch.invalidRows,
-      duplicateRows: batch.duplicateRows, importedRows, skipped: batch.rowErrors, restockNotificationQueued };
+      duplicateRows: batch.duplicateRows, overwriteableRows: report.overwriteableRows, importedRows, overwrittenRows,
+      skipped: batch.rowErrors, restockNotificationQueued };
   }
 
   private normalize(row: Record<string, unknown>, fields: Product['fieldDefinitions']) {

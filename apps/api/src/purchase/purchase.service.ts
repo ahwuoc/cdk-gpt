@@ -19,6 +19,9 @@ export interface PurchaseBatchInput {
   quantity: number;
   idempotencyPrefix: string;
   paymentRequestId?: string;
+  /** New bank QR checkouts are quotes only. They reserve stock atomically
+   * after the bank callback, while legacy checkouts still consume their hold. */
+  allowUnreservedPayment?: boolean;
 }
 
 export interface PurchaseQuote {
@@ -38,6 +41,9 @@ export interface ReserveBatchForPaymentInput {
   paymentRequestId: string;
   expiresAt: Date;
 }
+
+export type SoftCheckoutAvailability = 'AVAILABLE' | 'USER_INACTIVE' | 'PRODUCT_UNAVAILABLE' |
+  'PURCHASE_LIMIT' | 'OUT_OF_STOCK';
 
 type BatchOrder = Order & { _id: Types.ObjectId };
 
@@ -149,6 +155,59 @@ export class PurchaseService {
     }
     return { productId: product._id.toString(), productName: product.name, unitPrice: product.price,
       quantity: input.quantity, totalAmount, available };
+  }
+
+  /** Quotes an unpaid QR inside the caller transaction and serializes other
+   * checkout intents for this user. This deliberately does not mutate stock. */
+  async quoteBatchForPayment(input: Omit<PurchaseBatchInput,
+    'idempotencyPrefix' | 'paymentRequestId' | 'allowUnreservedPayment'>,
+  session: ClientSession): Promise<PurchaseQuote> {
+    this.validateBatchInput({ ...input, idempotencyPrefix: 'soft-payment-quote' });
+    const userId = new Types.ObjectId(input.userId);
+    const productId = new Types.ObjectId(input.productId);
+    const user = await this.users.findActive(userId, session);
+    if (!user) throw new Error('User is not active');
+    await this.users.lockForCheckout(userId, session);
+    const product = await this.products.findOne({ _id: productId, status: ProductStatus.ACTIVE,
+      deletedAt: null }).session(session);
+    if (!product) throw new Error('Product is not available for sale');
+    if (product.price !== input.expectedUnitPrice) throw new Error('Product price changed; confirm the current price');
+    const totalAmount = product.price * input.quantity;
+    if (!Number.isSafeInteger(totalAmount) || totalAmount <= 0) throw new Error('Invalid checkout total');
+    const available = await this.inventory.countAvailable(productId, session);
+    if (available < input.quantity) throw new OutOfStockError();
+    if (product.purchaseLimitPerUser > 0) {
+      const purchased = await this.orderModel.countDocuments({ userId, productId,
+        status: { $nin: [OrderStatus.CANCELLED, OrderStatus.REFUNDED] } }).session(session);
+      if (purchased + input.quantity > product.purchaseLimitPerUser) throw new Error('Purchase limit reached');
+    }
+    return { productId: product._id.toString(), productName: product.name, unitPrice: product.price,
+      quantity: input.quantity, totalAmount, available };
+  }
+
+  /** Checks the paid quote under the same per-user lock used by purchases.
+   * The caller can safely credit the transfer instead of creating an order
+   * when the quote can no longer be fulfilled. */
+  async softCheckoutAvailability(input: Omit<PurchaseBatchInput,
+    'idempotencyPrefix' | 'paymentRequestId' | 'allowUnreservedPayment'>,
+  session: ClientSession): Promise<SoftCheckoutAvailability> {
+    this.validateBatchInput({ ...input, idempotencyPrefix: 'soft-payment-check' });
+    const userId = new Types.ObjectId(input.userId);
+    const productId = new Types.ObjectId(input.productId);
+    const user = await this.users.findActive(userId, session);
+    if (!user) return 'USER_INACTIVE';
+    await this.users.lockForCheckout(userId, session);
+    // Honor the quoted price even if the product was paused after QR creation,
+    // but never fulfill a product that has been deleted.
+    const product = await this.products.findOne({ _id: productId, deletedAt: null }).session(session);
+    if (!product) return 'PRODUCT_UNAVAILABLE';
+    if (product.purchaseLimitPerUser > 0) {
+      const purchased = await this.orderModel.countDocuments({ userId, productId,
+        status: { $nin: [OrderStatus.CANCELLED, OrderStatus.REFUNDED] } }).session(session);
+      if (purchased + input.quantity > product.purchaseLimitPerUser) return 'PURCHASE_LIMIT';
+    }
+    return await this.inventory.countAvailable(productId, session) >= input.quantity
+      ? 'AVAILABLE' : 'OUT_OF_STOCK';
   }
 
   /** Holds the complete checkout quantity until its QR expires. The caller
@@ -268,8 +327,9 @@ export class PurchaseService {
     const paymentRequestId = input.paymentRequestId ? new Types.ObjectId(input.paymentRequestId) : undefined;
     const user = await this.users.findActive(userId, session);
     if (!user) throw new Error('User is not active');
+    if (input.allowUnreservedPayment) await this.users.lockForCheckout(userId, session);
     const product = await this.products.findOne(paymentRequestId
-      ? { _id: productId }
+      ? input.allowUnreservedPayment ? { _id: productId, deletedAt: null } : { _id: productId }
       : { _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).session(session);
     if (!product) throw new Error('Product is not available for sale');
     if (!paymentRequestId && product.price !== input.expectedUnitPrice) throw new Error('Product price changed; confirm the current price');
@@ -277,15 +337,15 @@ export class PurchaseService {
     const total = unitPrice * input.quantity;
     if (!Number.isSafeInteger(total) || total <= 0) throw new Error('Invalid checkout total');
     if (user.walletBalance < total) throw new InsufficientBalanceError();
-    // A paid checkout consumes the price, eligibility and stock that were
-    // locked when its QR was created; later admin edits cannot invalidate it.
-    if (!paymentRequestId && product.purchaseLimitPerUser > 0) {
+    // A legacy paid checkout consumes its earlier hold. A soft checkout
+    // rechecks eligibility and reserves available rows only after payment.
+    if ((!paymentRequestId || input.allowUnreservedPayment) && product.purchaseLimitPerUser > 0) {
       const purchased = await this.orderModel.countDocuments({ userId, productId,
         status: { $nin: [OrderStatus.CANCELLED, OrderStatus.REFUNDED] } }).session(session);
       if (purchased + input.quantity > product.purchaseLimitPerUser) throw new Error('Purchase limit reached');
     }
 
-    const heldItems = paymentRequestId
+    const heldItems = paymentRequestId && !input.allowUnreservedPayment
       ? await this.inventory.findPaymentReservations(paymentRequestId, session)
       : undefined;
     if (heldItems && heldItems.length !== input.quantity) throw new OutOfStockError();

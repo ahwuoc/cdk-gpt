@@ -1,11 +1,10 @@
 import { Markup, Telegraf, type Context } from 'telegraf';
 import type { Model } from 'mongoose';
-import { isServerlessRuntime } from '@store/config';
 import {
   BotSessionKind, BotSessionModel, CategoryModel, InventoryItemModel, OrderModel, ProductModel, SettingModel, UserModel,
   type BotSession, type Category, type InventoryItem, type Order, type Product, type Setting, type User,
 } from '@store/database';
-import { ComplaintCategory, DeliveryStatus, InventoryStatus, OrderStatus, ProductStatus, UserStatus,
+import { ComplaintCategory, DeliveryStatus, InventoryStatus, MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY, OrderStatus, ProductStatus, UserStatus,
   type ComplaintCategoryValue } from '@store/shared';
 
 /**
@@ -666,8 +665,8 @@ function formatDeadline(value: string) {
 function bankPollingHint() {
   return 'Chuyển ĐÚNG số tiền và ĐÚNG nội dung. Cake sẽ gửi callback và hệ thống tự cộng tiền; nút “Kiểm tra tiền” chỉ làm mới trạng thái.';
 }
-/** Keep one webhook invocation below Vercel's 60-second limit; users can repeat safely. */
-function maximumTelegramPurchaseQuantity() { return isServerlessRuntime() ? 5 : 100; }
+/** Small orders bound callback work and limit abuse consistently on every runtime. */
+function maximumTelegramPurchaseQuantity() { return MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY; }
 function markdownEscape(value: string) { return value.replace(/[\\_*`\[\]()]/g, '\\$&'); }
 function descriptionBlock(value: string | undefined, limit: number) {
   const description = value?.trim();

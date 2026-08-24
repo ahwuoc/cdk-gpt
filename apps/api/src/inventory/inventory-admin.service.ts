@@ -3,8 +3,8 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import { EncryptionService } from '@store/encryption';
-import { AuditLog, ImportBatch, InventoryItem } from '@store/database';
-import { InventoryStatus } from '@store/shared';
+import { AuditLog, ImportBatch, InventoryItem, Product } from '@store/database';
+import { formatInventoryPatternPayload, InventoryStatus, parseInventoryPatternTemplate } from '@store/shared';
 import type { InventoryListQueryDto } from './inventory.dto';
 
 type InventoryListItem = {
@@ -34,6 +34,7 @@ export class InventoryAdminService {
     // Optional keeps direct, read-only service construction in workers/tests backwards compatible.
     @Optional() @InjectConnection() private readonly connection?: Connection,
     @Optional() @InjectModel('ImportBatch') private readonly batches?: Model<ImportBatch>,
+    @Optional() @InjectModel('Product') private readonly products?: Model<Product>,
   ) {}
 
   async list(query: InventoryListQueryDto): Promise<InventoryPage> {
@@ -166,9 +167,16 @@ export class InventoryAdminService {
     const item = await this.items.findOne({ _id: itemId, deletedAt: null }).select('+encryptedPayload');
     if (!item) throw new NotFoundException('Inventory item not found');
     const payload = this.encryption.decrypt<Record<string, unknown>>(item.encryptedPayload);
+    if (!this.products) throw new Error('Product model is required to format inventory payloads');
+    const product = await this.products.findById(item.productId).select('inventoryPattern fieldDefinitions').lean();
+    if (!product) throw new NotFoundException('Inventory product not found');
+    const inventoryPattern = product.inventoryPattern?.trim() || [...product.fieldDefinitions]
+      .sort((left, right) => left.sortOrder - right.sortOrder)
+      .map((field) => `{{${field.key}}}`).join('----');
+    const formatted = formatInventoryPatternPayload(payload, parseInventoryPatternTemplate(inventoryPattern));
     await this.audits.create({ actorType: 'ADMIN', actorId: new Types.ObjectId(adminId), action: 'INVENTORY_PAYLOAD_READ',
       resourceType: 'InventoryItem', resourceId: item._id, requestId, metadata: { keyVersion: this.encryption.currentVersion } });
-    return payload;
+    return { productId: item.productId.toString(), inventoryPattern, formatted };
   }
 
   private transactionConnection() {
