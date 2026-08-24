@@ -194,7 +194,11 @@ function page<T>(value: PageResult<T>): PageResult<T> { return { items: Array.is
 function params(input: Record<string, string | number>) { const result = new URLSearchParams(); for (const [key, value] of Object.entries(input)) if (value !== '') result.set(key, String(value)); return result.toString(); }
 async function json<T>(response: Response): Promise<T> { const text = await response.text(); if (!text) return {} as T; try { return JSON.parse(text) as T; } catch { return { message: `API không phản hồi JSON (HTTP ${response.status})` } as T; } }
 function message(body: unknown, fallback: string) { if (!body || typeof body !== 'object' || !('message' in body)) return fallback; const value = (body as { message?: unknown }).message; return typeof value === 'string' ? value : Array.isArray(value) ? value.join('. ') : fallback; }
-function person(user?: Person | null) { return user?.displayName || (user?.username ? `@${user.username}` : '') || (user?.telegramId ? `Telegram ${user.telegramId}` : '') || 'Khách đã xóa'; }
+function person(user?: Person | null) {
+  if (!user) return 'Khách đã xóa';
+  const handle = user.username ? `@${user.username.replace(/^@+/, '')}` : '';
+  return [user.displayName, handle].filter(Boolean).join(' · ') || (user.telegramId ? `Telegram ${user.telegramId}` : 'Khách hàng');
+}
 function number(value: number) { return new Intl.NumberFormat('vi-VN').format(value || 0); }
 function money(value: number) { return `${new Intl.NumberFormat('vi-VN').format(value || 0)} đ`; }
 function dateTime(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(date); }

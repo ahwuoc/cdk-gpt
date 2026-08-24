@@ -40,6 +40,7 @@ interface Summary {
 }
 
 interface Person {
+  id?: string;
   telegramId?: string;
   username?: string;
   displayName?: string;
@@ -237,10 +238,10 @@ function OrdersHistory({ data, loading, query, setQuery, refresh }: {
   setQuery: Dispatch<SetStateAction<{ search: string; userId: string; status: string; from: string; to: string; page: number }>>;
   refresh(): Promise<void>;
 }) {
-  return <HistoryPanel title="Lịch sử đơn hàng" subtitle="Tìm theo mã đơn, khách hàng hoặc sản phẩm." icon={<ClipboardList size={19} />} loading={loading} refresh={refresh}>
+  return <HistoryPanel title="Lịch sử đơn hàng" subtitle="Mỗi đơn hiển thị tên, @username và Telegram ID của người mua." icon={<ClipboardList size={19} />} loading={loading} refresh={refresh}>
     {query.userId && <ScopedUserFilter userId={query.userId} clear={() => { clearUrlUserFilter(); setQuery((current) => ({ ...current, userId: '', page: 1 })); }} />}
     <FilterBar>
-      <SearchField value={query.search} onChange={(search) => setQuery((current) => ({ ...current, search, page: 1 }))} placeholder="Mã đơn, khách hoặc sản phẩm" />
+      <SearchField value={query.search} onChange={(search) => setQuery((current) => ({ ...current, search, page: 1 }))} placeholder="Mã đơn, @username, Telegram ID hoặc sản phẩm" />
       <select className="input h-11 py-2" value={query.status} onChange={(event) => setQuery((current) => ({ ...current, status: event.target.value, page: 1 }))} aria-label="Lọc trạng thái đơn hàng">
         <option value="">Tất cả trạng thái</option>
         <option value="PENDING_DELIVERY">Chờ giao</option><option value="DELIVERING">Đang giao</option><option value="DELIVERED">Đã giao</option>
@@ -311,7 +312,10 @@ function OrderRow({ order, compact = false }: { order: OrderRecord; compact?: bo
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-2"><code className="text-xs font-semibold text-indigo-200">{order.orderCode}</code><StatusBadge value={order.status} type="order" /></div>
       <p className="mt-1 truncate text-sm font-medium text-slate-100">{order.product?.name ?? 'Sản phẩm đã xóa'}</p>
-      <p className="mt-1 text-xs text-slate-500">{person(order.user)} · {dateTime(order.createdAt)}{order.quantity && order.quantity > 1 ? ` · SL ${order.quantity}` : ''}</p>
+      <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500">
+        <span>Người mua:</span><BuyerIdentity user={order.user} /><span>· {dateTime(order.createdAt)}</span>
+        {order.quantity && order.quantity > 1 ? <span>· SL {order.quantity}</span> : null}
+      </div>
     </div>
     <div className="flex items-center justify-between gap-3 sm:block sm:text-right"><p className="font-semibold text-emerald-300">{money(order.totalAmount)}</p><p className="mt-1 text-xs text-slate-500">{paymentName(order.paymentMethod)}</p></div>
   </article>;
@@ -327,6 +331,19 @@ function DepositRow({ deposit, compact = false }: { deposit: DepositRecord; comp
     </div>
     <div className="flex items-center justify-between gap-3 sm:block sm:text-right"><p className="font-semibold text-emerald-300">+{money(deposit.amount)}</p><p className="mt-1 text-xs text-slate-500">{deposit.reviewedAt ? `Duyệt ${dateTime(deposit.reviewedAt)}` : 'Chưa duyệt'}</p></div>
   </article>;
+}
+
+function BuyerIdentity({ user }: { user?: Person | null }) {
+  if (!user) return <span className="text-slate-400">Khách đã xóa</span>;
+  const username = user.username?.replace(/^@+/, '').trim();
+  return <>
+    {user.displayName && <span className="font-medium text-slate-300">{user.displayName}</span>}
+    {username
+      ? <a href={`https://t.me/${encodeURIComponent(username)}`} target="_blank" rel="noreferrer"
+        className="font-medium text-sky-300 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-200">@{username}</a>
+      : <span className="text-amber-300">Không có @username</span>}
+    {user.telegramId && <code className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-indigo-200">ID {user.telegramId}</code>}
+  </>;
 }
 
 function QuickAction({ icon, title, description, action, onClick, danger = false }: { icon: ReactNode; title: string; description: string; action: string; onClick(): void; danger?: boolean }) {

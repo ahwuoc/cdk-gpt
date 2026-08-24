@@ -193,8 +193,9 @@ export class AnalyticsService {
     if (query.status) match.status = query.status;
     this.addCreatedAtRange(match, query.from, query.to);
     const regex = searchRegex(query.search);
+    const usernameRegex = usernameSearchRegex(query.search) ?? regex;
     if (regex) Object.assign(match, { $or: [
-      { telegramId: regex }, { username: regex }, { displayName: regex }, { referralCode: regex },
+      { telegramId: regex }, { username: usernameRegex }, { displayName: regex }, { referralCode: regex },
     ] });
     const [result] = await this.userModel.aggregate<FacetResult<UserHistoryRecord>>([
       { $match: match },
@@ -226,9 +227,10 @@ export class AnalyticsService {
     if (Object.keys(match).length) pipeline.push({ $match: match });
     const joins = userJoinStages();
     const regex = searchRegex(query.search);
+    const usernameRegex = usernameSearchRegex(query.search) ?? regex;
     if (regex) pipeline.push(...joins, { $match: { $or: [
         { reason: regex }, { idempotencyKey: regex }, { referenceType: regex },
-        { 'user.displayName': regex }, { 'user.username': regex }, { 'user.telegramId': regex },
+        { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
       ] } });
     pipeline.push({ $facet: {
       items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
@@ -262,10 +264,11 @@ export class AnalyticsService {
     if (Object.keys(match).length) pipeline.push({ $match: match });
     const joins = auditActorJoinStages();
     const regex = searchRegex(query.search);
+    const usernameRegex = usernameSearchRegex(query.search) ?? regex;
     if (regex) pipeline.push(...joins, { $match: { $or: [
         { action: regex }, { resourceType: regex }, { requestId: regex },
-        { 'adminActor.username': regex }, { 'adminActor.email': regex },
-        { 'userActor.displayName': regex }, { 'userActor.username': regex }, { 'userActor.telegramId': regex },
+        { 'adminActor.username': usernameRegex }, { 'adminActor.email': regex },
+        { 'userActor.displayName': regex }, { 'userActor.username': usernameRegex }, { 'userActor.telegramId': regex },
       ] } });
     pipeline.push({ $facet: {
       items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
@@ -290,9 +293,10 @@ export class AnalyticsService {
     if (Object.keys(match).length > 0) pipeline.push({ $match: match });
     const joins = orderJoinStages();
     const regex = searchRegex(search);
+    const usernameRegex = usernameSearchRegex(search) ?? regex;
     if (regex) {
       pipeline.push(...joins, { $match: { $or: [
-        { orderCode: regex }, { 'user.displayName': regex }, { 'user.username': regex }, { 'user.telegramId': regex },
+        { orderCode: regex }, { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
         { 'product.name': regex }, { 'product.slug': regex },
       ] } });
     }
@@ -309,10 +313,11 @@ export class AnalyticsService {
     if (Object.keys(match).length > 0) pipeline.push({ $match: match });
     const joins = userJoinStages();
     const regex = searchRegex(search);
+    const usernameRegex = usernameSearchRegex(search) ?? regex;
     if (regex) {
       pipeline.push(...joins, { $match: { $or: [
         { requestCode: regex }, { provider: regex }, { providerReference: regex },
-        { 'user.displayName': regex }, { 'user.username': regex }, { 'user.telegramId': regex },
+        { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
       ] } });
     }
     pipeline.push({ $facet: {
@@ -468,6 +473,15 @@ function transferContent(metadata?: Record<string, unknown>) {
 function searchRegex(search?: string) {
   const value = search?.trim();
   return value ? new RegExp(escapeRegex(value), 'i') : undefined;
+}
+
+/** Telegram stores usernames without the leading @, while admins naturally
+ * paste handles as @username into search fields. */
+function usernameSearchRegex(search?: string) {
+  const value = search?.trim();
+  if (!value?.startsWith('@')) return searchRegex(search);
+  const username = value.slice(1).trim();
+  return username ? new RegExp(escapeRegex(username), 'i') : undefined;
 }
 
 function escapeRegex(value: string) {

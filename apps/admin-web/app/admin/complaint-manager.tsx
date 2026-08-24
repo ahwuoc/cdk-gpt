@@ -130,7 +130,11 @@ function Pagination<T>({ data, onPage }: { data: PageResult<T>; onPage(page: num
 function StatusBadge({ value }: { value: string }) { const color = value === 'PENDING' ? 'bg-amber-500/15 text-amber-300' : value === 'REVIEWING' ? 'bg-sky-500/15 text-sky-300' : value === 'REJECTED' ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'; return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${color}`}>{statusLabel(value)}</span>; }
 function statusLabel(value: string) { return ({ PENDING: 'Chờ xử lý', REVIEWING: 'Đang kiểm tra', RESOLVED: 'Đã giải quyết', APPROVED: 'Đã chấp nhận', REJECTED: 'Đã từ chối', REPLACED: 'Đã thay thế', REFUNDED: 'Đã hoàn tiền' } as Record<string, string>)[value] ?? value; }
 function categoryLabel(value: string) { return ({ NO_DELIVERY: 'Chưa nhận được hàng', INVALID_CREDENTIALS: 'Không đăng nhập được', PRODUCT_MISMATCH: 'Không đúng mô tả', WARRANTY: 'Yêu cầu bảo hành', OTHER: 'Vấn đề khác' } as Record<string, string>)[value] ?? value; }
-function person(user?: ReportRecord['user']) { return user?.displayName || (user?.username ? `@${user.username}` : '') || (user?.telegramId ? `Telegram ${user.telegramId}` : '') || 'Khách đã xóa'; }
+function person(user?: ReportRecord['user']) {
+  if (!user) return 'Khách đã xóa';
+  const handle = user.username ? `@${user.username.replace(/^@+/, '')}` : '';
+  return [user.displayName, handle].filter(Boolean).join(' · ') || (user.telegramId ? `Telegram ${user.telegramId}` : 'Khách hàng');
+}
 function dateTime(value?: string | null) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(date); }
 function money(value?: number) { return value === undefined ? '—' : `${new Intl.NumberFormat('vi-VN').format(value)} đ`; }
 function queryString(input: Record<string, string | number>) { const query = new URLSearchParams(); for (const [key, value] of Object.entries(input)) if (value !== '') query.set(key, String(value)); return query.toString(); }

@@ -489,6 +489,22 @@ integration('digital store on a MongoDB replica set', () => {
       apiKey: '[REDACTED]', nested: { credential: '[REDACTED]' }, safe: 'visible' });
   });
 
+  test('admin can identify and find an order buyer by Telegram @username', async () => {
+    const { product, user } = await fixture(1, 100);
+    user.username = 'buyer_handle';
+    user.displayName = 'Buyer Name';
+    await user.save();
+    const order = await purchaseService().purchase({ userId: user._id.toString(), productId: product._id.toString(),
+      expectedUnitPrice: 100, idempotencyKey: 'buyer-identity-order' });
+
+    const result = await analyticsService().orders({ page: 1, limit: 20, search: '@buyer_handle' });
+
+    expect(result.total).toBe(1);
+    expect(result.items[0]).toMatchObject({ id: order._id.toString(), user: {
+      id: user._id.toString(), username: 'buyer_handle', displayName: 'Buyer Name', telegramId: user.telegramId,
+    } });
+  });
+
   test('a customer can report only their order once and an admin can resolve it', async () => {
     const { product, user, adminId } = await fixture(1);
     const order = await purchaseService().purchase({ userId: user._id.toString(), productId: product._id.toString(),

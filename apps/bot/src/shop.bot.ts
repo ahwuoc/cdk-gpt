@@ -678,7 +678,11 @@ function descriptionBlock(value: string | undefined, limit: number) {
 function statusIcon(status: string) { return status === DeliveryStatus.DELIVERED ? '✅' : status === DeliveryStatus.FAILED || status === OrderStatus.DELIVERY_FAILED ? '⚠️' : '⏳'; }
 
 async function ensureUser(models: ShopBotDataContext, telegramId: string, username?: string, displayName?: string) {
-  return models.users.findOneAndUpdate({ telegramId, deletedAt: null }, { $set: { username, displayName }, $setOnInsert: {
+  const normalizedUsername = username?.trim();
+  return models.users.findOneAndUpdate({ telegramId, deletedAt: null }, {
+    $set: { ...(normalizedUsername ? { username: normalizedUsername } : {}), ...(displayName ? { displayName } : {}) },
+    ...(!normalizedUsername ? { $unset: { username: 1 } } : {}),
+    $setOnInsert: {
     status: UserStatus.ACTIVE, walletBalance: 0, referralCode: `TG${telegramId.replace('-', '')}`, purchaseCount: 0, deletedAt: null,
   } }, { upsert: true, new: true, setDefaultsOnInsert: true });
 }
