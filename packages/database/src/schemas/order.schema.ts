@@ -31,4 +31,6 @@ OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ productId: 1, status: 1, createdAt: -1 });
 OrderSchema.index({ inventoryItemId: 1 }, { unique: true });
 OrderSchema.index({ deliveryStatus: 1, updatedAt: 1 });
+OrderSchema.index({ status: 1, deliveryStatus: 1, 'metadata.deliveryDispatchAttemptAt': 1, createdAt: 1 },
+  { name: 'pending_delivery_dispatch_attempt' });
 export const OrderModel: Model<Order> = (models.Order as Model<Order> | undefined) ?? model<Order>('Order', OrderSchema, 'orders');

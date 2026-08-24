@@ -181,6 +181,292 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
   });
 
+  test('Cake quick checkout calculates the total and atomically buys every requested item once', async () => {
+    const { product, user } = await fixture(2, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const purchases = purchaseService();
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchases);
+    const checkouts = await Promise.all(Array.from({ length: 5 }, () => service.createBankCheckout(
+      user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-request')));
+    const checkout = checkouts[0]!;
+    expect(new Set(checkouts.map((item) => item.id)).size).toBe(1);
+    expect(await PaymentRequestModel.countDocuments({ idempotencyKey: 'quick-checkout-request' })).toBe(1);
+    expect(checkout).toMatchObject({ amount: 200, quantity: 2, unitPrice: 100, productName: product.name, status: PaymentRequestStatus.PENDING });
+    expect(checkout.qrUrl).toContain('amount=200');
+    expect(checkout.transferContent).toMatch(/^DON[A-F0-9]+$/);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.RESERVED,
+      reservedPaymentRequestId: checkout.id })).toBe(2);
+    await InventoryItemModel.updateMany({ reservedPaymentRequestId: checkout.id },
+      { $set: { reservationExpiresAt: new Date(Date.now() + 1_000) } });
+    await ProductModel.updateOne({ _id: product._id }, { $set: { price: 999, status: ProductStatus.INACTIVE } });
+
+    const transaction = { transactionID: '579740339', amount: 200,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' };
+    await Promise.all(Array.from({ length: 4 }, () => service.processCakeCallback([transaction])));
+
+    expect(await OrderModel.countDocuments({ userId: user._id, productId: product._id })).toBe(2);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.RESERVED })).toBe(2);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id,
+      reservedPaymentRequestId: { $exists: true } })).toBe(0);
+    const orderReservations = await InventoryItemModel.find({ productId: product._id, status: InventoryStatus.RESERVED }).lean();
+    expect(orderReservations.every((item) => (item.reservationExpiresAt?.getTime() ?? 0) > Date.now() + 14 * 60_000)).toBeTrue();
+    expect((await OrderModel.findOne({ userId: user._id }))?.unitPrice).toBe(100);
+    expect((await UserModel.findById(user._id))!.walletBalance).toBe(0);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'PURCHASE' })).toBe(2);
+    expect(await PaymentRequestModel.countDocuments({ providerReference: '579740339', status: PaymentRequestStatus.APPROVED })).toBe(1);
+    expect(new Set(queued).size).toBe(2);
+    const retried = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-request');
+    expect(retried.id).toBe(checkout.id);
+  });
+
+  test('a stock race cannot create a partial quick-checkout order or lose the bank payment', async () => {
+    const { product, user } = await fixture(2, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-stock-race');
+    await InventoryItemModel.updateOne({ productId: product._id, reservedPaymentRequestId: checkout.id },
+      { $set: { status: InventoryStatus.DISABLED } });
+
+    await service.processCakeCallback([{ transactionID: '579740340', amount: 200,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
+
+    expect(await OrderModel.countDocuments({ userId: user._id, productId: product._id })).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.RESERVED })).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(1);
+    expect((await UserModel.findById(user._id))!.walletBalance).toBe(200);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'PURCHASE' })).toBe(0);
+    const checked = await service.checkBankDeposit(checkout.id, user._id.toString());
+    expect(checked.checkout).toMatchObject({ status: 'FAILED', quantity: 2, totalAmount: 200 });
+  });
+
+  test('a late quick-checkout transfer credits the wallet but never consumes expired held stock', async () => {
+    const { product, user } = await fixture(2, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'late-quick-checkout');
+    const past = new Date(Date.now() - 60_000);
+    await PaymentRequestModel.updateOne({ _id: checkout.id }, { $set: { 'metadata.expiresAt': past.toISOString() } });
+    await InventoryItemModel.updateMany({ reservedPaymentRequestId: checkout.id }, { $set: { reservationExpiresAt: past } });
+
+    const result = await service.processCakeCallback([{ transactionID: '579740341', amount: 200,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
+
+    expect(result.approved).toBe(1);
+    expect((await UserModel.findById(user._id))!.walletBalance).toBe(200);
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(0);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'PURCHASE' })).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(2);
+    const payment = await PaymentRequestModel.findById(checkout.id).lean();
+    expect(payment?.status).toBe(PaymentRequestStatus.APPROVED);
+    expect((payment?.metadata.quickCheckout as { status?: string; fulfillmentError?: string }).status).toBe('FAILED');
+    expect((payment?.metadata.quickCheckout as { fulfillmentError?: string }).fulfillmentError).toContain('sau thời hạn');
+  });
+
+  test('a new checkout immediately reclaims an abandoned expired QR hold', async () => {
+    const { product, user } = await fixture(2, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const abandoned = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'abandoned-checkout');
+    const past = new Date(Date.now() - 60_000);
+    await PaymentRequestModel.updateOne({ _id: abandoned.id }, { $set: { 'metadata.expiresAt': past.toISOString() } });
+    await InventoryItemModel.updateMany({ reservedPaymentRequestId: abandoned.id }, { $set: { reservationExpiresAt: past } });
+
+    const replacement = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'replacement-checkout');
+
+    expect(replacement.id).not.toBe(abandoned.id);
+    expect(await InventoryItemModel.countDocuments({ reservedPaymentRequestId: abandoned.id })).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ reservedPaymentRequestId: replacement.id,
+      status: InventoryStatus.RESERVED })).toBe(2);
+  });
+
+  test('concurrent QR checkouts cannot bypass one active hold or the per-user purchase limit', async () => {
+    const { product, user } = await fixture(4, 0, 2);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+
+    const results = await Promise.allSettled([
+      service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'parallel-checkout-one'),
+      service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'parallel-checkout-two'),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(await PaymentRequestModel.countDocuments({ userId: user._id, status: PaymentRequestStatus.PENDING })).toBe(1);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, reservedByUserId: user._id,
+      reservedPaymentRequestId: { $exists: true } })).toBe(2);
+  });
+
+  test('an active QR hold counts toward the limit when the same user attempts a wallet purchase', async () => {
+    const { product, user } = await fixture(2, 100, 1);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const purchases = purchaseService();
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchases);
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 1, 100,
+      'wallet-limit-active-qr');
+
+    await expect(purchases.purchase({ userId: user._id.toString(), productId: product._id.toString(),
+      expectedUnitPrice: 100, idempotencyKey: 'wallet-during-active-qr' })).rejects.toThrow('Purchase limit reached');
+
+    await service.processCakeCallback([{ transactionID: '579740349', amount: 100,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
+    expect(await OrderModel.countDocuments({ userId: user._id, productId: product._id })).toBe(1);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(100);
+  });
+
+  test('Cake matches a transfer code directly even after more than 100 equal-amount pending requests', async () => {
+    const { user } = await fixture(0, 0);
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const requests = Array.from({ length: 101 }, (_, index) => {
+      const requestCode = `NAP${index.toString(16).toUpperCase().padStart(16, '0')}`;
+      return { requestCode, userId: user._id, amount: 777, provider: 'BANK_API', status: PaymentRequestStatus.PENDING,
+        proofUrls: [], idempotencyKey: `same-amount-${index.toString().padStart(3, '0')}`,
+        metadata: { transferContent: requestCode, expiresAt }, deletedAt: null };
+    });
+    await PaymentRequestModel.insertMany(requests);
+    const target = requests[100]!;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService());
+
+    const result = await service.processCakeCallback([{ transactionID: '579740342', amount: 777,
+      description: `THANH TOAN ${target.requestCode}`, transactionDate: '25/08/2026', type: 'IN' }]);
+
+    expect(result.approved).toBe(1);
+    expect((await UserModel.findById(user._id))!.walletBalance).toBe(777);
+    expect((await PaymentRequestModel.findOne({ requestCode: target.requestCode }))?.status).toBe(PaymentRequestStatus.APPROVED);
+  });
+
+  test('a retried Cake callback resumes an older approved checkout that has no orders yet', async () => {
+    const { product, user } = await fixture(2, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'resume-approved-checkout');
+    await UserModel.updateOne({ _id: user._id }, { $set: { walletBalance: 200 } });
+    await PaymentRequestModel.updateOne({ _id: checkout.id }, { $set: {
+      status: PaymentRequestStatus.APPROVED, providerReference: '579740344', reviewedAt: new Date(),
+    } });
+
+    const result = await service.processCakeCallback([{ transactionID: '579740344', amount: 200,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
+
+    expect(result.approved).toBe(1);
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(2);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(0);
+    const checked = await service.checkBankDeposit(checkout.id, user._id.toString());
+    expect(checked.checkout).toMatchObject({ status: 'FULFILLED', quantity: 2 });
+  });
+
+  test('a second real transfer to the same QR credits the wallet without duplicating its orders', async () => {
+    const { product, user } = await fixture(1, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 1, 100, 'duplicate-real-transfer');
+    const first = { transactionID: '579740345', amount: 100,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' };
+    const second = { ...first, transactionID: '579740346' };
+
+    await Promise.all([service.processCakeCallback([first]), service.processCakeCallback([second])]);
+    await service.processCakeCallback([second]);
+
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(1);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(100);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(2);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'PURCHASE' })).toBe(1);
+  });
+
+  test('an underpayment with a valid checkout code is credited but never creates the quoted order', async () => {
+    const { product, user } = await fixture(1, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 1, 100, 'underpaid-checkout');
+    const transaction = { transactionID: '579740348', amount: 90,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' };
+
+    await service.processCakeCallback([transaction]);
+    await service.processCakeCallback([transaction]);
+
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(90);
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(0);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(1);
+    const payment = await PaymentRequestModel.findById(checkout.id).lean();
+    expect(payment?.status).toBe(PaymentRequestStatus.APPROVED);
+    expect(payment?.metadata.amountMismatch).toEqual({ expected: 100, received: 90 });
+    expect((payment?.metadata.quickCheckout as { status?: string }).status).toBe('FAILED');
+    const checked = await service.checkBankDeposit(checkout.id, user._id.toString());
+    expect(checked).toMatchObject({ amount: 100, receivedAmount: 90, status: PaymentRequestStatus.APPROVED });
+    expect(checked.checkout?.fulfillmentError).toContain('90');
+  });
+
+  test('a bank transfer is reconciled to the wallet when the checkout user became inactive', async () => {
+    const { product, user } = await fixture(1, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 1, 100, 'inactive-user-transfer');
+    await UserModel.updateOne({ _id: user._id }, { $set: { status: UserStatus.BLOCKED } });
+
+    const result = await service.processCakeCallback([{ transactionID: '579740347', amount: 100,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' }]);
+
+    expect(result.approved).toBe(1);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(100);
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(0);
+    expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(1);
+    const payment = await PaymentRequestModel.findById(checkout.id).lean();
+    expect((payment?.metadata.quickCheckout as { status?: string; fulfillmentError?: string }).status).toBe('FAILED');
+    expect((payment?.metadata.quickCheckout as { fulfillmentError?: string }).fulfillmentError).toContain('tạm ngưng');
+  });
+
+  test('a delivery queue outage does not mark committed quick-checkout orders as failed', async () => {
+    const { product, user } = await fixture(2, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    let queueAvailable = false;
+    const recoveringQueue = { enqueue: async (orderId: string) => {
+      if (!queueAvailable) throw new Error('QStash unavailable');
+      queued.push(orderId); return { id: orderId };
+    } } as unknown as DeliveryQueue;
+    const purchases = new PurchaseService(mongoose.connection, ProductModel, OrderModel, userRepository(), reservationService(),
+      orderRepository(), walletRepository(), recoveringQueue);
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchases);
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'queue-outage-checkout');
+
+    const transaction = { transactionID: '579740343', amount: 200,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' };
+    await service.processCakeCallback([transaction]);
+
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(2);
+    expect(queued).toHaveLength(0);
+    queueAvailable = true;
+    await service.processCakeCallback([transaction]);
+    expect(queued).toHaveLength(2);
+    const payment = await PaymentRequestModel.findById(checkout.id).lean();
+    expect((payment?.metadata.quickCheckout as { status?: string }).status).toBe('FULFILLED');
+  });
+
   test('admin history pages expose users, wallet ledger, and redacted audit traces', async () => {
     const { user, adminId } = await fixture(0, 500);
     user.displayName = 'Trace Customer'; await user.save();

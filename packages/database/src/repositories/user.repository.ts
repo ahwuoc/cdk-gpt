@@ -12,6 +12,16 @@ export class UserRepository {
     return this.users.findOne({ _id: id, status: UserStatus.ACTIVE, deletedAt: null }).session(session ?? null).exec();
   }
 
+  findExisting(id: Types.ObjectId, session?: ClientSession) {
+    return this.users.findOne({ _id: id, deletedAt: null }).session(session ?? null).exec();
+  }
+
+  /** Serializes checkout reservations for one user without a process-local lock. */
+  lockForCheckout(id: Types.ObjectId, session: ClientSession) {
+    return this.users.updateOne({ _id: id, status: UserStatus.ACTIVE, deletedAt: null },
+      { $inc: { checkoutLockVersion: 1 } }, { session, runValidators: true }).exec();
+  }
+
   debit(id: Types.ObjectId, amount: number, session: ClientSession) {
     return this.users.findOneAndUpdate(
       { _id: id, status: UserStatus.ACTIVE, deletedAt: null, walletBalance: { $gte: amount } },
@@ -30,6 +40,13 @@ export class UserRepository {
   credit(id: Types.ObjectId, amount: number, session: ClientSession) {
     return this.users.findOneAndUpdate(
       { _id: id, status: UserStatus.ACTIVE, deletedAt: null }, { $inc: { walletBalance: amount } },
+      { new: true, session, runValidators: true },
+    );
+  }
+
+  creditReceivedFunds(id: Types.ObjectId, amount: number, session: ClientSession) {
+    return this.users.findOneAndUpdate(
+      { _id: id, deletedAt: null }, { $inc: { walletBalance: amount } },
       { new: true, session, runValidators: true },
     );
   }

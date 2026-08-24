@@ -49,13 +49,29 @@ type DepositResponse = {
   id?: string;
   requestCode?: string;
   amount?: number;
+  receivedAmount?: number;
   status?: string;
   transferContent?: string;
+  expiresAt?: string;
   qrUrl?: string;
   bank?: {
     bankId?: string;
     accountNo?: string;
     accountName?: string;
+  };
+  productId?: string;
+  productName?: string;
+  quantity?: number;
+  unitPrice?: number;
+  checkoutStatus?: string;
+  checkout?: {
+    productName?: string;
+    quantity?: number;
+    unitPrice?: number;
+    totalAmount?: number;
+    status?: string;
+    orderCodes?: string[];
+    fulfillmentError?: string;
   };
 };
 
@@ -122,6 +138,10 @@ export function createShopBot(
   bot.action(/^deposit:check:([a-f\d]{24})$/, async (ctx) => {
     await ctx.answerCbQuery('Đang kiểm tra giao dịch…');
     await checkDeposit(ctx, ctx.match[1], apiUrl, botApiSecret, data);
+  });
+  bot.action(/^checkout:check:([a-f\d]{24})$/, async (ctx) => {
+    await ctx.answerCbQuery('Đang kiểm tra thanh toán…');
+    await checkDeposit(ctx, ctx.match[1], apiUrl, botApiSecret, data, true);
   });
   bot.action('menu:home', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('🏠 Menu chính', inlineMenu()); });
 
@@ -292,7 +312,50 @@ async function createDeposit(ctx: Context, amount: number, apiUrl: string, botAp
   }
 }
 
-async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
+async function createQuickCheckout(ctx: Context, input: { userId: string; productId: string; productName: string;
+  quantity: number; unitPrice: number }, apiUrl: string, botApiSecret: string) {
+  if (!ctx.chat) return;
+  try {
+    const response = await fetch(`${apiUrl}/api/bot/checkouts`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId: input.userId, productId: input.productId, quantity: input.quantity,
+        expectedUnitPrice: input.unitPrice,
+        idempotencyKey: `checkout:${ctx.chat.id}:${ctx.update.update_id}:${input.productId}:${input.quantity}` }),
+    });
+    const body = await response.json().catch(() => ({})) as DepositResponse & { message?: string | string[] };
+    if (!response.ok || !body.id || !body.transferContent || !body.qrUrl || !body.bank?.accountNo) {
+      throw new Error(readErrorMessage(body.message, 'Không thể tạo mã thanh toán nhanh.'));
+    }
+    const total = body.amount ?? input.unitPrice * input.quantity;
+    const caption = [
+      '⚡ THANH TOÁN NHANH ĐƠN HÀNG', '',
+      `Sản phẩm: ${body.productName ?? input.productName}`,
+      `Số lượng: ${body.quantity ?? input.quantity}`,
+      `Đơn giá: ${formatMoney(body.unitPrice ?? input.unitPrice)}`,
+      `TỔNG THANH TOÁN: ${formatMoney(total)}`, '',
+      `Ngân hàng: ${body.bank.bankId ?? '—'}`,
+      `Số tài khoản: ${body.bank.accountNo}`,
+      `Chủ tài khoản: ${body.bank.accountName ?? '—'}`,
+      `Nội dung bắt buộc: ${body.transferContent}`, '',
+      body.expiresAt ? `⏰ Giữ hàng đến: ${formatDeadline(body.expiresAt)}` : '⏰ Hãy thanh toán trước khi mã hết hạn.',
+      'Chuyển ĐÚNG tổng tiền và nội dung trước thời hạn. Khi Cake callback thành công, bot tự tạo đủ đơn và gửi hàng; không cần nạp ví rồi mua lại.',
+    ].join('\n');
+    const keyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('🔄 Kiểm tra & nhận hàng', `checkout:check:${body.id}`)],
+      [Markup.button.callback('🛍 Chọn sản phẩm khác', 'menu:products'), Markup.button.callback('🏠 Menu chính', 'menu:home')],
+    ]);
+    try {
+      await ctx.replyWithPhoto(body.qrUrl, { caption, ...keyboard });
+    } catch {
+      await ctx.reply(`${caption}\n\nQR: ${body.qrUrl}`, keyboard);
+    }
+  } catch (error) {
+    await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể tạo mã thanh toán nhanh.'}`, inlineMenu());
+  }
+}
+
+async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, botApiSecret: string,
+  data: ShopBotDataContext, quickCheckout = false) {
   if (!ctx.from) return;
   const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '));
   try {
@@ -300,11 +363,30 @@ async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, bot
       method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
       body: JSON.stringify({ userId: user._id.toString() }),
     });
-    const body = await response.json().catch(() => ({})) as { status?: string; amount?: number; message?: string | string[] };
+    const body = await response.json().catch(() => ({})) as DepositResponse & { message?: string | string[] };
     if (!response.ok || !body.status) throw new Error(readErrorMessage(body.message, 'Không thể kiểm tra giao dịch.'));
     if (body.status === 'APPROVED') {
+      const receivedAmount = body.receivedAmount ?? body.amount ?? 0;
+      if (body.checkout?.status === 'FULFILLED') {
+        const orderCodes = body.checkout.orderCodes?.length ? `\nMã đơn: ${body.checkout.orderCodes.join(', ')}` : '';
+        await ctx.reply(`✅ Đã nhận thanh toán ${formatMoney(receivedAmount)} và tạo ${body.checkout.quantity ?? 0} đơn *${markdownEscape(body.checkout.productName ?? 'sản phẩm')}*.${orderCodes}\n\nHệ thống đang gửi hàng tự động.`,
+          { parse_mode: 'Markdown', ...inlineMenu() });
+        return;
+      }
+      if (body.checkout?.status === 'FAILED') {
+        const refreshed = await data.users.findById(user._id).select('walletBalance').lean();
+        await ctx.reply(`⚠️ Đã nhận ${formatMoney(receivedAmount)} nhưng chưa thể tạo đơn tự động.\n\n${body.checkout.fulfillmentError ?? 'Vui lòng chọn mua lại.'}\nSố tiền hiện nằm trong ví: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, inlineMenu());
+        return;
+      }
+      if (body.checkout) {
+        await ctx.reply('⏳ Đã nhận tiền và đang tạo đơn. Hãy chờ hàng được gửi hoặc bấm kiểm tra lại sau ít phút.', {
+          ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Kiểm tra lại', `checkout:check:${requestId}`)],
+            [Markup.button.callback('🏠 Menu chính', 'menu:home')]]),
+        });
+        return;
+      }
       const refreshed = await data.users.findById(user._id).select('walletBalance').lean();
-      await ctx.reply(`✅ Đã nhận ${formatMoney(body.amount ?? 0)}. Số dư hiện tại: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, inlineMenu());
+      await ctx.reply(`✅ Đã nhận ${formatMoney(receivedAmount)}. Số dư hiện tại: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, inlineMenu());
       return;
     }
     if (body.status === 'EXPIRED') {
@@ -313,8 +395,9 @@ async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, bot
     }
     await ctx.reply(`⏳ Chưa thấy giao dịch ${formatMoney(body.amount ?? 0)}. Hãy chuyển đúng số tiền và nội dung, rồi thử lại sau ít phút.`, {
       ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔄 Kiểm tra lại', `deposit:check:${requestId}`)],
-        [Markup.button.callback('💳 Nạp khoản khác', 'menu:deposit'), Markup.button.callback('🏠 Menu chính', 'menu:home')],
+        [Markup.button.callback('🔄 Kiểm tra lại', `${quickCheckout ? 'checkout' : 'deposit'}:check:${requestId}`)],
+        [Markup.button.callback(quickCheckout ? '🛍 Sản phẩm' : '💳 Nạp khoản khác', quickCheckout ? 'menu:products' : 'menu:deposit'),
+          Markup.button.callback('🏠 Menu chính', 'menu:home')],
       ]),
     });
   } catch (error) {
@@ -377,7 +460,7 @@ async function showProducts(ctx: Context, categoryKey: string, data: ShopBotData
     return;
   }
   const stockRows = await data.inventoryItems.aggregate<{ _id: string; count: number }>([
-    { $match: { productId: { $in: products.map((product) => product._id) }, status: InventoryStatus.AVAILABLE, deletedAt: null } },
+    { $match: sellableInventoryFilter({ $in: products.map((product) => product._id) }) },
     { $group: { _id: '$productId', count: { $sum: 1 } } },
   ]);
   const stockByProduct = new Map(stockRows.map((row) => [row._id.toString(), row.count]));
@@ -390,7 +473,7 @@ async function showProducts(ctx: Context, categoryKey: string, data: ShopBotData
 async function showQuantityOptions(ctx: Context, productId: string, categoryKey: string, data: ShopBotDataContext) {
   const product = await data.products.findOne({ _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).select('name price description').lean();
   if (!product) { await ctx.reply('Không tìm thấy sản phẩm.', inlineMenu()); return; }
-  const available = await data.inventoryItems.countDocuments({ productId, status: InventoryStatus.AVAILABLE, deletedAt: null });
+  const available = await data.inventoryItems.countDocuments(sellableInventoryFilter(productId));
   if (!available) {
     await ctx.reply(`❌ *${product.name}* hiện đã hết hàng.`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
       [Markup.button.callback('⬅️ Danh mục', 'menu:products')],
@@ -483,7 +566,7 @@ async function ownedOrderByCode(ctx: Context, orderCode: string, data: ShopBotDa
 }
 
 async function showHelp(ctx: Context) {
-  await ctx.reply('ℹ️ *Hướng dẫn nhanh*\n\n1. Chọn *Sản phẩm* để xem hàng đang bán.\n2. Bấm nút mua và kiểm tra số dư ví.\n3. Hàng sẽ được gửi tự động sau khi thanh toán.\n4. Nếu đơn gặp lỗi, chọn *Báo lỗi / Khiếu nại đơn*.\n\nBạn cũng có thể dùng /products, /balance, /buy <productId> hoặc /report <mã đơn>.', { parse_mode: 'Markdown', ...inlineMenu() });
+  await ctx.reply('ℹ️ *Hướng dẫn nhanh*\n\n1. Chọn *Sản phẩm* và số lượng cần mua.\n2. Nếu ví đủ tiền, bot đặt đơn ngay; nếu chưa đủ, bot tạo QR đúng tổng tiền để thanh toán nhanh.\n3. Chuyển đúng nội dung QR, Cake callback sẽ tự tạo đơn và gửi hàng.\n4. Nếu đơn gặp lỗi, chọn *Báo lỗi / Khiếu nại đơn*.\n\nBạn cũng có thể dùng /products, /balance, /buy <productId> hoặc /report <mã đơn>.', { parse_mode: 'Markdown', ...inlineMenu() });
 }
 
 async function purchaseQuantity(ctx: Context, productId: string | undefined, quantity: number, apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
@@ -494,7 +577,7 @@ async function purchaseQuantity(ctx: Context, productId: string | undefined, qua
   }
   const product = await data.products.findOne({ _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).select('price name').lean();
   if (!product) { await ctx.reply('Không tìm thấy sản phẩm. Hãy mở menu Sản phẩm để chọn lại.', inlineMenu()); return; }
-  const available = await data.inventoryItems.countDocuments({ productId, status: InventoryStatus.AVAILABLE, deletedAt: null });
+  const available = await data.inventoryItems.countDocuments(sellableInventoryFilter(productId));
   if (quantity > available) {
     await ctx.reply(`❌ Chỉ còn ${available} sản phẩm *${product.name}*.`, { parse_mode: 'Markdown', ...inlineMenu() });
     return;
@@ -506,7 +589,8 @@ async function purchaseQuantity(ctx: Context, productId: string | undefined, qua
     return;
   }
   if (user.walletBalance < total) {
-    await ctx.reply(`❌ Số dư không đủ. Cần ${formatMoney(total)}.`, inlineMenu());
+    await createQuickCheckout(ctx, { userId: user._id.toString(), productId: product._id.toString(),
+      productName: product.name, quantity, unitPrice: product.price }, apiUrl, botApiSecret);
     return;
   }
   let purchased = 0; let firstError = '';
@@ -566,6 +650,19 @@ function reportStatusLabel(value?: string) {
 }
 
 function formatMoney(value: number) { return new Intl.NumberFormat('vi-VN').format(value) + ' đ'; }
+function sellableInventoryFilter(productId: unknown) {
+  return { productId, deletedAt: null, $or: [
+    { status: InventoryStatus.AVAILABLE },
+    { status: InventoryStatus.RESERVED, reservedPaymentRequestId: { $exists: true },
+      reservedOrderId: { $exists: false }, reservationExpiresAt: { $lte: new Date() } },
+  ] };
+}
+function formatDeadline(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit',
+    day: '2-digit', month: '2-digit', year: 'numeric' }).format(parsed);
+}
 function bankPollingHint() {
   return 'Chuyển ĐÚNG số tiền và ĐÚNG nội dung. Cake sẽ gửi callback và hệ thống tự cộng tiền; nút “Kiểm tra tiền” chỉ làm mới trạng thái.';
 }

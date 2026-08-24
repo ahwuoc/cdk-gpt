@@ -23,6 +23,17 @@ export class CreateBotDepositDto {
   idempotencyKey!: string;
 }
 
+export class CreateBotCheckoutDto {
+  @IsMongoId() userId!: string;
+  @IsMongoId() productId!: string;
+  @IsInt() @Min(1) @Max(100)
+  quantity!: number;
+  @IsInt() @Min(0)
+  expectedUnitPrice!: number;
+  @IsString() @Length(8, 160)
+  idempotencyKey!: string;
+}
+
 export class CheckBotDepositDto {
   @IsMongoId()
   userId!: string;

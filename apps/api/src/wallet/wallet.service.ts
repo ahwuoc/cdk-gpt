@@ -22,30 +22,35 @@ export class WalletService {
 
   credit(input: WalletChange, session?: ClientSession) { return this.change(input, 1, session); }
 
+  /** Reconciles real received money even if the customer was disabled after creating the QR. */
+  creditReceivedFunds(input: WalletChange, session?: ClientSession) { return this.change(input, 1, session, true); }
+
   debit(input: WalletChange, session?: ClientSession) { return this.change(input, -1, session); }
 
-  private async change(input: WalletChange, direction: 1 | -1, session?: ClientSession) {
+  private async change(input: WalletChange, direction: 1 | -1, session?: ClientSession, allowInactive = false) {
     if (!Number.isSafeInteger(input.amount) || input.amount <= 0) throw new Error('Wallet amount must be a positive integer');
-    if (session) return this.applyChange(input, direction, session);
+    if (session) return this.applyChange(input, direction, session, allowInactive);
     const ownSession = await this.connection.startSession();
     try {
       let result: Awaited<ReturnType<WalletService['applyChange']>> | undefined;
-      await ownSession.withTransaction(async () => { result = await this.applyChange(input, direction, ownSession); });
+      await ownSession.withTransaction(async () => { result = await this.applyChange(input, direction, ownSession, allowInactive); });
       return result!;
     } finally { await ownSession.endSession(); }
   }
 
-  private async applyChange(input: WalletChange, direction: 1 | -1, session: ClientSession) {
+  private async applyChange(input: WalletChange, direction: 1 | -1, session: ClientSession, allowInactive: boolean) {
     const signedAmount = input.amount * direction;
     const existing = await this.transactions.findByIdempotencyKey(input.idempotencyKey, session);
     if (existing) {
       if (!existing.userId.equals(input.userId) || existing.amount !== signedAmount) throw new IdempotencyConflictError();
       return existing;
     }
-    const before = await this.users.findActive(input.userId, session);
-    if (!before) throw new Error('Active user not found');
+    const before = allowInactive ? await this.users.findExisting(input.userId, session) : await this.users.findActive(input.userId, session);
+    if (!before) throw new Error(allowInactive ? 'User not found' : 'Active user not found');
     const after = direction === 1
-      ? await this.users.credit(input.userId, input.amount, session)
+      ? allowInactive
+        ? await this.users.creditReceivedFunds(input.userId, input.amount, session)
+        : await this.users.credit(input.userId, input.amount, session)
       : await this.users.debitBalance(input.userId, input.amount, session);
     if (!after) {
       if (direction === -1) throw new InsufficientBalanceError();

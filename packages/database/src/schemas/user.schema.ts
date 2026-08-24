@@ -6,7 +6,7 @@ import { baseSchemaOptions, objectId, softDelete } from './common';
 export interface User {
   telegramId: string; username?: string; displayName?: string;
   status: typeof UserStatus[keyof typeof UserStatus]; walletBalance: number;
-  referralCode: string; referredByUserId?: Types.ObjectId; purchaseCount: number;
+  referralCode: string; referredByUserId?: Types.ObjectId; purchaseCount: number; checkoutLockVersion: number;
   createdAt: Date; updatedAt: Date; deletedAt: Date | null;
 }
 export type UserDocument = HydratedDocument<User>;
@@ -17,6 +17,7 @@ export const UserSchema = new Schema<User>({
   walletBalance: { type: Number, required: true, default: 0, min: 0, validate: Number.isSafeInteger },
   referralCode: { type: String, required: true, uppercase: true, trim: true, minlength: 6, maxlength: 32 },
   referredByUserId: objectId('User'), purchaseCount: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger },
+  checkoutLockVersion: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger, select: false },
   deletedAt: softDelete,
 }, baseSchemaOptions);
 UserSchema.index({ telegramId: 1 }, { unique: true, partialFilterExpression: { deletedAt: null } });

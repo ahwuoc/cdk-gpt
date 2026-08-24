@@ -7,6 +7,7 @@ import { BotConfigService } from '../../api/src/bot-config/bot-config.service';
 import { sharedSecretMatches } from '../../api/src/auth/shared-secret';
 import { DELIVERY_QUEUE, type DeliveryQueueClient } from '../../api/src/delivery/delivery.queue';
 import { InventoryReservationService } from '../../api/src/inventory/inventory-reservation.service';
+import { PaymentService } from '../../api/src/payment/payment.service';
 import { getServerlessApi } from '../../api/src/serverless';
 import { QStashTaskPublisher } from '../../api/src/serverless/qstash';
 import { DeliveryProcessor } from '../../bot/src/delivery.processor';
@@ -87,33 +88,47 @@ export async function processRestockTask(task: StockAlertBatch) {
 export async function runServerlessMaintenance() {
   const app = await getServerlessApi();
   const reservations = app.get(InventoryReservationService);
+  const payments = app.get(PaymentService);
   const queue = app.get<DeliveryQueueClient>(DELIVERY_QUEUE);
-  const released = await reservations.releaseExpired(100);
+  const quickCheckouts = await payments.recoverApprovedQuickCheckouts(25);
   const pending = await OrderModel.find({ status: OrderStatus.PENDING_DELIVERY, deliveryStatus: DeliveryStatus.PENDING })
     // Keep the cron below Vercel's 60-second deadline even if QStash is slow.
-    // The next minute picks up the next page; queue publishing is idempotent.
-    .select('_id').sort({ createdAt: 1 }).limit(PENDING_DELIVERY_RECOVERY_LIMIT).lean();
-  const republished = await republishPendingDeliveries(queue, pending.map((order) => order._id.toString()));
-  return { reservations: released, pendingDeliveriesRepublished: republished };
+    // The next maintenance run picks up the next page; publishing is idempotent.
+    .select('_id').sort({ 'metadata.deliveryDispatchAttemptAt': 1, createdAt: 1 })
+    .limit(PENDING_DELIVERY_RECOVERY_LIMIT).lean();
+  const pendingIds = pending.map((order) => order._id.toString());
+  const dispatch = await republishPendingDeliveries(queue, pendingIds);
+  const dispatchedObjectIds = dispatch.succeededIds.map((id) => new Types.ObjectId(id));
+  await OrderModel.updateMany({ _id: { $in: dispatchedObjectIds },
+    status: OrderStatus.PENDING_DELIVERY, deliveryStatus: DeliveryStatus.PENDING },
+  { $set: { 'metadata.deliveryDispatchAttemptAt': new Date() } });
+  // A successfully re-published task needs a fresh delivery window. Do not
+  // cancel/refund it in the same maintenance run before QStash can execute it.
+  await reservations.extendOrderReservations(dispatch.succeededIds, new Date(Date.now() + 15 * 60_000));
+  if (dispatch.failed) console.error({ event: 'pending-delivery-republish-partial-failure', failed: dispatch.failed });
+  // Serverless recovery never auto-cancels paid orders. It only frees unpaid
+  // QR holds; pending paid orders stay in the durable outbox until dispatched.
+  const released = await reservations.releaseExpiredPaymentHolds(100);
+  return { reservations: released, quickCheckouts, pendingDeliveriesRepublished: dispatch.republished,
+    pendingDeliveryPublishFailures: dispatch.failed };
 }
 
 async function republishPendingDeliveries(queue: DeliveryQueueClient, orderIds: string[]) {
   let cursor = 0;
   let republished = 0;
-  const failures: unknown[] = [];
+  let failed = 0;
+  const succeededIds: string[] = [];
   await Promise.all(Array.from({ length: Math.min(PENDING_DELIVERY_PUBLISH_CONCURRENCY, orderIds.length) }, async () => {
     while (cursor < orderIds.length) {
       const orderId = orderIds[cursor++];
       try {
         await queue.enqueue(orderId);
         republished++;
-      } catch (error) {
-        failures.push(error);
-      }
+        succeededIds.push(orderId);
+      } catch { failed++; }
     }
   }));
-  if (failures.length) throw failures[0];
-  return republished;
+  return { republished, failed, succeededIds };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

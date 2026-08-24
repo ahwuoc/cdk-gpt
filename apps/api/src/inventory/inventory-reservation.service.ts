@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import type { ClientSession, Connection, Model, Types } from 'mongoose';
+import { Types, type ClientSession, type Connection, type Model } from 'mongoose';
 import { ActorType, InventoryRepository, Order, UserRepository, WalletReferenceType, WalletTransactionRepository } from '@store/database';
 import { DeliveryStatus, OrderStatus, WalletTransactionType } from '@store/shared';
 
@@ -13,18 +13,55 @@ export class InventoryReservationService {
     private readonly walletTransactions: WalletTransactionRepository,
   ) {}
 
-  reserveOne(input: { productId: Types.ObjectId; userId: Types.ObjectId; orderId: Types.ObjectId;
+  async reserveOne(input: { productId: Types.ObjectId; userId: Types.ObjectId; orderId: Types.ObjectId;
     expiresAt: Date; session: ClientSession }) {
+    await this.inventory.releaseExpiredPaymentReservationsForProduct(input.productId, input.session);
     return this.inventory.reserveOne(input);
+  }
+
+  reserveForPayment(input: { productId: Types.ObjectId; userId: Types.ObjectId; paymentRequestId: Types.ObjectId;
+    expiresAt: Date; session: ClientSession }) {
+    return this.inventory.reserveForPayment(input);
+  }
+
+  findPaymentReservations(paymentRequestId: Types.ObjectId, session: ClientSession) {
+    return this.inventory.findPaymentReservations(paymentRequestId, session);
+  }
+
+  assignPaymentReservation(itemId: Types.ObjectId, paymentRequestId: Types.ObjectId, orderId: Types.ObjectId,
+    expiresAt: Date, session: ClientSession) {
+    return this.inventory.assignPaymentReservation(itemId, paymentRequestId, orderId, expiresAt, session);
+  }
+
+  releasePaymentReservations(paymentRequestId: Types.ObjectId, session: ClientSession) {
+    return this.inventory.releasePaymentReservations(paymentRequestId, session);
+  }
+
+  extendPaymentReservations(paymentRequestId: Types.ObjectId, expiresAt: Date, session: ClientSession) {
+    return this.inventory.extendPaymentReservations(paymentRequestId, expiresAt, session);
+  }
+
+  releaseExpiredPaymentReservationsForProduct(productId: Types.ObjectId, session: ClientSession) {
+    return this.inventory.releaseExpiredPaymentReservationsForProduct(productId, session);
+  }
+
+  countAvailable(productId: Types.ObjectId, session?: ClientSession) { return this.inventory.countAvailable(productId, session); }
+
+  countActivePaymentReservations(productId: Types.ObjectId, userId: Types.ObjectId, session: ClientSession) {
+    return this.inventory.countActivePaymentReservations(productId, userId, session);
   }
 
   async releaseExpired(limit = 100) {
     const expired = await this.inventory.findExpired(limit); let released = 0;
     for (const item of expired) {
-      if (!item.reservedOrderId) continue;
       const session = await this.connection.startSession();
       try {
         await session.withTransaction(async () => {
+          if (item.reservedPaymentRequestId && !item.reservedOrderId) {
+            if (await this.inventory.releaseExpiredPayment(item._id, item.reservedPaymentRequestId, session)) released++;
+            return;
+          }
+          if (!item.reservedOrderId) return;
           const order = await this.orders.findOne({ _id: item.reservedOrderId, status: OrderStatus.PENDING_DELIVERY,
             deliveryStatus: DeliveryStatus.PENDING }).session(session);
           if (!order) return; // Delivery may be ambiguous; never make such inventory available automatically.
@@ -43,5 +80,24 @@ export class InventoryReservationService {
       } finally { await session.endSession(); }
     }
     return { examined: expired.length, released };
+  }
+
+  async releaseExpiredPaymentHolds(limit = 100) {
+    const expired = await this.inventory.findExpiredPaymentReservations(limit); let released = 0;
+    for (const item of expired) {
+      if (!item.reservedPaymentRequestId) continue;
+      const session = await this.connection.startSession();
+      try {
+        await session.withTransaction(async () => {
+          if (await this.inventory.releaseExpiredPayment(item._id, item.reservedPaymentRequestId!, session)) released++;
+        });
+      } finally { await session.endSession(); }
+    }
+    return { examined: expired.length, released };
+  }
+
+  extendOrderReservations(orderIds: string[], expiresAt: Date) {
+    const ids = orderIds.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
+    return ids.length ? this.inventory.extendOrderReservations(ids, expiresAt) : undefined;
   }
 }
