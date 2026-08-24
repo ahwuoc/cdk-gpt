@@ -10,6 +10,8 @@ import { baseSchemaOptions, metadata } from './common';
 export const BotSessionKind = {
   PURCHASE_QUANTITY: 'PURCHASE_QUANTITY',
   DEPOSIT_AMOUNT: 'DEPOSIT_AMOUNT',
+  ORDER_LOOKUP: 'ORDER_LOOKUP',
+  ORDER_COMPLAINT: 'ORDER_COMPLAINT',
 } as const;
 
 export interface BotSession {

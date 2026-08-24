@@ -31,6 +31,7 @@ import { BotConfigService } from '../../apps/api/src/bot-config/bot-config.servi
 import { ProductService } from '../../apps/api/src/product/product.service';
 import { SaveProductDto } from '../../apps/api/src/product/product.dto';
 import { AnalyticsService } from '../../apps/api/src/analytics/analytics.service';
+import { WarrantyService } from '../../apps/api/src/warranty/warranty.service';
 
 process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef';
 process.env.PAYLOAD_HASH_KEY = 'abcdef0123456789abcdef0123456789';
@@ -61,6 +62,8 @@ function walletService() { return new WalletService(mongoose.connection, userRep
 function paymentService() { return new PaymentService(mongoose.connection, PaymentRequestModel, walletService()); }
 function analyticsService() { return new AnalyticsService(OrderModel, PaymentRequestModel, UserModel, ProductModel,
   InventoryItemModel, WalletTransactionModel, AuditLogModel); }
+function warrantyService() { return new WarrantyService(mongoose.connection, WarrantyRequestModel, OrderModel, AuditLogModel,
+  { notify: async () => true } as never); }
 
 async function fixture(stock = 1, balance = 1000, purchaseLimit = 0) {
   const adminId = new Types.ObjectId();
@@ -198,6 +201,39 @@ integration('digital store on a MongoDB replica set', () => {
     expect(traces.items).toHaveLength(1);
     expect(traces.items[0]?.metadata).toEqual({ token: '[REDACTED]', authorization: '[REDACTED]',
       apiKey: '[REDACTED]', nested: { credential: '[REDACTED]' }, safe: 'visible' });
+  });
+
+  test('a customer can report only their order once and an admin can resolve it', async () => {
+    const { product, user, adminId } = await fixture(1);
+    const order = await purchaseService().purchase({ userId: user._id.toString(), productId: product._id.toString(),
+      expectedUnitPrice: 100, idempotencyKey: 'complaint-order' });
+    const service = warrantyService();
+    const first = await service.create({ userId: user._id.toString(), orderId: order._id.toString(),
+      category: 'INVALID_CREDENTIALS', description: 'Tài khoản được giao không thể đăng nhập.' });
+    const duplicate = await service.create({ userId: user._id.toString(), orderId: order._id.toString(),
+      category: 'OTHER', description: 'Telegram gửi lại callback tạo khiếu nại.' });
+    expect(duplicate.id).toBe(first.id);
+    expect(duplicate.existing).toBeTrue();
+
+    const stranger = await fixture(0);
+    await expect(service.create({ userId: stranger.user._id.toString(), orderId: order._id.toString(),
+      category: 'OTHER', description: 'Không được báo cáo đơn của người khác.' })).rejects.toThrow('Order not found');
+
+    const listed = await service.list({ page: 1, limit: 20, search: order.orderCode });
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]).toMatchObject({ requestCode: first.requestCode, category: 'INVALID_CREDENTIALS',
+      status: 'PENDING', order: { orderCode: order.orderCode }, user: { telegramId: user.telegramId },
+      product: { name: product.name } });
+    const resolved = await service.update(first.id, adminId.toString(), {
+      status: 'RESOLVED', resolutionNote: 'Đã cấp sản phẩm thay thế cho khách.',
+    }, 'resolve-complaint');
+    expect(resolved).toMatchObject({ status: 'RESOLVED', resolutionNote: 'Đã cấp sản phẩm thay thế cho khách.',
+      notificationSent: true });
+    expect(await AuditLogModel.countDocuments({ action: 'WARRANTY_REQUEST_UPDATED', requestId: 'resolve-complaint' })).toBe(1);
+    await expect(service.update(first.id, adminId.toString(), {
+      status: 'RESOLVED', resolutionNote: 'Không được xử lý lặp lại.',
+    }, 'duplicate-resolution')).rejects.toThrow('Invalid report status transition');
+    expect(await AuditLogModel.countDocuments({ requestId: 'duplicate-resolution' })).toBe(0);
   });
 
   test('5. rerunning a completed delivery job does not resend or resell', async () => {

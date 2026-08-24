@@ -4,7 +4,8 @@ import { backfillSafeDefaultsMigration } from './002-backfill-safe-defaults';
 import { categoryProductIndexesMigration } from './003-category-product-indexes';
 import { repairLegacyCollectionNamesMigration } from './004-repair-legacy-collection-names';
 import { serverlessRuntimeIndexesMigration } from './005-serverless-runtime-indexes';
+import { orderReportIndexesMigration } from './006-order-report-indexes';
 
 export const migrations: MongoMigration[] = [createIndexesMigration, backfillSafeDefaultsMigration, categoryProductIndexesMigration,
-  repairLegacyCollectionNamesMigration, serverlessRuntimeIndexesMigration];
+  repairLegacyCollectionNamesMigration, serverlessRuntimeIndexesMigration, orderReportIndexesMigration];
 export type { MongoMigration } from './types';

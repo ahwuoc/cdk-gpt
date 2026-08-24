@@ -2,8 +2,9 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Bot, Boxes, CircleDollarSign, Eye, FileUp, KeyRound, LayoutDashboard, ListChecks, LogOut,
-  Package, QrCode, RefreshCw, ServerCog, ShoppingCart, Tags, Users, WalletCards } from 'lucide-react';
+  MessageSquareWarning, Package, QrCode, RefreshCw, ServerCog, ShoppingCart, Tags, Users, WalletCards } from 'lucide-react';
 import { CategoryManager } from './category-manager';
+import { ComplaintManager } from './complaint-manager';
 import { InventoryManager } from './inventory-manager';
 import { ManagementHub } from './management-hub';
 import { OperationsDashboard } from './operations-dashboard';
@@ -34,7 +35,7 @@ interface BotConfig {
   encryptionKeyVersion?: number; updatedAt?: string; reloadWithinSeconds?: number; welcomeMessage?: string;
   bank?: BankConfig; runtime?: RuntimeConfig;
 }
-type AdminSection = 'dashboard' | 'orders' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
+type AdminSection = 'dashboard' | 'orders' | 'reports' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
   | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
 
 export default function AdminPage() {
@@ -343,6 +344,8 @@ export default function AdminPage() {
         {(['users', 'ledger', 'audit'] as AdminSection[]).includes(section) && <ManagementHub
           view={section as 'users' | 'ledger' | 'audit'} authorized={authorized} setMessage={setMessage} />}
 
+        {section === 'reports' && <ComplaintManager authorized={authorized} setMessage={setMessage} />}
+
         {section === 'categories' && <section className="space-y-6">
           <PageHeading eyebrow="Hàng hóa" title="Quản lý danh mục" description="Tổ chức sản phẩm theo nhóm để khách tìm nhanh hơn trên Telegram." />
           <CategoryManager categories={categories} authorized={authorized} reload={loadCategories} setMessage={setMessage} />
@@ -490,6 +493,7 @@ function AdminSidebar({ section, navigate }: { section: AdminSection; navigate(n
     { label: 'Vận hành', items: [
       { id: 'dashboard', label: 'Tổng quan', icon: <LayoutDashboard size={17} /> },
       { id: 'orders', label: 'Đơn hàng', icon: <ShoppingCart size={17} /> },
+      { id: 'reports', label: 'Khiếu nại', icon: <MessageSquareWarning size={17} /> },
       { id: 'deposits', label: 'Lịch sử nạp', icon: <WalletCards size={17} /> },
       { id: 'users', label: 'Khách hàng', icon: <Users size={17} /> },
     ] },
@@ -594,7 +598,7 @@ function apiErrorMessage(body: unknown, fallback: string) {
 function adminSectionFromLocation(): AdminSection {
   if (typeof window === 'undefined') return 'dashboard';
   const value = new URL(window.location.href).searchParams.get('view');
-  const sections: AdminSection[] = ['dashboard', 'orders', 'deposits', 'users', 'categories', 'products', 'inventory', 'ledger', 'audit', 'bot', 'payments', 'system'];
+  const sections: AdminSection[] = ['dashboard', 'orders', 'reports', 'deposits', 'users', 'categories', 'products', 'inventory', 'ledger', 'audit', 'bot', 'payments', 'system'];
   return sections.includes(value as AdminSection) ? value as AdminSection : 'dashboard';
 }
 

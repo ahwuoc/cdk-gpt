@@ -12,8 +12,10 @@ import { ProductModule } from './product/product.module';
 import { CategoryModule } from './category/category.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { RequestTraceInterceptor } from './request-trace.interceptor';
+import { WarrantyModule } from './warranty/warranty.module';
 
 @Module({ imports: [DatabaseModule.forRoot(), AuthModule,
-  WalletModule, InventoryModule, PaymentModule, PurchaseModule, BotConfigModule, ProductModule, CategoryModule, AnalyticsModule],
+  WalletModule, InventoryModule, PaymentModule, PurchaseModule, BotConfigModule, ProductModule, CategoryModule, AnalyticsModule,
+  WarrantyModule],
 controllers: [AppController], providers: [{ provide: APP_INTERCEPTOR, useClass: RequestTraceInterceptor }] })
 export class AppModule {}

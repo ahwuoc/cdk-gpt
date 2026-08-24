@@ -16,6 +16,14 @@ export const WalletTransactionType = {
   ADMIN_DEBIT: 'ADMIN_DEBIT', REFERRAL_COMMISSION: 'REFERRAL_COMMISSION', ADJUSTMENT: 'ADJUSTMENT',
 } as const;
 export const PaymentRequestStatus = { PENDING: 'PENDING', APPROVED: 'APPROVED', REJECTED: 'REJECTED', EXPIRED: 'EXPIRED' } as const;
+export const ComplaintCategory = {
+  NO_DELIVERY: 'NO_DELIVERY',
+  INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
+  PRODUCT_MISMATCH: 'PRODUCT_MISMATCH',
+  WARRANTY: 'WARRANTY',
+  OTHER: 'OTHER',
+} as const;
+export type ComplaintCategoryValue = typeof ComplaintCategory[keyof typeof ComplaintCategory];
 
 export class DomainError extends Error {
   constructor(public readonly code: string, message: string, public readonly statusCode = 400) {

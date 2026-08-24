@@ -5,7 +5,8 @@ import {
   BotSessionKind, BotSessionModel, CategoryModel, InventoryItemModel, OrderModel, ProductModel, SettingModel, UserModel,
   type BotSession, type Category, type InventoryItem, type Order, type Product, type Setting, type User,
 } from '@store/database';
-import { DeliveryStatus, InventoryStatus, OrderStatus, ProductStatus, UserStatus } from '@store/shared';
+import { ComplaintCategory, DeliveryStatus, InventoryStatus, OrderStatus, ProductStatus, UserStatus,
+  type ComplaintCategoryValue } from '@store/shared';
 
 /**
  * Models used by Telegram update handlers.
@@ -38,9 +39,11 @@ const inlineMenu = () => Markup.inlineKeyboard([
   [Markup.button.callback('🛍 Sản phẩm', 'menu:products'), Markup.button.callback('💰 Số dư', 'menu:balance')],
   [Markup.button.callback('💳 Nạp tiền', 'menu:deposit')],
   [Markup.button.callback('📦 Đơn hàng của tôi', 'menu:orders'), Markup.button.callback('ℹ️ Hướng dẫn', 'menu:help')],
+  [Markup.button.callback('🚨 Báo lỗi / Khiếu nại đơn', 'menu:reports')],
 ]);
 
 type PendingQuantity = { productId: string; categoryKey: string };
+type PendingComplaint = { orderId: string; category: ComplaintCategoryValue };
 
 type DepositResponse = {
   id?: string;
@@ -55,6 +58,8 @@ type DepositResponse = {
     accountName?: string;
   };
 };
+
+type OrderReportResponse = { id?: string; requestCode?: string; status?: string; existing?: boolean; message?: string | string[] };
 
 export function createShopBot(
   token: string,
@@ -122,6 +127,34 @@ export function createShopBot(
 
   bot.hears('📦 Đơn hàng của tôi', (ctx) => showOrders(ctx, data));
   bot.action('menu:orders', async (ctx) => { await ctx.answerCbQuery(); await showOrders(ctx, data); });
+  bot.command('report', async (ctx) => {
+    const orderCode = ctx.message.text.trim().split(/\s+/)[1];
+    if (!orderCode) { await showOrders(ctx, data, true); return; }
+    const order = await ownedOrderByCode(ctx, orderCode, data);
+    if (!order) { await ctx.reply('❌ Không tìm thấy mã đơn thuộc tài khoản của bạn.', inlineMenu()); return; }
+    await showComplaintReasons(ctx, order._id.toString(), data);
+  });
+  bot.action('menu:reports', async (ctx) => { await ctx.answerCbQuery(); await showOrders(ctx, data, true); });
+  bot.action('report:lookup', async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!ctx.from || !ctx.chat) return;
+    await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.ORDER_LOOKUP, {}, 10 * 60_000);
+    await ctx.reply('🔎 Nhập mã đơn cũ cần khiếu nại (ví dụ: ORD-XXXXXXXX):');
+  });
+  bot.action(/^report:([a-f\d]{24})$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    await showComplaintReasons(ctx, ctx.match[1], data);
+  });
+  bot.action(/^reportreason:([a-f\d]{24}):([A-Z_]+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!ctx.from || !ctx.chat || !isComplaintCategory(ctx.match[2])) return;
+    const order = await ownedOrder(ctx, ctx.match[1], data);
+    if (!order) { await ctx.reply('❌ Không tìm thấy đơn hàng thuộc tài khoản của bạn.', inlineMenu()); return; }
+    await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.ORDER_COMPLAINT,
+      { orderId: order._id.toString(), category: ctx.match[2] }, 10 * 60_000);
+    await ctx.reply(`✍️ Hãy mô tả chi tiết vấn đề của đơn *${order.orderCode}* (5–2.000 ký tự).\n\nKhông gửi mật khẩu hoặc thông tin nhạy cảm không cần thiết.`,
+      { parse_mode: 'Markdown' });
+  });
   bot.hears('ℹ️ Hướng dẫn', (ctx) => showHelp(ctx));
   bot.action('menu:help', async (ctx) => { await ctx.answerCbQuery(); await showHelp(ctx); });
   bot.hears('🔄 Menu chính', async (ctx) => { await ctx.reply('🏠 Menu chính', inlineMenu()); });
@@ -142,6 +175,10 @@ export function createShopBot(
     if (pending.expired) {
       if (pending.kind === BotSessionKind.DEPOSIT_AMOUNT) {
         await ctx.reply('⏱️ Yêu cầu nhập số tiền đã hết hạn. Hãy chọn Nạp tiền lại.', inlineMenu());
+      } else if (pending.kind === BotSessionKind.ORDER_LOOKUP) {
+        await ctx.reply('⏱️ Yêu cầu tìm đơn đã hết hạn. Hãy mở Khiếu nại và thử lại.', inlineMenu());
+      } else if (pending.kind === BotSessionKind.ORDER_COMPLAINT) {
+        await ctx.reply('⏱️ Yêu cầu khiếu nại đã hết hạn. Hãy mở Đơn hàng và bấm Báo lỗi lại.', inlineMenu());
       } else {
         await ctx.reply('⏱️ Yêu cầu nhập số lượng đã hết hạn. Hãy chọn lại sản phẩm.', inlineMenu());
       }
@@ -154,6 +191,40 @@ export function createShopBot(
         return;
       }
       await createDeposit(ctx, amount, apiUrl, botApiSecret, data);
+      return;
+    }
+    if (pending.kind === BotSessionKind.ORDER_LOOKUP) {
+      const orderCode = ctx.message.text.trim().toUpperCase();
+      if (!/^ORD-[A-Z0-9-]{8,40}$/.test(orderCode)) {
+        await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.ORDER_LOOKUP, {}, 10 * 60_000);
+        await ctx.reply('❌ Mã đơn không đúng định dạng. Hãy nhập lại mã bắt đầu bằng ORD-:');
+        return;
+      }
+      const order = await ownedOrderByCode(ctx, orderCode, data);
+      if (!order) {
+        await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.ORDER_LOOKUP, {}, 10 * 60_000);
+        await ctx.reply('❌ Không tìm thấy mã đơn thuộc tài khoản của bạn. Kiểm tra và nhập lại:');
+        return;
+      }
+      await showComplaintReasons(ctx, order._id.toString(), data);
+      return;
+    }
+    if (pending.kind === BotSessionKind.ORDER_COMPLAINT) {
+      if (!isPendingComplaint(pending.data)) {
+        await ctx.reply('❌ Phiên khiếu nại không hợp lệ. Hãy mở lại danh sách đơn hàng.', inlineMenu());
+        return;
+      }
+      const description = ctx.message.text.trim();
+      if (description.length < 5 || description.length > 2_000) {
+        await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.ORDER_COMPLAINT, pending.data, 10 * 60_000);
+        await ctx.reply('❌ Nội dung phải từ 5 đến 2.000 ký tự. Vui lòng nhập lại:');
+        return;
+      }
+      await createOrderReport(ctx, pending.data, description, apiUrl, botApiSecret, data);
+      return;
+    }
+    if (!isPendingQuantity(pending.data)) {
+      await ctx.reply('❌ Phiên mua hàng không hợp lệ. Hãy chọn lại sản phẩm.', inlineMenu());
       return;
     }
     const quantity = Number(ctx.message.text.trim());
@@ -343,7 +414,7 @@ async function showBalance(ctx: Context, data: ShopBotDataContext) {
   await ctx.reply(`💰 Số dư ví của bạn: *${formatMoney(user.walletBalance)}*`, { parse_mode: 'Markdown', ...inlineMenu() });
 }
 
-async function showOrders(ctx: Context, data: ShopBotDataContext) {
+async function showOrders(ctx: Context, data: ShopBotDataContext, reporting = false) {
   if (!ctx.from) return;
   const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
   const orders = await data.orders.find({ userId: user._id }).sort({ createdAt: -1 }).limit(10).lean();
@@ -351,11 +422,68 @@ async function showOrders(ctx: Context, data: ShopBotDataContext) {
   const products = await data.products.find({ _id: { $in: orders.map((order) => order.productId) } }).select('name').lean();
   const names = new Map(products.map((product) => [product._id.toString(), product.name]));
   const lines = orders.map((order) => `${statusIcon(order.deliveryStatus)} *${order.orderCode}* · ${names.get(order.productId.toString()) ?? 'Sản phẩm'} · ${formatMoney(order.totalAmount)}`);
-  await ctx.reply(`📦 *10 đơn gần nhất*\n\n${lines.join('\n')}`, { parse_mode: 'Markdown', ...inlineMenu() });
+  const buttons = orders.map((order) => [Markup.button.callback(
+    `🚨 Báo lỗi ${order.orderCode}`, `report:${order._id.toString()}`)]);
+  buttons.push([Markup.button.callback('🔎 Khiếu nại đơn cũ bằng mã đơn', 'report:lookup')]);
+  buttons.push([Markup.button.callback('🏠 Menu chính', 'menu:home')]);
+  const heading = reporting ? '🚨 *Chọn đơn cần khiếu nại*' : '📦 *10 đơn gần nhất*';
+  await ctx.reply(`${heading}\n\n${lines.join('\n')}\n\nBấm nút tương ứng nếu đơn hàng gặp vấn đề.`, {
+    parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons),
+  });
+}
+
+async function showComplaintReasons(ctx: Context, orderId: string, data: ShopBotDataContext) {
+  const order = await ownedOrder(ctx, orderId, data);
+  if (!order) { await ctx.reply('❌ Không tìm thấy đơn hàng thuộc tài khoản của bạn.', inlineMenu()); return; }
+  const callback = (category: ComplaintCategoryValue) => `reportreason:${orderId}:${category}`;
+  await ctx.reply(`🚨 *Khiếu nại đơn ${order.orderCode}*\n\nChọn vấn đề bạn đang gặp:`, {
+    parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+      [Markup.button.callback('📭 Chưa nhận được hàng', callback(ComplaintCategory.NO_DELIVERY))],
+      [Markup.button.callback('🔐 Tài khoản không đăng nhập được', callback(ComplaintCategory.INVALID_CREDENTIALS))],
+      [Markup.button.callback('📦 Sản phẩm không đúng mô tả', callback(ComplaintCategory.PRODUCT_MISMATCH))],
+      [Markup.button.callback('🛡 Yêu cầu bảo hành', callback(ComplaintCategory.WARRANTY))],
+      [Markup.button.callback('📝 Vấn đề khác', callback(ComplaintCategory.OTHER))],
+      [Markup.button.callback('⬅️ Danh sách đơn', 'menu:orders')],
+    ]),
+  });
+}
+
+async function createOrderReport(ctx: Context, pending: PendingComplaint, description: string,
+  apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
+  if (!ctx.from) return;
+  const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
+  try {
+    const response = await fetch(`${apiUrl}/api/bot/order-reports`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId: user._id.toString(), orderId: pending.orderId,
+        category: pending.category, description }),
+    });
+    const body = await response.json().catch(() => ({})) as OrderReportResponse;
+    if (!response.ok || !body.id || !body.requestCode) {
+      throw new Error(readErrorMessage(body.message, 'Không thể gửi khiếu nại.'));
+    }
+    const prefix = body.existing ? 'ℹ️ Đơn này đã có khiếu nại đang xử lý.' : '✅ Đã gửi khiếu nại thành công.';
+    await ctx.reply(`${prefix}\n\nMã khiếu nại: *${body.requestCode}*\nTrạng thái: ${reportStatusLabel(body.status)}\n\nShop sẽ kiểm tra và xử lý sớm nhất.`,
+      { parse_mode: 'Markdown', ...inlineMenu() });
+  } catch (error) {
+    await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể gửi khiếu nại.'}`, inlineMenu());
+  }
+}
+
+async function ownedOrder(ctx: Context, orderId: string, data: ShopBotDataContext) {
+  if (!ctx.from) return null;
+  const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
+  return data.orders.findOne({ _id: orderId, userId: user._id }).select('_id orderCode').lean();
+}
+
+async function ownedOrderByCode(ctx: Context, orderCode: string, data: ShopBotDataContext) {
+  if (!ctx.from) return null;
+  const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
+  return data.orders.findOne({ orderCode: orderCode.trim().toUpperCase(), userId: user._id }).select('_id orderCode').lean();
 }
 
 async function showHelp(ctx: Context) {
-  await ctx.reply('ℹ️ *Hướng dẫn nhanh*\n\n1. Chọn *Sản phẩm* để xem hàng đang bán.\n2. Bấm nút mua và kiểm tra số dư ví.\n3. Hàng sẽ được gửi tự động sau khi thanh toán.\n\nBạn cũng có thể dùng /products, /balance hoặc /buy <productId>.', { parse_mode: 'Markdown', ...inlineMenu() });
+  await ctx.reply('ℹ️ *Hướng dẫn nhanh*\n\n1. Chọn *Sản phẩm* để xem hàng đang bán.\n2. Bấm nút mua và kiểm tra số dư ví.\n3. Hàng sẽ được gửi tự động sau khi thanh toán.\n4. Nếu đơn gặp lỗi, chọn *Báo lỗi / Khiếu nại đơn*.\n\nBạn cũng có thể dùng /products, /balance, /buy <productId> hoặc /report <mã đơn>.', { parse_mode: 'Markdown', ...inlineMenu() });
 }
 
 async function purchaseQuantity(ctx: Context, productId: string | undefined, quantity: number, apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
@@ -400,21 +528,22 @@ async function purchaseQuantity(ctx: Context, productId: string | undefined, qua
   }
 }
 
-async function savePendingInput(models: ShopBotDataContext, chatId: number, userId: number, kind: typeof BotSessionKind[keyof typeof BotSessionKind], payload: Record<string, unknown>) {
+async function savePendingInput(models: ShopBotDataContext, chatId: number, userId: number,
+  kind: typeof BotSessionKind[keyof typeof BotSessionKind], payload: Record<string, unknown>, ttlMs = 2 * 60_000) {
   await models.botSessions.findOneAndUpdate({ chatId: String(chatId), telegramUserId: String(userId) }, { $set: {
-    kind, data: payload, expiresAt: new Date(Date.now() + 2 * 60_000),
+    kind, data: payload, expiresAt: new Date(Date.now() + ttlMs),
   } }, { upsert: true, new: true, setDefaultsOnInsert: true });
 }
 
 async function takePendingInput(models: ShopBotDataContext, chatId: number, userId: number): Promise<
-  | { kind: typeof BotSessionKind[keyof typeof BotSessionKind]; data: PendingQuantity; expired: boolean }
+  | { kind: typeof BotSessionKind[keyof typeof BotSessionKind]; data: Record<string, unknown>; expired: boolean }
   | undefined
 > {
   const pending = await models.botSessions.findOneAndDelete({ chatId: String(chatId), telegramUserId: String(userId) }).lean();
   if (!pending) return undefined;
   return {
     kind: pending.kind,
-    data: isPendingQuantity(pending.data) ? pending.data : { productId: '', categoryKey: 'uncategorized' },
+    data: pending.data,
     expired: pending.expiresAt.getTime() <= Date.now(),
   };
 }
@@ -422,6 +551,18 @@ async function takePendingInput(models: ShopBotDataContext, chatId: number, user
 function isPendingQuantity(value: Record<string, unknown>): value is PendingQuantity {
   return typeof value.productId === 'string' && /^[a-f\d]{24}$/.test(value.productId)
     && typeof value.categoryKey === 'string';
+}
+function isPendingComplaint(value: Record<string, unknown>): value is PendingComplaint {
+  return typeof value.orderId === 'string' && /^[a-f\d]{24}$/.test(value.orderId)
+    && isComplaintCategory(value.category);
+}
+function isComplaintCategory(value: unknown): value is ComplaintCategoryValue {
+  return typeof value === 'string' && Object.values(ComplaintCategory).includes(value as ComplaintCategoryValue);
+}
+function reportStatusLabel(value?: string) {
+  const labels: Record<string, string> = { PENDING: 'Đang chờ xử lý', REVIEWING: 'Đang kiểm tra', APPROVED: 'Đã chấp nhận',
+    RESOLVED: 'Đã giải quyết', REJECTED: 'Đã từ chối', REPLACED: 'Đã thay thế', REFUNDED: 'Đã hoàn tiền' };
+  return value ? labels[value] ?? value : 'Đang chờ xử lý';
 }
 
 function formatMoney(value: number) { return new Intl.NumberFormat('vi-VN').format(value) + ' đ'; }
