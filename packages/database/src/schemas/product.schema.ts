@@ -21,7 +21,7 @@ export interface Product {
 export type ProductDocument = HydratedDocument<Product>;
 const ProductFieldDefinitionSchema = new Schema<ProductFieldDefinition>({
   name: { type: String, required: true, trim: true, maxlength: 100 },
-  key: { type: String, required: true, trim: true, match: /^[a-z][a-zA-Z0-9_]{1,63}$/ },
+  key: { type: String, required: true, trim: true, match: /^(?!\s)(?!.*\s$)[^.$\u0000-\u001F\u007F{}]{1,64}$/u },
   type: { type: String, enum: Object.values(ProductFieldType), required: true },
   sensitive: { type: Boolean, default: true }, visibleToCustomer: { type: Boolean, default: true },
   required: { type: Boolean, default: true }, sortOrder: { type: Number, default: 0, validate: Number.isSafeInteger },

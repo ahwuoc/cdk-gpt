@@ -494,6 +494,29 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(5);
   });
 
+  test('admin can create a text-only product with a free-form inventory key and pattern', async () => {
+    const adminId = new Types.ObjectId();
+    const service = new ProductService(mongoose.connection, ProductModel, InventoryItemModel, AuditLogModel);
+    const created = await service.create({
+      name: 'Numeric Key Product', slug: 'numeric-key-product', description: 'Supports a 2FA field',
+      price: 100, status: ProductStatus.DRAFT, imageUrls: [], instructions: '', warrantyPolicy: '', warrantyDays: 0,
+      deliveryTemplate: '2FA: {{Mã 2FA tùy ý}}',
+      inventoryPattern: 'Email={{email}} | Password={{password}} / OTP={{Mã 2FA tùy ý}}', fieldDefinitions: [
+        { name: 'Email', key: 'email', type: 'EMAIL', sensitive: false, visibleToCustomer: true, required: true, sortOrder: 1 },
+        { name: 'Mật khẩu', key: 'password', type: 'STRING', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 2 },
+        { name: '2FA', key: 'Mã 2FA tùy ý', type: 'EMAIL', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 3 },
+      ], purchaseLimitPerUser: 0, lowStockThreshold: 1, sortOrder: 0,
+    }, adminId.toString(), 'numeric-product-key');
+    expect(created.fieldDefinitions.map((field) => field.key)).toEqual(['email', 'password', 'Mã 2FA tùy ý']);
+    expect(created.fieldDefinitions.every((field) => field.type === 'STRING')).toBeTrue();
+    expect(created.inventoryPattern).toBe('Email={{email}} | Password={{password}} / OTP={{Mã 2FA tùy ý}}');
+    const preview = await new InventoryImportService(ProductModel, InventoryItemModel, ImportBatchModel).preview(
+      created._id.toString(), [{ email: 'không cần đúng định dạng email', password: 123456, 'Mã 2FA tùy ý': true }],
+    );
+    expect(preview.validRows).toBe(1);
+    expect(preview.invalidRows).toBe(0);
+  });
+
   test('a rejected key rename leaves every product and inventory payload unchanged', async () => {
     const adminId = new Types.ObjectId();
     const product = await ProductModel.create({ name: 'Rename rollback', slug: `rename-rollback-${new Types.ObjectId()}`,

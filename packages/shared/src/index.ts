@@ -45,3 +45,89 @@ export class IdempotencyConflictError extends DomainError {
 export function isMongoDuplicateKey(error: unknown): error is { code: number; keyPattern?: Record<string, number> } {
   return typeof error === 'object' && error !== null && 'code' in error && (error as { code: number }).code === 11000;
 }
+
+export interface InventoryPatternDefinition {
+  keys: string[];
+  /** Literal text before, between and after values. Always keys.length + 1 entries. */
+  literals: string[];
+  custom: boolean;
+}
+
+const LEGACY_INVENTORY_KEY_PATTERN = /^[a-z0-9][a-z0-9_]{0,63}$/;
+const UNSAFE_INVENTORY_KEY_PATTERN = /[.$\u0000-\u001F\u007F{}]/u;
+
+/**
+ * Supports the compact legacy form (`email----password`) and a fully custom
+ * form (`Email={{email}} | Pass={{password}}`). Literal text is preserved so
+ * an imported row can be decoded without guessing which value belongs to a key.
+ */
+export function parseInventoryPatternTemplate(value: string): InventoryPatternDefinition {
+  const pattern = value.trim();
+  if (!pattern) throw new Error('Inventory pattern is empty');
+  if (pattern.includes('{{') || pattern.includes('}}')) return parseCustomInventoryPattern(pattern);
+
+  const parts = pattern.split(/([^A-Za-z0-9_]+)/);
+  const keys = parts.filter((_, index) => index % 2 === 0);
+  const separators = parts.filter((_, index) => index % 2 === 1);
+  if (!keys.length || keys.some((key) => !LEGACY_INVENTORY_KEY_PATTERN.test(key))) {
+    throw new Error('Inventory pattern must use field keys or {{key}} placeholders');
+  }
+  return { keys, literals: ['', ...separators, ''], custom: false };
+}
+
+export function parseInventoryPatternLine(line: string, definition: InventoryPatternDefinition) {
+  const { keys, literals } = definition;
+  const prefix = literals[0] ?? '';
+  if (!line.startsWith(prefix)) throw new Error(`missing prefix “${prefix}”`);
+  let cursor = prefix.length;
+  const values: string[] = [];
+  for (let index = 0; index < keys.length; index++) {
+    const nextLiteral = literals[index + 1] ?? '';
+    if (index === keys.length - 1) {
+      if (nextLiteral && !line.endsWith(nextLiteral)) throw new Error(`missing suffix “${nextLiteral}”`);
+      const end = nextLiteral ? line.length - nextLiteral.length : line.length;
+      if (end < cursor) throw new Error('does not match the configured pattern');
+      values.push(line.slice(cursor, end));
+      cursor = line.length;
+      continue;
+    }
+    const position = line.indexOf(nextLiteral, cursor);
+    if (position < 0) throw new Error(`missing separator “${nextLiteral}”`);
+    values.push(line.slice(cursor, position));
+    cursor = position + nextLiteral.length;
+  }
+  return Object.fromEntries(keys.map((key, index) => [key, values[index] ?? '']));
+}
+
+export function inventoryPatternExample(definition: InventoryPatternDefinition) {
+  let output = definition.literals[0] ?? '';
+  definition.keys.forEach((key, index) => {
+    output += key === 'email' ? 'email@gmail.com' : key === 'password' ? 'matkhau' : key;
+    output += definition.literals[index + 1] ?? '';
+  });
+  return output;
+}
+
+function parseCustomInventoryPattern(pattern: string): InventoryPatternDefinition {
+  const matcher = /\{\{\s*([^{}]+?)\s*\}\}/gu;
+  const keys: string[] = [];
+  const literals: string[] = [];
+  let cursor = 0;
+  for (const match of pattern.matchAll(matcher)) {
+    literals.push(pattern.slice(cursor, match.index));
+    const key = match[1].trim();
+    if (!key || key.length > 64 || UNSAFE_INVENTORY_KEY_PATTERN.test(key)) {
+      throw new Error(`Custom inventory pattern contains an unsafe key: ${key || '(empty)'}`);
+    }
+    keys.push(key);
+    cursor = (match.index ?? 0) + match[0].length;
+  }
+  literals.push(pattern.slice(cursor));
+  if (!keys.length || literals.some((literal) => literal.includes('{{') || literal.includes('}}'))) {
+    throw new Error('Custom inventory pattern contains an invalid {{key}} placeholder');
+  }
+  if (keys.length > 1 && literals.slice(1, -1).some((literal) => !literal)) {
+    throw new Error('Custom inventory pattern needs literal text between placeholders');
+  }
+  return { keys, literals, custom: true };
+}

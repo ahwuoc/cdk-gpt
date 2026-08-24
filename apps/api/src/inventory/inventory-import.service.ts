@@ -101,11 +101,7 @@ export class InventoryImportService {
       if (typeof value === 'string') value = value.trim();
       if (field.required && (value === undefined || value === null || value === '')) throw new Error(`${field.key} is required`);
       if (value === undefined || value === null || value === '') continue;
-      if (field.type === 'EMAIL' && (typeof value !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))) throw new Error(`${field.key} must be an email`);
-      if (field.type === 'URL' && (typeof value !== 'string' || !URL.canParse(value))) throw new Error(`${field.key} must be a URL`);
-      if (field.type === 'NUMBER') { value = Number(value); if (!Number.isFinite(value)) throw new Error(`${field.key} must be a number`); }
-      if (field.type === 'BOOLEAN' && typeof value !== 'boolean') throw new Error(`${field.key} must be boolean`);
-      output[field.key] = value;
+      output[field.key] = typeof value === 'string' ? value : String(value);
     }
     return output;
   }

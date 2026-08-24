@@ -7,10 +7,10 @@ import { ProductFieldType } from '@store/database';
 import { ProductStatus } from '@store/shared';
 
 export class ProductFieldDefinitionDto {
-  @IsString() @Length(2, 100)
+  @IsString() @Length(1, 100)
   name!: string;
 
-  @IsString() @Matches(/^[a-z][a-zA-Z0-9_]{1,63}$/)
+  @IsString() @Matches(/^(?!\s)(?!.*\s$)[^.$\u0000-\u001F\u007F{}]{1,64}$/u)
   key!: string;
 
   @IsIn(Object.values(ProductFieldType))
@@ -63,7 +63,7 @@ export class SaveProductDto {
   @IsString() @Length(1, 20_000)
   deliveryTemplate!: string;
 
-  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50) @ArrayUnique((field: ProductFieldDefinitionDto) => field.key)
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100) @ArrayUnique((field: ProductFieldDefinitionDto) => field.key)
   @ValidateNested({ each: true }) @Type(() => ProductFieldDefinitionDto)
   fieldDefinitions!: ProductFieldDefinitionDto[];
 

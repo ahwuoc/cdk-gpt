@@ -3,6 +3,8 @@
 import { FormEvent, useState } from 'react';
 import { PackagePlus, Pencil, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { requestId } from './request-id';
+import { missingDeliveryTemplateKeys, normalizeProductFieldKey, synchronizedInventoryFormat,
+  unknownDeliveryTemplateKeys } from './product-form-utils';
 
 type ProductStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
 type ProductFieldType = 'STRING' | 'NUMBER' | 'BOOLEAN' | 'EMAIL' | 'URL';
@@ -34,7 +36,7 @@ const emptyProduct: ProductInput = {
     { name: 'Tài khoản', key: 'login', type: 'STRING', sensitive: false, visibleToCustomer: true, required: true, sortOrder: 1 },
     { name: 'Mật khẩu', key: 'password', type: 'STRING', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 2 },
   ],
-  inventoryPattern: 'login----password',
+  inventoryPattern: '{{login}}----{{password}}',
   purchaseLimitPerUser: 0, lowStockThreshold: 5, sortOrder: 0,
 };
 
@@ -64,7 +66,14 @@ export function ProductManager({ products, categories, pagination, authorized, r
   }
 
   async function submit(event: FormEvent) {
-    event.preventDefault(); await save(draft, editingId);
+    event.preventDefault();
+    const fieldDefinitions = draft.fieldDefinitions.map((field) => ({ ...field, key: field.key.trim(), type: 'STRING' as const }));
+    const normalized = { ...draft, fieldDefinitions };
+    const needsTemplateSync = unknownDeliveryTemplateKeys(fieldDefinitions, draft.deliveryTemplate).length > 0
+      || missingDeliveryTemplateKeys(fieldDefinitions, draft.deliveryTemplate).length > 0;
+    const input = needsTemplateSync ? { ...normalized, ...synchronizedInventoryFormat(fieldDefinitions) } : normalized;
+    if (input !== draft) setDraft(input);
+    await save(input, editingId);
   }
 
   async function save(input: ProductInput, id: string | null) {
@@ -116,13 +125,17 @@ export function ProductManager({ products, categories, pagination, authorized, r
   }
 
   function addField() {
+    if (draft.fieldDefinitions.length >= 100) { setMessage('Mỗi sản phẩm hỗ trợ tối đa 100 trường dữ liệu.'); return; }
     setDraft((current) => ({ ...current, fieldDefinitions: [...current.fieldDefinitions, {
       name: 'Trường mới', key: `field${current.fieldDefinitions.length + 1}`, type: 'STRING' as const,
       sensitive: true, visibleToCustomer: true, required: !hasInventory, sortOrder: current.fieldDefinitions.length + 1,
     }] }));
   }
 
-  function refreshPattern() { setDraft((current) => ({ ...current, inventoryPattern: patternFromFields(current.fieldDefinitions) })); }
+  function refreshInventoryFormat() {
+    setDraft((current) => ({ ...current, ...synchronizedInventoryFormat(current.fieldDefinitions) }));
+    setMessage('Đã đồng bộ pattern nhập kho và template giao hàng theo các key hiện tại.');
+  }
 
   return <div className="space-y-6">
     <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
@@ -151,15 +164,15 @@ export function ProductManager({ products, categories, pagination, authorized, r
           <Field label="Thứ tự hiển thị"><NumberInput value={draft.sortOrder} onChange={(value) => setDraft({ ...draft, sortOrder: value })} /></Field>
         </div>
         <div>
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-slate-200">Cấu trúc dữ liệu kho</p><p className="text-xs text-slate-500">Sửa trực tiếp <b>key dữ liệu</b> như <code>login</code> → <code>api</code>. Pattern và mẫu giao hàng sẽ tự đổi theo key mới.</p></div><button type="button" onClick={addField} className="button-secondary flex shrink-0 items-center gap-2 px-3 py-2"><Plus size={15} />Thêm trường</button></div>
-          {hasInventory && <div className="mb-3 rounded-xl border border-indigo-500/25 bg-indigo-500/10 p-3 text-xs leading-5 text-indigo-100"><b>Bạn vẫn đổi được key cũ.</b> Khi lưu, hệ thống sẽ đổi key trong toàn bộ hàng đã nhập và mã hóa lại an toàn. Kiểu dữ liệu, “Nhạy cảm” và “Gửi cho khách” của trường cũ vẫn được khóa để tránh đổi sai dữ liệu.</div>}
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-slate-200">Cấu trúc dữ liệu kho</p><p className="text-xs text-slate-500">Mọi trường đều là text. Bạn có thể tự đặt tên/key, thêm hoặc xóa trường; pattern và mẫu giao hàng sẽ đồng bộ theo key.</p></div><button type="button" onClick={addField} className="button-secondary flex shrink-0 items-center gap-2 px-3 py-2"><Plus size={15} />Thêm trường</button></div>
+          {hasInventory && <div className="mb-3 rounded-xl border border-indigo-500/25 bg-indigo-500/10 p-3 text-xs leading-5 text-indigo-100"><b>Bạn vẫn đổi được key cũ.</b> Khi lưu, hệ thống sẽ đổi key trong toàn bộ hàng đã nhập và mã hóa lại an toàn. “Nhạy cảm” và “Gửi cho khách” của trường cũ vẫn được khóa để tránh làm lộ hoặc mất dữ liệu.</div>}
           <div className="space-y-3">{draft.fieldDefinitions.map((field, index) => {
             const existingField = hasInventory && index < originalFieldCount;
             const newFieldOnExistingStock = hasInventory && !existingField;
-            return <div key={`${field.key}-${index}`} className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 md:grid-cols-[1fr_1fr_140px_auto]">
+            const keyError = productFieldKeyError(field.key);
+            return <div key={`${field.key}-${index}`} className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 md:grid-cols-[1fr_1fr_auto]">
               <label><span className="mb-1 block text-[11px] font-medium text-slate-500">Tên hiển thị</span><input className="input" value={field.name} onChange={(event) => updateField(index, { name: event.target.value })} placeholder="API key" required /></label>
-              <label><span className="mb-1 block text-[11px] font-medium text-slate-500">Key dữ liệu</span><input className="input font-mono" value={field.key} onChange={(event) => updateField(index, { key: normalizeFieldKey(event.target.value) })} placeholder="api_key" pattern="[a-z][a-zA-Z0-9_]{1,63}" minLength={2} maxLength={64} spellCheck={false} required /></label>
-              <label><span className="mb-1 block text-[11px] font-medium text-slate-500">Kiểu dữ liệu</span><select className="input" value={field.type} disabled={existingField} onChange={(event) => updateField(index, { type: event.target.value as ProductFieldType })}>{['STRING', 'EMAIL', 'URL', 'NUMBER', 'BOOLEAN'].map((type) => <option key={type}>{type}</option>)}</select></label>
+              <label><span className="mb-1 block text-[11px] font-medium text-slate-500">Key dữ liệu (text tự do)</span><input className="input font-mono" value={field.key} onChange={(event) => updateField(index, { key: normalizeProductFieldKey(event.target.value) })} placeholder="2fa, tài khoản phụ, api-key…" maxLength={64} spellCheck={false} aria-invalid={Boolean(keyError)} required />{keyError ? <span className="mt-1 block text-[10px] text-rose-400">{keyError}</span> : <span className="mt-1 block text-[10px] text-slate-600">Tối đa 64 ký tự; không dùng dấu chấm, $, {'{ }'} hoặc ký tự xuống dòng.</span>}</label>
               <button type="button" disabled={draft.fieldDefinitions.length === 1 || existingField} onClick={() => setDraft({ ...draft, fieldDefinitions: draft.fieldDefinitions.filter((_, position) => position !== index) })} className="mt-5 rounded-xl border border-rose-900/60 px-3 text-rose-400 disabled:cursor-not-allowed disabled:opacity-30"><Trash2 size={16} /></button>
               <div className="flex flex-wrap gap-4 text-xs text-slate-400 md:col-span-4">
                 <Check label="Bắt buộc" checked={field.required} disabled={newFieldOnExistingStock} onChange={(checked) => updateField(index, { required: checked })} />
@@ -171,9 +184,9 @@ export function ProductManager({ products, categories, pagination, authorized, r
           })}</div>
         </div>
         <Field label="Pattern nhập kho — mỗi hàng một dòng">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-slate-500">Sau khi thêm key, bấm nút để tạo đúng pattern tự động.</span><button type="button" onClick={refreshPattern} className="button-secondary px-3 py-1.5 text-xs">Tạo pattern từ các key</button></div>
-          <input className="input font-mono" value={draft.inventoryPattern} onChange={(event) => setDraft({ ...draft, inventoryPattern: event.target.value })} placeholder="email----password" required />
-          <p className="mt-2 text-xs text-slate-500">Dùng đúng key ở trên, ngăn cách bằng một ký tự/chuỗi không có khoảng trắng. Ví dụ <code>email----password</code> sẽ nhận dòng <code>user@gmail.com----matkhau</code>.</p>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-slate-500">Sau khi thêm key, bấm nút để cập nhật cả pattern và nội dung giao cho khách.</span><button type="button" onClick={refreshInventoryFormat} className="button-secondary px-3 py-1.5 text-xs">Đồng bộ pattern &amp; template</button></div>
+          <input className="input font-mono" value={draft.inventoryPattern} onChange={(event) => setDraft({ ...draft, inventoryPattern: event.target.value })} placeholder="{{email}}----{{password}}----{{2fa}}" required />
+          <p className="mt-2 text-xs leading-5 text-slate-500">Có thể tùy biến chữ và dấu ngăn cách. Ví dụ <code>{'Email={{email}} | Pass={{password}} / 2FA={{2fa}}'}</code>. Phần trong <code>{'{{ }}'}</code> là key để hệ thống nhận đúng cột.</p>
         </Field>
         <Field label="Template giao hàng"><textarea className="input min-h-28 font-mono text-xs" value={draft.deliveryTemplate} onChange={(event) => setDraft({ ...draft, deliveryTemplate: event.target.value })} required /><p className="mt-2 text-xs text-slate-500">Ví dụ: <code>Tài khoản: {'{{login}}'} · Mật khẩu: {'{{password}}'}</code></p></Field>
         <button disabled={saving} className="button-primary flex w-full items-center justify-center gap-2"><Save size={16} />{saving ? 'Đang lưu…' : editingId ? 'Lưu thay đổi' : 'Tạo sản phẩm'}</button>
@@ -199,23 +212,29 @@ function Stock({ label, value, color }: { label: string; value: number; color: s
 function Status({ value }: { value: ProductStatus }) { const colors: Record<ProductStatus, string> = { ACTIVE: 'bg-emerald-500/15 text-emerald-400', DRAFT: 'bg-slate-500/15 text-slate-400', INACTIVE: 'bg-amber-500/15 text-amber-400', ARCHIVED: 'bg-rose-500/15 text-rose-400' }; return <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${colors[value]}`}>{value}</span>; }
 function slugify(value: string) { return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
 function formatMoney(value: number) { return new Intl.NumberFormat('vi-VN').format(value) + ' đ'; }
-function normalizeFieldKey(value: string) { return value.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+/, '').slice(0, 64); }
-function patternFromFields(fields: ProductField[]) { return [...fields].sort((left, right) => left.sortOrder - right.sortOrder).map((field) => field.key).join('----'); }
-function replacePatternKey(pattern: string, from: string, to: string) { return pattern.replace(/[a-zA-Z][a-zA-Z0-9_]*/g, (key) => key === from ? to : key); }
-function replaceTemplateKey(template: string, from: string, to: string) { return template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (whole, key: string) => key === from ? `{{${to}}}` : whole); }
+function replacePatternKey(pattern: string, from: string, to: string) {
+  if (pattern.includes('{{') || pattern.includes('}}')) {
+    return pattern.replace(/\{\{\s*([^{}]+?)\s*\}\}/gu, (whole, key: string) => key.trim() === from ? `{{${to}}}` : whole);
+  }
+  return pattern.replace(/[a-zA-Z0-9_]+/g, (key) => key === from ? to : key);
+}
+function replaceTemplateKey(template: string, from: string, to: string) { return template.replace(/\{\{\s*([^{}]+?)\s*\}\}/gu, (whole, key: string) => key.trim() === from ? `{{${to}}}` : whole); }
 function validateProductInput(input: ProductInput) {
-  const invalid = input.fieldDefinitions.find((field) => !/^[a-z][a-zA-Z0-9_]{1,63}$/.test(field.key));
-  if (invalid) throw new Error(`Key “${invalid.key || invalid.name}” chưa đúng. Key phải từ 2–64 ký tự, bắt đầu bằng chữ thường và chỉ dùng chữ, số hoặc dấu gạch dưới. Ví dụ: api_key.`);
+  const invalid = input.fieldDefinitions.find((field) => productFieldKeyError(field.key));
+  if (invalid) throw new Error(productFieldKeyError(invalid.key) ?? 'Key dữ liệu không hợp lệ.');
+  const unknownTemplateKey = unknownDeliveryTemplateKeys(input.fieldDefinitions, input.deliveryTemplate)[0];
+  if (unknownTemplateKey) throw new Error(`Template giao hàng vẫn còn key “${unknownTemplateKey}” không tồn tại. Bấm “Đồng bộ pattern & template” để sửa.`);
 }
 function productErrorMessage(body: unknown) {
   const raw = body && typeof body === 'object' && 'message' in body ? (body as { message?: unknown }).message : undefined;
   const message = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string').join('. ') : typeof raw === 'string' ? raw : 'Không thể lưu sản phẩm';
-  if (message.startsWith('Inventory field ') && message.includes('cannot be removed, reordered, or change type')) return 'Không thể xóa, đổi thứ tự hoặc đổi kiểu dữ liệu của trường cũ khi sản phẩm đã có hàng trong kho.';
+  if (message.startsWith('Inventory field ') && message.includes('cannot be removed or reordered')) return 'Không thể xóa hoặc đổi thứ tự trường cũ khi sản phẩm đã có hàng trong kho.';
   if (message.startsWith('Inventory field ') && message.includes('visibility cannot change')) return 'Không thể đổi quyền “Nhạy cảm” hoặc “Gửi cho khách” của trường cũ khi sản phẩm đã có hàng trong kho.';
   if (message.startsWith('New inventory field ') && message.includes('must be optional')) return 'Khi sản phẩm đã có hàng cũ, trường mới phải bỏ chọn “Bắt buộc”.';
   if (message.includes('key rename must keep')) return 'Khi đổi key, hãy giữ nguyên ô “Bắt buộc” và thứ tự của trường đó.';
   if (message.includes('cannot be renamed to another existing field key')) return 'Key mới đang trùng với một key cũ khác. Hãy chọn một key mới, ví dụ api hoặc api_key.';
-  if (message.startsWith('Inventory pattern contains unknown field:')) return `${message.replace('Inventory pattern contains unknown field:', 'Pattern đang có key không tồn tại:')}. Bấm “Tạo pattern từ các key” để sửa nhanh.`;
+  if (message.startsWith('Delivery template contains unknown field:')) return `${message.replace('Delivery template contains unknown field:', 'Template giao hàng đang có key không tồn tại:')}. Bấm “Đồng bộ pattern & template” để sửa nhanh.`;
+  if (message.startsWith('Inventory pattern contains unknown field:')) return `${message.replace('Inventory pattern contains unknown field:', 'Pattern đang có key không tồn tại:')}. Bấm “Đồng bộ pattern & template” để sửa nhanh.`;
   if (message.startsWith('Inventory pattern must include required field:')) return `${message.replace('Inventory pattern must include required field:', 'Pattern chưa có key bắt buộc:')}.`;
   return message;
 }
@@ -224,9 +243,17 @@ function productInput(product: ProductRecord): ProductInput {
     name: product.name, slug: product.slug, description: product.description, price: product.price, status: product.status, categoryId: product.categoryId,
     imageUrls: product.imageUrls ?? [], instructions: product.instructions ?? '', warrantyPolicy: product.warrantyPolicy ?? '',
     warrantyDays: product.warrantyDays, deliveryTemplate: product.deliveryTemplate,
-    fieldDefinitions: product.fieldDefinitions.map((field) => ({ ...field })),
-    inventoryPattern: product.inventoryPattern ?? [...product.fieldDefinitions].sort((left, right) => left.sortOrder - right.sortOrder).map((field) => field.key).join('----'),
+    fieldDefinitions: product.fieldDefinitions.map((field) => ({ ...field, type: 'STRING' })),
+    inventoryPattern: product.inventoryPattern ?? synchronizedInventoryFormat(product.fieldDefinitions).inventoryPattern,
     purchaseLimitPerUser: product.purchaseLimitPerUser,
     lowStockThreshold: product.lowStockThreshold, sortOrder: product.sortOrder,
   };
+}
+
+function productFieldKeyError(value: string) {
+  if (!value.trim()) return 'Key không được để trống.';
+  if (value !== value.trim()) return 'Key không được có khoảng trắng ở đầu hoặc cuối.';
+  if (value.length > 64) return 'Key tối đa 64 ký tự.';
+  if (/[.$\u0000-\u001F\u007F{}]/u.test(value)) return 'Key không được chứa dấu chấm, $, { }, ký tự xuống dòng hoặc điều khiển.';
+  return '';
 }

@@ -2,9 +2,10 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
-import type { AuditLog, Category, InventoryItem, Product, ProductDocument, ProductFieldDefinition } from '@store/database';
+import { ProductFieldType, type AuditLog, type Category, type InventoryItem, type Product,
+  type ProductDocument, type ProductFieldDefinition } from '@store/database';
 import { EncryptionService, createMaskedPreview } from '@store/encryption';
-import { InventoryStatus, ProductStatus, isMongoDuplicateKey } from '@store/shared';
+import { InventoryStatus, ProductStatus, isMongoDuplicateKey, parseInventoryPatternTemplate } from '@store/shared';
 import type { SaveProductDto } from './product.dto';
 import type { ProductQueryDto } from './product-query.dto';
 
@@ -139,10 +140,10 @@ export class ProductService {
 
   private validateTemplate(input: SaveProductDto) {
     const keys = new Set(input.fieldDefinitions.map((field) => field.key));
-    const placeholders = [...input.deliveryTemplate.matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)].map((match) => match[1]);
+    const placeholders = [...input.deliveryTemplate.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/gu)].map((match) => match[1].trim());
     const unknown = placeholders.filter((key) => key !== 'payload' && !keys.has(key));
     if (unknown.length) throw new BadRequestException(`Delivery template contains unknown field: ${unknown[0]}`);
-    const patternKeys = parseInventoryPattern(input.inventoryPattern ?? '');
+    const patternKeys = parseInventoryPatternKeys(input.inventoryPattern ?? '');
     const duplicates = patternKeys.find((key, index) => patternKeys.indexOf(key) !== index);
     if (duplicates) throw new BadRequestException(`Inventory pattern repeats field: ${duplicates}`);
     const missing = input.fieldDefinitions.find((field) => field.required && !patternKeys.includes(field.key));
@@ -152,9 +153,10 @@ export class ProductService {
   }
 
   private normalizeInput(input: SaveProductDto): SaveProductDto {
-    const inventoryPattern = input.inventoryPattern?.trim() || [...input.fieldDefinitions]
-      .sort((left, right) => left.sortOrder - right.sortOrder).map((field) => field.key).join('----');
-    return { ...input, inventoryPattern };
+    const fieldDefinitions = input.fieldDefinitions.map((field) => ({ ...field, key: field.key.trim(), type: ProductFieldType.STRING }));
+    const inventoryPattern = input.inventoryPattern?.trim() || [...fieldDefinitions]
+      .sort((left, right) => left.sortOrder - right.sortOrder).map((field) => `{{${field.key}}}`).join('----');
+    return { ...input, fieldDefinitions, inventoryPattern };
   }
 
   private async assertCategory(categoryId?: string) {
@@ -173,8 +175,8 @@ export class ProductService {
       // Fields are ordered by sortOrder in the admin form. Matching the original position lets a
       // key rename be explicit while rejecting removal/re-ordering that would map values ambiguously.
       const updated = next[index];
-      if (!updated || updated.type !== field.type || updated.sortOrder !== field.sortOrder) {
-        throw new ConflictException(`Inventory field ${field.key} cannot be removed, reordered, or change type after stock exists`);
+      if (!updated || updated.sortOrder !== field.sortOrder) {
+        throw new ConflictException(`Inventory field ${field.key} cannot be removed or reordered after stock exists`);
       }
       if (!field.required && updated.required) {
         throw new ConflictException(`Inventory field ${field.key} cannot become required after stock exists`);
@@ -248,17 +250,12 @@ export class ProductService {
   }
 }
 
-function parseInventoryPattern(pattern: string) {
-  const parts = pattern.trim().split(/([^A-Za-z0-9_]+)/);
-  const keys = parts.filter((_, index) => index % 2 === 0);
-  const separators = parts.filter((_, index) => index % 2 === 1);
-  if (!keys.length || keys.some((key) => !/^[a-z][a-zA-Z0-9_]{1,63}$/.test(key))) {
-    throw new BadRequestException('Inventory pattern must use field keys, for example email----password');
+function parseInventoryPatternKeys(pattern: string) {
+  try { return parseInventoryPatternTemplate(pattern).keys; }
+  catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid inventory pattern';
+    throw new BadRequestException(`${message}. Use email----password or Email={{email}} | Password={{password}}`);
   }
-  if (separators.length && (separators.some((separator) => /\s/.test(separator)) || !separators.every((separator) => separator === separators[0]))) {
-    throw new BadRequestException('Inventory pattern must use one non-space separator, for example email----password');
-  }
-  return keys;
 }
 
 function renameProductReferences(input: SaveProductDto, renames: FieldRename[]): SaveProductDto {
@@ -266,12 +263,22 @@ function renameProductReferences(input: SaveProductDto, renames: FieldRename[]):
   const byKey = new Map(renames.map((rename) => [rename.from, rename.to]));
   return {
     ...input,
-    inventoryPattern: (input.inventoryPattern ?? '').replace(/[a-zA-Z][a-zA-Z0-9_]*/g, (key) => byKey.get(key) ?? key),
-    deliveryTemplate: input.deliveryTemplate.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (whole, key: string) => {
-      const replacement = byKey.get(key);
+    inventoryPattern: replaceInventoryPatternKeys(input.inventoryPattern ?? '', byKey),
+    deliveryTemplate: input.deliveryTemplate.replace(/\{\{\s*([^{}]+?)\s*\}\}/gu, (whole, key: string) => {
+      const replacement = byKey.get(key.trim());
       return replacement ? `{{${replacement}}}` : whole;
     }),
   };
+}
+
+function replaceInventoryPatternKeys(pattern: string, byKey: Map<string, string>) {
+  if (pattern.includes('{{') || pattern.includes('}}')) {
+    return pattern.replace(/\{\{\s*([^{}]+?)\s*\}\}/gu, (whole, key: string) => {
+      const replacement = byKey.get(key.trim());
+      return replacement ? `{{${replacement}}}` : whole;
+    });
+  }
+  return pattern.replace(/[a-zA-Z0-9_]+/g, (key) => byKey.get(key) ?? key);
 }
 
 function renamePayloadKeys(payload: Record<string, unknown>, renames: FieldRename[]) {

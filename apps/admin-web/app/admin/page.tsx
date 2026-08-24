@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Bot, Boxes, CircleDollarSign, Eye, FileUp, KeyRound, LayoutDashboard, ListChecks, LogOut,
   MessageSquareWarning, Package, QrCode, RefreshCw, ServerCog, ShoppingCart, Tags, Users, WalletCards } from 'lucide-react';
+import { inventoryPatternExample, parseInventoryPatternLine, parseInventoryPatternTemplate } from '@store/shared';
 import { CategoryManager } from './category-manager';
 import { ComplaintManager } from './complaint-manager';
 import { InventoryManager } from './inventory-manager';
@@ -549,43 +550,22 @@ function inventoryPatternFor(product: ProductRecord) {
 }
 
 function parsePatternRows(source: string, pattern: string) {
-  const { keys, separator } = parseInventoryPattern(pattern);
+  const definition = readInventoryPattern(pattern);
   return source.split(/\r?\n/).map((line, index) => ({ line: line.trim(), number: index + 1 }))
     .filter((entry) => entry.line)
     .map(({ line, number }) => {
-      const values = separator ? splitPatternLine(line, separator, keys.length, number) : [line];
-      return Object.fromEntries(keys.map((key, index) => [key, values[index] ?? '']));
+      try { return parseInventoryPatternLine(line, definition); }
+      catch (error) { throw new Error(`Dòng ${number} không khớp pattern: ${error instanceof Error ? error.message : 'sai định dạng'}.`); }
     });
 }
 
-function parseInventoryPattern(pattern: string) {
-  const parts = pattern.trim().split(/([^A-Za-z0-9_]+)/);
-  const keys = parts.filter((_, index) => index % 2 === 0);
-  const separators = parts.filter((_, index) => index % 2 === 1);
-  if (!keys.length || keys.some((key) => !/^[a-z][a-zA-Z0-9_]{1,63}$/.test(key))) {
-    throw new Error('Pattern không hợp lệ. Ví dụ đúng: email----password');
-  }
-  if (separators.length && (separators.some((separator) => /\s/.test(separator)) || !separators.every((separator) => separator === separators[0]))) {
-    throw new Error('Pattern chỉ dùng một dấu ngăn cách không có khoảng trắng, ví dụ email----password');
-  }
-  return { keys, separator: separators[0] };
-}
-
-function splitPatternLine(line: string, separator: string, count: number, number: number) {
-  const values: string[] = []; let remaining = line;
-  for (let index = 0; index < count - 1; index++) {
-    const position = remaining.indexOf(separator);
-    if (position < 0) throw new Error(`Dòng ${number} thiếu dấu ngăn cách “${separator}”.`);
-    values.push(remaining.slice(0, position));
-    remaining = remaining.slice(position + separator.length);
-  }
-  values.push(remaining);
-  return values;
-}
-
 function patternPlaceholder(pattern: string) {
-  const { keys, separator } = parseInventoryPattern(pattern);
-  return keys.map((key) => key === 'email' ? 'email@gmail.com' : key === 'password' ? 'matkhau' : key).join(separator ?? '');
+  return inventoryPatternExample(readInventoryPattern(pattern));
+}
+
+function readInventoryPattern(pattern: string) {
+  try { return parseInventoryPatternTemplate(pattern); }
+  catch (error) { throw new Error(`Pattern không hợp lệ: ${error instanceof Error ? error.message : 'sai định dạng'}.`); }
 }
 
 function apiErrorMessage(body: unknown, fallback: string) {

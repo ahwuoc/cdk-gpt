@@ -92,8 +92,8 @@ export class DeliveryProcessor {
 }
 
 function renderTemplate(template: string, payload: Record<string, unknown>) {
-  return template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key: string) => {
-    const value = payload[key]; return value === undefined || value === null ? '' : String(value);
+  return template.replace(/\{\{\s*([^{}]+?)\s*\}\}/gu, (_, key: string) => {
+    const value = payload[key.trim()]; return value === undefined || value === null ? '' : String(value);
   });
 }
 
