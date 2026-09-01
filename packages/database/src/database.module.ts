@@ -15,6 +15,7 @@ const models: ModelDefinition[] = [
   { name: 'AuditLog', schema: schemas.AuditLogSchema, collection: 'audit_logs' },
   { name: 'BotSession', schema: schemas.BotSessionSchema, collection: 'bot_sessions' },
   { name: 'Category', schema: schemas.CategorySchema, collection: 'categories' },
+  { name: 'CustomerMessage', schema: schemas.CustomerMessageSchema, collection: 'customer_messages' },
   { name: 'ImportBatch', schema: schemas.ImportBatchSchema, collection: 'import_batches' },
   { name: 'InventoryItem', schema: schemas.InventoryItemSchema, collection: 'inventory_items' },
   { name: 'Notification', schema: schemas.NotificationSchema, collection: 'notifications' },

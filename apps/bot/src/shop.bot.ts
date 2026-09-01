@@ -39,10 +39,12 @@ const inlineMenu = () => Markup.inlineKeyboard([
   [Markup.button.callback('💳 Nạp tiền', 'menu:deposit')],
   [Markup.button.callback('📦 Đơn hàng của tôi', 'menu:orders'), Markup.button.callback('ℹ️ Hướng dẫn', 'menu:help')],
   [Markup.button.callback('🚨 Báo lỗi / Khiếu nại đơn', 'menu:reports')],
+  [Markup.button.callback('💬 Liên hệ hỗ trợ', 'support:direct')],
 ]);
 
 type PendingQuantity = { productId: string; categoryKey: string };
 type PendingComplaint = { orderId: string; category: ComplaintCategoryValue };
+type PendingComplaintReply = { reportId: string };
 
 type DepositResponse = {
   id?: string;
@@ -178,6 +180,19 @@ export function createShopBot(
     await ctx.reply(`✍️ Hãy mô tả chi tiết vấn đề của đơn *${order.orderCode}* (5–2.000 ký tự).\n\nKhông gửi mật khẩu hoặc thông tin nhạy cảm không cần thiết.`,
       { parse_mode: 'Markdown' });
   });
+  bot.action(/^support:reply:([a-f\d]{24})$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!ctx.from || !ctx.chat) return;
+    await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.COMPLAINT_REPLY,
+      { reportId: ctx.match[1] }, 10 * 60_000);
+    await ctx.reply('💬 Nhập nội dung muốn gửi thêm cho nhân viên hỗ trợ (tối đa 4.000 ký tự):');
+  });
+  bot.action('support:direct', async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!ctx.from || !ctx.chat) return;
+    await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.DIRECT_SUPPORT, {}, 10 * 60_000);
+    await ctx.reply('💬 Nhập nội dung cần hỗ trợ. Shop sẽ đọc và trả lời trực tiếp tại đây:');
+  });
   bot.hears('ℹ️ Hướng dẫn', (ctx) => showHelp(ctx));
   bot.action('menu:help', async (ctx) => { await ctx.answerCbQuery(); await showHelp(ctx); });
   bot.hears('🔄 Menu chính', async (ctx) => { await ctx.reply('🏠 Menu chính', inlineMenu()); });
@@ -202,6 +217,8 @@ export function createShopBot(
         await ctx.reply('⏱️ Yêu cầu tìm đơn đã hết hạn. Hãy mở Khiếu nại và thử lại.', inlineMenu());
       } else if (pending.kind === BotSessionKind.ORDER_COMPLAINT) {
         await ctx.reply('⏱️ Yêu cầu khiếu nại đã hết hạn. Hãy mở Đơn hàng và bấm Báo lỗi lại.', inlineMenu());
+      } else if (pending.kind === BotSessionKind.COMPLAINT_REPLY || pending.kind === BotSessionKind.DIRECT_SUPPORT) {
+        await ctx.reply('⏱️ Phiên nhắn tin hỗ trợ đã hết hạn. Hãy bấm Liên hệ hỗ trợ và thử lại.', inlineMenu());
       } else {
         await ctx.reply('⏱️ Yêu cầu nhập số lượng đã hết hạn. Hãy chọn lại sản phẩm.', inlineMenu());
       }
@@ -244,6 +261,17 @@ export function createShopBot(
         return;
       }
       await createOrderReport(ctx, pending.data, description, apiUrl, botApiSecret, data);
+      return;
+    }
+    if (pending.kind === BotSessionKind.COMPLAINT_REPLY) {
+      if (!isPendingComplaintReply(pending.data)) {
+        await ctx.reply('❌ Phiên trả lời khiếu nại không hợp lệ.', inlineMenu()); return;
+      }
+      await sendComplaintReply(ctx, pending.data.reportId, ctx.message.text, apiUrl, botApiSecret, data);
+      return;
+    }
+    if (pending.kind === BotSessionKind.DIRECT_SUPPORT) {
+      await sendDirectSupport(ctx, ctx.message.text, apiUrl, botApiSecret, data);
       return;
     }
     if (!isPendingQuantity(pending.data)) {
@@ -560,8 +588,12 @@ async function createOrderReport(ctx: Context, pending: PendingComplaint, descri
       throw new Error(readErrorMessage(body.message, 'Không thể gửi khiếu nại.'));
     }
     const prefix = body.existing ? 'ℹ️ Đơn này đã có khiếu nại đang xử lý.' : '✅ Đã gửi khiếu nại thành công.';
-    await ctx.reply(`${prefix}\n\nMã khiếu nại: *${body.requestCode}*\nTrạng thái: ${reportStatusLabel(body.status)}\n\nShop sẽ kiểm tra và xử lý sớm nhất.`,
-      { parse_mode: 'Markdown', ...inlineMenu() });
+    await ctx.reply(`${prefix}\n\nMã khiếu nại: *${body.requestCode}*\nTrạng thái: ${reportStatusLabel(body.status)}\n\nShop sẽ kiểm tra và xử lý sớm nhất.`, {
+      parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+        [Markup.button.callback('💬 Nhắn thêm cho hỗ trợ', `support:reply:${body.id}`)],
+        [Markup.button.callback('🏠 Menu chính', 'menu:home')],
+      ]),
+    });
   } catch (error) {
     await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể gửi khiếu nại.'}`, inlineMenu());
   }
@@ -581,6 +613,46 @@ async function ownedOrderByCode(ctx: Context, orderCode: string, data: ShopBotDa
 
 async function showHelp(ctx: Context) {
   await ctx.reply('ℹ️ *Hướng dẫn nhanh*\n\n1. Chọn *Sản phẩm* và số lượng cần mua.\n2. Nếu ví đủ tiền, bot đặt đơn ngay; nếu chưa đủ, bot tạo QR đúng tổng tiền để thanh toán nhanh.\n3. Chuyển đúng nội dung QR, Cake callback sẽ tự tạo đơn và gửi hàng.\n4. Nếu đơn gặp lỗi, chọn *Báo lỗi / Khiếu nại đơn*.\n\nBạn cũng có thể dùng /products, /balance, /buy <productId> hoặc /report <mã đơn>.', { parse_mode: 'Markdown', ...inlineMenu() });
+}
+
+async function sendComplaintReply(ctx: Context, reportId: string, rawBody: string,
+  apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
+  if (!ctx.from) return;
+  const body = rawBody.trim();
+  if (!body || body.length > 4_000) { await ctx.reply('❌ Nội dung phải từ 1 đến 4.000 ký tự.', inlineMenu()); return; }
+  const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
+  try {
+    const response = await fetch(`${apiUrl}/api/bot/order-reports/${reportId}/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId: user._id.toString(), body,
+        idempotencyKey: `complaint-reply:${ctx.chat?.id ?? ctx.from.id}:${ctx.update.update_id}` }),
+    });
+    const result = await response.json().catch(() => ({})) as { message?: string | string[] };
+    if (!response.ok) throw new Error(readErrorMessage(result.message, 'Không thể gửi phản hồi.'));
+    await ctx.reply('✅ Đã gửi tin nhắn vào cuộc hội thoại khiếu nại. Shop sẽ phản hồi tại đây.', inlineMenu());
+  } catch (error) {
+    await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể gửi phản hồi.'}`, inlineMenu());
+  }
+}
+
+async function sendDirectSupport(ctx: Context, rawBody: string, apiUrl: string, botApiSecret: string,
+  data: ShopBotDataContext) {
+  if (!ctx.from) return;
+  const body = rawBody.trim();
+  if (!body || body.length > 4_000) { await ctx.reply('❌ Nội dung phải từ 1 đến 4.000 ký tự.', inlineMenu()); return; }
+  const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
+  try {
+    const response = await fetch(`${apiUrl}/api/bot/support/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId: user._id.toString(), body,
+        idempotencyKey: `direct-support:${ctx.chat?.id ?? ctx.from.id}:${ctx.update.update_id}` }),
+    });
+    const result = await response.json().catch(() => ({})) as { message?: string | string[] };
+    if (!response.ok) throw new Error(readErrorMessage(result.message, 'Không thể gửi tin nhắn.'));
+    await ctx.reply('✅ Đã gửi tin nhắn cho shop. Nhân viên sẽ trả lời trực tiếp tại đây.', inlineMenu());
+  } catch (error) {
+    await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể gửi tin nhắn.'}`, inlineMenu());
+  }
 }
 
 async function purchaseQuantity(ctx: Context, productId: string | undefined, quantity: number, apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
@@ -653,6 +725,9 @@ function isPendingQuantity(value: Record<string, unknown>): value is PendingQuan
 function isPendingComplaint(value: Record<string, unknown>): value is PendingComplaint {
   return typeof value.orderId === 'string' && /^[a-f\d]{24}$/.test(value.orderId)
     && isComplaintCategory(value.category);
+}
+function isPendingComplaintReply(value: Record<string, unknown>): value is PendingComplaintReply {
+  return typeof value.reportId === 'string' && /^[a-f\d]{24}$/.test(value.reportId);
 }
 function isComplaintCategory(value: unknown): value is ComplaintCategoryValue {
   return typeof value === 'string' && Object.values(ComplaintCategory).includes(value as ComplaintCategoryValue);

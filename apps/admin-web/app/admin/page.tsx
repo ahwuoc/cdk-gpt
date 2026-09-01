@@ -2,12 +2,13 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Bot, Boxes, CircleDollarSign, Eye, FileUp, KeyRound, LayoutDashboard, ListChecks, LogOut,
-  MessageSquareWarning, Package, QrCode, RefreshCw, ServerCog, ShoppingCart, Tags, Users, WalletCards } from 'lucide-react';
+  MessagesSquare, MessageSquareWarning, Package, QrCode, RefreshCw, ServerCog, ShoppingCart, Tags, Users, WalletCards } from 'lucide-react';
 import { inventoryPatternExample, parseInventoryPatternLine, parseInventoryPatternTemplate } from '@store/shared';
 import { CategoryManager } from './category-manager';
 import { ComplaintManager } from './complaint-manager';
 import { InventoryManager } from './inventory-manager';
 import { ManagementHub } from './management-hub';
+import { MessageCenter } from './message-center';
 import { OperationsDashboard } from './operations-dashboard';
 import { ProductManager, type CategoryRecord, type ProductPagination, type ProductRecord } from './product-manager';
 import { requestId } from './request-id';
@@ -50,7 +51,7 @@ interface BotConfig {
   bank?: BankConfig; runtime?: RuntimeConfig;
 }
 type AdminSection = 'dashboard' | 'orders' | 'reports' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
-  | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
+  | 'messages' | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
 
 export default function AdminPage() {
   const [tokens, setTokens] = useState<Tokens | null>(null);
@@ -87,6 +88,7 @@ export default function AdminPage() {
     if (typeof window !== 'undefined') {
       const url = new URL(window.location.href); url.searchParams.set('view', next);
       url.searchParams.delete('userId');
+      if (next !== 'messages') url.searchParams.delete('telegramId');
       window.history.pushState({ view: next }, '', url);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -397,6 +399,7 @@ export default function AdminPage() {
           view={section as 'users' | 'ledger' | 'audit'} authorized={authorized} setMessage={setMessage} />}
 
         {section === 'reports' && <ComplaintManager authorized={authorized} setMessage={setMessage} />}
+        {section === 'messages' && <MessageCenter authorized={authorized} setMessage={setMessage} />}
 
         {section === 'categories' && <section className="space-y-6">
           <PageHeading eyebrow="Hàng hóa" title="Quản lý danh mục" description="Tổ chức sản phẩm theo nhóm để khách tìm nhanh hơn trên Telegram." />
@@ -576,6 +579,7 @@ function AdminSidebar({ section, navigate }: { section: AdminSection; navigate(n
       { id: 'dashboard', label: 'Tổng quan', icon: <LayoutDashboard size={17} /> },
       { id: 'orders', label: 'Đơn hàng', icon: <ShoppingCart size={17} /> },
       { id: 'reports', label: 'Khiếu nại', icon: <MessageSquareWarning size={17} /> },
+      { id: 'messages', label: 'Tin nhắn', icon: <MessagesSquare size={17} /> },
       { id: 'deposits', label: 'Lịch sử nạp', icon: <WalletCards size={17} /> },
       { id: 'users', label: 'Khách hàng', icon: <Users size={17} /> },
     ] },
@@ -659,7 +663,7 @@ function apiErrorMessage(body: unknown, fallback: string) {
 function adminSectionFromLocation(): AdminSection {
   if (typeof window === 'undefined') return 'dashboard';
   const value = new URL(window.location.href).searchParams.get('view');
-  const sections: AdminSection[] = ['dashboard', 'orders', 'reports', 'deposits', 'users', 'categories', 'products', 'inventory', 'ledger', 'audit', 'bot', 'payments', 'system'];
+  const sections: AdminSection[] = ['dashboard', 'orders', 'reports', 'messages', 'deposits', 'users', 'categories', 'products', 'inventory', 'ledger', 'audit', 'bot', 'payments', 'system'];
   return sections.includes(value as AdminSection) ? value as AdminSection : 'dashboard';
 }
 

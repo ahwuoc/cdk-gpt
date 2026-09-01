@@ -11,7 +11,7 @@ import { validate } from 'class-validator';
 import { EncryptionService } from '@store/encryption';
 import { redisConnectionOptions } from '@store/config';
 import {
-  AdminModel, AuditLogModel, ImportBatchModel, InventoryItemModel, InventoryRepository, NotificationModel,
+  AdminModel, AuditLogModel, CustomerMessageModel, ImportBatchModel, InventoryItemModel, InventoryRepository, NotificationModel,
   OrderModel, OrderRepository, PaymentRequestModel, ProductModel, RoleModel, RuntimeLeaseModel, SettingModel, UserModel,
   UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel, DatabaseModule,
 } from '@store/database';
@@ -34,6 +34,8 @@ import { ProductService } from '../../apps/api/src/product/product.service';
 import { SaveProductDto } from '../../apps/api/src/product/product.dto';
 import { AnalyticsService } from '../../apps/api/src/analytics/analytics.service';
 import { WarrantyService } from '../../apps/api/src/warranty/warranty.service';
+import { MessagingService } from '../../apps/api/src/messaging/messaging.service';
+import { AdminBroadcastProcessor } from '../../apps/bot/src/admin-broadcast.processor';
 
 process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef';
 process.env.PAYLOAD_HASH_KEY = 'abcdef0123456789abcdef0123456789';
@@ -64,8 +66,9 @@ function walletService() { return new WalletService(mongoose.connection, userRep
 function paymentService() { return new PaymentService(mongoose.connection, PaymentRequestModel, walletService()); }
 function analyticsService() { return new AnalyticsService(OrderModel, PaymentRequestModel, UserModel, ProductModel,
   InventoryItemModel, WalletTransactionModel, AuditLogModel); }
-function warrantyService() { return new WarrantyService(mongoose.connection, WarrantyRequestModel, OrderModel, AuditLogModel,
-  { notify: async () => true } as never); }
+function warrantyService() { return new WarrantyService(mongoose.connection, WarrantyRequestModel, OrderModel, UserModel,
+  CustomerMessageModel, AuditLogModel, { notify: async () => true } as never,
+  { sendSupportMessage: async () => ({ message_id: 1 }) } as never); }
 
 async function fixture(stock = 1, balance = 1000, purchaseLimit = 0) {
   const adminId = new Types.ObjectId();
@@ -733,6 +736,18 @@ integration('digital store on a MongoDB replica set', () => {
       category: 'OTHER', description: 'Telegram gửi lại callback tạo khiếu nại.' });
     expect(duplicate.id).toBe(first.id);
     expect(duplicate.existing).toBeTrue();
+    expect((await service.messages(first.id)).items).toHaveLength(1);
+
+    const adminReply = await service.reply(first.id, adminId.toString(), 'Shop đang kiểm tra tài khoản cho bạn.',
+      'complaint-chat-admin');
+    expect(adminReply.status).toBe('SENT');
+    await service.userReply(first.id, user._id.toString(), 'Mình vẫn chưa đăng nhập được.', 'complaint-chat-user');
+    await service.userReply(first.id, user._id.toString(), 'Mình vẫn chưa đăng nhập được.', 'complaint-chat-user');
+    const conversation = await service.messages(first.id);
+    expect(conversation.items).toHaveLength(3);
+    expect(conversation.items.map((item) => item.direction)).toEqual([
+      'USER_TO_ADMIN', 'ADMIN_TO_USER', 'USER_TO_ADMIN',
+    ]);
 
     const stranger = await fixture(0);
     await expect(service.create({ userId: stranger.user._id.toString(), orderId: order._id.toString(),
@@ -741,7 +756,7 @@ integration('digital store on a MongoDB replica set', () => {
     const listed = await service.list({ page: 1, limit: 20, search: order.orderCode });
     expect(listed.items).toHaveLength(1);
     expect(listed.items[0]).toMatchObject({ requestCode: first.requestCode, category: 'INVALID_CREDENTIALS',
-      status: 'PENDING', order: { orderCode: order.orderCode }, user: { telegramId: user.telegramId },
+      status: 'REVIEWING', order: { orderCode: order.orderCode }, user: { telegramId: user.telegramId },
       product: { name: product.name } });
     const resolved = await service.update(first.id, adminId.toString(), {
       status: 'RESOLVED', resolutionNote: 'Đã cấp sản phẩm thay thế cho khách.',
@@ -753,6 +768,41 @@ integration('digital store on a MongoDB replica set', () => {
       status: 'RESOLVED', resolutionNote: 'Không được xử lý lặp lại.',
     }, 'duplicate-resolution')).rejects.toThrow('Invalid report status transition');
     expect(await AuditLogModel.countDocuments({ requestId: 'duplicate-resolution' })).toBe(0);
+  });
+
+  test('direct support chat and broadcasts are durable and idempotent', async () => {
+    const { user, adminId } = await fixture(0);
+    let directSends = 0;
+    const messaging = new MessagingService(UserModel, CustomerMessageModel, NotificationModel, AuditLogModel,
+      { sendSupportMessage: async () => { directSends++; return { message_id: directSends }; } } as never,
+      { enqueue: async () => ({ id: 'queued' }) } as never);
+
+    await Promise.all([
+      messaging.sendDirect(adminId.toString(), user.telegramId, 'Shop trả lời khách.', 'same-direct-request'),
+      messaging.sendDirect(adminId.toString(), user.telegramId, 'Shop trả lời khách.', 'same-direct-request'),
+    ]);
+    expect(directSends).toBe(1);
+    await messaging.receiveUser({ userId: user._id.toString(), body: 'Khách phản hồi lại.',
+      idempotencyKey: 'same-user-support-reply' });
+    await messaging.receiveUser({ userId: user._id.toString(), body: 'Khách phản hồi lại.',
+      idempotencyKey: 'same-user-support-reply' });
+    const conversation = await messaging.list({ telegramId: user.telegramId, page: 1, limit: 20 });
+    expect(conversation.total).toBe(2);
+    expect(conversation.items.map((item) => item.direction)).toEqual(['ADMIN_TO_USER', 'USER_TO_ADMIN']);
+
+    const second = await UserModel.create({ telegramId: '991122334455', status: UserStatus.ACTIVE, walletBalance: 0,
+      referralCode: 'BROADCAST2', purchaseCount: 0, deletedAt: null });
+    const campaign = await NotificationModel.create({ adminId, channel: 'ADMIN_WEB', title: 'Telegram broadcast',
+      body: 'Thông báo thử nghiệm.', status: 'PENDING', referenceType: 'ADMIN_BROADCAST', metadata: {} });
+    const deliveredTo: string[] = [];
+    const processor = new AdminBroadcastProcessor({ telegram: { sendMessage: async (telegramId: string) => {
+      deliveredTo.push(telegramId); return { message_id: deliveredTo.length };
+    } } } as never);
+    await processor.processBatch({ campaignId: campaign._id.toString() });
+    await processor.processBatch({ campaignId: campaign._id.toString() });
+    expect(deliveredTo.sort()).toEqual([user.telegramId, second.telegramId].sort());
+    expect(await CustomerMessageModel.countDocuments({ campaignId: campaign._id, status: 'SENT' })).toBe(2);
+    expect((await NotificationModel.findById(campaign._id))?.status).toBe('SENT');
   });
 
   test('5. rerunning a completed delivery job does not resend or resell', async () => {

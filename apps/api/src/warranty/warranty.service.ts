@@ -2,10 +2,13 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Connection, FilterQuery, Model, PipelineStage, Types as MongooseTypes } from 'mongoose';
-import { AuditLog, Order, Product, User, WarrantyRequest, WarrantyStatus } from '@store/database';
+import { AuditLog, CustomerConversationType, CustomerMessage, CustomerMessageAudience, CustomerMessageDirection,
+  CustomerMessageStatus, Order, Product, User, WarrantyRequest, WarrantyStatus,
+  claimableCustomerMessageDelivery, customerMessageId } from '@store/database';
 import { ComplaintCategory, isMongoDuplicateKey } from '@store/shared';
 import type { CreateOrderReportDto, OrderReportQueryDto, UpdateOrderReportDto } from './warranty.dto';
 import { WarrantyNotifier, type ReportResolutionNotification } from './warranty.notifier';
+import { TelegramMessenger } from '../messaging/telegram-messenger';
 
 const ACTIVE_REPORT_STATUSES = [WarrantyStatus.PENDING, WarrantyStatus.REVIEWING, WarrantyStatus.APPROVED];
 const RESOLUTION_NOTE_REQUIRED: Array<typeof WarrantyStatus[keyof typeof WarrantyStatus]> = [
@@ -29,8 +32,11 @@ export class WarrantyService {
     @InjectConnection() private readonly connection: Connection,
     @InjectModel('WarrantyRequest') private readonly reports: Model<WarrantyRequest>,
     @InjectModel('Order') private readonly orders: Model<Order>,
+    @InjectModel('User') private readonly users: Model<User>,
+    @InjectModel('CustomerMessage') private readonly customerMessages: Model<CustomerMessage>,
     @InjectModel('AuditLog') private readonly audits: Model<AuditLog>,
     private readonly notifier: WarrantyNotifier,
+    private readonly telegram: TelegramMessenger,
   ) {}
 
   async create(input: CreateOrderReportDto) {
@@ -47,7 +53,7 @@ export class WarrantyService {
     const order = await this.orders.findOne({ _id: orderId, userId }).lean();
     if (!order) throw new NotFoundException('Order not found');
     const existing = await this.reports.findOne({ orderId, status: { $in: ACTIVE_REPORT_STATUSES } }).lean();
-    if (existing) return createResponse(existing, true);
+    if (existing) { await this.ensureOpeningMessage(existing); return createResponse(existing, true); }
 
     const reportId = new Types.ObjectId();
     try {
@@ -58,11 +64,13 @@ export class WarrantyService {
         category: input.category, reason: description, evidenceUrls: [], status: WarrantyStatus.PENDING,
         metadata: { source: 'TELEGRAM' },
       });
+      await this.ensureOpeningMessage(report);
       return createResponse(report, false);
     } catch (error) {
       if (!isMongoDuplicateKey(error)) throw error;
       const raced = await this.reports.findOne({ orderId, status: { $in: ACTIVE_REPORT_STATUSES } }).lean();
       if (!raced) throw new ConflictException('An active report already exists for this order');
+      await this.ensureOpeningMessage(raced);
       return createResponse(raced, true);
     }
   }
@@ -136,8 +144,114 @@ export class WarrantyService {
     if (!result || !notification) throw new Error('Report transaction did not update a report');
     let notificationSent = false;
     try { notificationSent = await this.notifier.notify(notification); } catch { notificationSent = false; }
+    if (note) await this.createMessageOnce({ userId: notification.userId, adminId: new Types.ObjectId(adminId),
+      warrantyRequestId: new Types.ObjectId(id), conversationType: CustomerConversationType.COMPLAINT,
+      direction: CustomerMessageDirection.ADMIN_TO_USER, audience: CustomerMessageAudience.DIRECT, body: note,
+      status: notificationSent ? CustomerMessageStatus.SENT : CustomerMessageStatus.FAILED,
+      deduplicationKey: `complaint-resolution:${id}:${result.reviewedAt.toISOString()}` });
     return { ...result, notificationSent };
   }
+
+  async messages(id: string) {
+    const report = await this.reportOrThrow(id);
+    await this.ensureOpeningMessage(report);
+    const messages = await this.customerMessages.find({ warrantyRequestId: report._id,
+      conversationType: CustomerConversationType.COMPLAINT }).sort({ createdAt: 1, _id: 1 }).lean();
+    return { reportId: report._id.toString(), requestCode: report.requestCode,
+      items: messages.map(publicComplaintMessage) };
+  }
+
+  async reply(id: string, adminId: string, rawBody: string, requestId?: string) {
+    const report = await this.reportOrThrow(id);
+    if (!Types.ObjectId.isValid(adminId)) throw new BadRequestException('Invalid administrator');
+    const user = await this.users.findOne({ _id: report.userId, deletedAt: null }).select('telegramId').lean();
+    if (!user) throw new NotFoundException('Customer not found');
+    const body = normalizeMessageBody(rawBody);
+    const message = await this.createMessageOnce({ userId: report.userId, adminId: new Types.ObjectId(adminId),
+      warrantyRequestId: report._id, conversationType: CustomerConversationType.COMPLAINT,
+      direction: CustomerMessageDirection.ADMIN_TO_USER, audience: CustomerMessageAudience.DIRECT, body,
+      status: CustomerMessageStatus.PENDING,
+      deduplicationKey: `complaint-admin:${requestId?.trim() || new Types.ObjectId().toString()}` });
+    if (message.body !== body) throw new ConflictException('Request ID đã được dùng cho một nội dung khác');
+    if (message.status !== CustomerMessageStatus.SENT) {
+      const claimed = await this.customerMessages.findOneAndUpdate({ _id: message._id,
+        ...claimableCustomerMessageDelivery() },
+      { $set: { status: CustomerMessageStatus.SENDING }, $unset: { errorCode: 1 } }, { new: true });
+      if (!claimed) return { id: message._id.toString(), status: message.status };
+      try {
+        const sent = await this.telegram.sendSupportMessage(user.telegramId, message.body, report._id.toString());
+        await this.customerMessages.updateOne({ _id: message._id }, { $set: {
+          status: CustomerMessageStatus.SENT, telegramMessageId: sent.message_id,
+        }, $unset: { errorCode: 1 } });
+      } catch (error) {
+        await this.customerMessages.updateOne({ _id: message._id }, { $set: {
+          status: CustomerMessageStatus.FAILED, errorCode: telegramErrorCode(error),
+        } });
+        throw new BadRequestException('Telegram không gửi được phản hồi cho khách');
+      }
+    }
+    if (report.status === WarrantyStatus.PENDING) {
+      await this.reports.updateOne({ _id: report._id, status: WarrantyStatus.PENDING }, { $set: {
+        status: WarrantyStatus.REVIEWING, reviewedBy: new Types.ObjectId(adminId), reviewedAt: new Date(),
+      } });
+    }
+    await this.audits.create({ actorType: 'ADMIN', actorId: new Types.ObjectId(adminId), action: 'WARRANTY_MESSAGE_SENT',
+      resourceType: 'WarrantyRequest', resourceId: report._id, requestId, metadata: { messageLength: body.length } });
+    return { id: message._id.toString(), status: CustomerMessageStatus.SENT };
+  }
+
+  async userReply(id: string, userId: string, rawBody: string, idempotencyKey: string) {
+    if (!Types.ObjectId.isValid(id) || !Types.ObjectId.isValid(userId)) throw new NotFoundException('Report not found');
+    const report = await this.reports.findOne({ _id: id, userId }).lean();
+    if (!report) throw new NotFoundException('Report not found');
+    const body = normalizeMessageBody(rawBody);
+    const message = await this.createMessageOnce({ userId: report.userId, warrantyRequestId: report._id,
+      conversationType: CustomerConversationType.COMPLAINT, direction: CustomerMessageDirection.USER_TO_ADMIN,
+      audience: CustomerMessageAudience.DIRECT, body, status: CustomerMessageStatus.RECEIVED,
+      deduplicationKey: `complaint-user:${idempotencyKey}` });
+    if (message.body !== body) throw new ConflictException('Idempotency key đã được dùng cho một nội dung khác');
+    return { id: message._id.toString(), status: message.status };
+  }
+
+  private async reportOrThrow(id: string) {
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Report not found');
+    const report = await this.reports.findById(id).lean();
+    if (!report) throw new NotFoundException('Report not found');
+    return report;
+  }
+
+  private ensureOpeningMessage(report: WarrantyRequest & { _id: MongooseTypes.ObjectId }) {
+    return this.createMessageOnce({ userId: report.userId, warrantyRequestId: report._id,
+      conversationType: CustomerConversationType.COMPLAINT, direction: CustomerMessageDirection.USER_TO_ADMIN,
+      audience: CustomerMessageAudience.DIRECT, body: report.reason, status: CustomerMessageStatus.RECEIVED,
+      deduplicationKey: `complaint-opening:${report._id.toString()}` });
+  }
+
+  private async createMessageOnce(value: Partial<Omit<CustomerMessage, 'deduplicationKey'>> & { deduplicationKey: string }) {
+    const _id = customerMessageId(value.deduplicationKey);
+    try {
+      return await this.customerMessages.findOneAndUpdate({ _id },
+        { $setOnInsert: { _id, ...value } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    } catch (error) {
+      if (!isMongoDuplicateKey(error)) throw error;
+      const existing = await this.customerMessages.findById(_id);
+      if (!existing) throw error; return existing;
+    }
+  }
+}
+
+function normalizeMessageBody(value: string) {
+  const body = value.trim();
+  if (!body || body.length > 4_000) throw new BadRequestException('Nội dung phải từ 1 đến 4.000 ký tự');
+  return body;
+}
+function publicComplaintMessage(message: CustomerMessage & { _id: MongooseTypes.ObjectId }) {
+  return { id: message._id.toString(), direction: message.direction, body: message.body, status: message.status,
+    errorCode: message.errorCode ?? null, createdAt: message.createdAt };
+}
+function telegramErrorCode(error: unknown) {
+  const code = (error as { response?: { error_code?: number } }).response?.error_code;
+  return code ? `TELEGRAM_${code}` : 'TELEGRAM_SEND_FAILED';
 }
 
 function createResponse(report: WarrantyRequest & { _id: MongooseTypes.ObjectId }, existing: boolean) {

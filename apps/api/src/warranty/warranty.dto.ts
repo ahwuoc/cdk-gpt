@@ -60,3 +60,16 @@ export class UpdateOrderReportDto {
   @IsOptional() @IsString() @MaxLength(5_000)
   resolutionNote?: string;
 }
+
+export class SendOrderReportMessageDto {
+  @IsString() @Length(1, 4_000)
+  body!: string;
+}
+
+export class SendBotOrderReportMessageDto extends SendOrderReportMessageDto {
+  @IsMongoId()
+  userId!: string;
+
+  @IsString() @Length(8, 160)
+  idempotencyKey!: string;
+}

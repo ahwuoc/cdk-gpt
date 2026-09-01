@@ -13,6 +13,7 @@ import { QStashTaskPublisher } from '../../api/src/serverless/qstash';
 import { DeliveryProcessor } from '../../bot/src/delivery.processor';
 import { StockAlertProcessor, type StockAlertBatch } from '../../bot/src/stock-alert.processor';
 import { PurchaseAlertProcessor, type PurchaseAlertBatch } from '../../bot/src/purchase-alert.processor';
+import { AdminBroadcastProcessor, type AdminBroadcastBatch } from '../../bot/src/admin-broadcast.processor';
 
 type TelegramClient = { telegram: Telegram };
 const PENDING_DELIVERY_RECOVERY_LIMIT = 10;
@@ -64,6 +65,15 @@ export function purchaseAlertTaskFrom(value: unknown): PurchaseAlertBatch | unde
   };
 }
 
+export function adminBroadcastTaskFrom(value: unknown): AdminBroadcastBatch | undefined {
+  if (!isRecord(value) || typeof value.campaignId !== 'string' || !Types.ObjectId.isValid(value.campaignId)) return undefined;
+  if (value.cursor !== undefined && (typeof value.cursor !== 'string' || !Types.ObjectId.isValid(value.cursor))) return undefined;
+  if (value.limit !== undefined && (typeof value.limit !== 'number' || !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 100)) return undefined;
+  return { campaignId: value.campaignId,
+    ...(typeof value.cursor === 'string' ? { cursor: value.cursor } : {}),
+    ...(typeof value.limit === 'number' ? { limit: value.limit } : {}) };
+}
+
 export async function processDeliveryTask(orderId: string, retried = 0) {
   const { client, runtime } = await currentTelegramRuntime();
   const processor = new DeliveryProcessor(client, runtime.adminTelegramIds);
@@ -109,6 +119,17 @@ export async function processPurchaseAlertTask(task: PurchaseAlertBatch) {
       deduplicationId: `purchase-proof-${task.purchaseGroupId}-${result.nextCursor}`,
       retries: 5,
     });
+  }
+  return result;
+}
+
+export async function processAdminBroadcastTask(task: AdminBroadcastBatch) {
+  const { client, config } = await currentTelegramRuntime();
+  const result = await new AdminBroadcastProcessor(client).processBatch(task);
+  if ('nextCursor' in result && result.nextCursor) {
+    await new QStashTaskPublisher(() => config.getQStashRuntimeConfig()).publish('/api/internal/tasks/admin-broadcast', {
+      ...task, cursor: result.nextCursor, limit: task.limit ?? 50,
+    }, { deduplicationId: `admin-broadcast-${task.campaignId}-${result.nextCursor}`, retries: 5 });
   }
   return result;
 }

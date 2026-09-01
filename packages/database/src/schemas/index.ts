@@ -1,5 +1,6 @@
 export * from './admin.schema';
 export * from './category.schema';
+export * from './customer-message.schema';
 export * from './audit-log.schema';
 export * from './bot-session.schema';
 export * from './import-batch.schema';

@@ -5,7 +5,8 @@ import { PUBLIC_ROUTE } from '../auth/auth.guard';
 import type { AdminClaims } from '../auth/auth.service';
 import { RequirePermissions } from '../auth/permissions.guard';
 import { assertSharedSecret } from '../auth/shared-secret';
-import { CreateOrderReportDto, OrderReportQueryDto, UpdateOrderReportDto } from './warranty.dto';
+import { CreateOrderReportDto, OrderReportQueryDto, SendBotOrderReportMessageDto,
+  SendOrderReportMessageDto, UpdateOrderReportDto } from './warranty.dto';
 import { WarrantyService } from './warranty.service';
 
 @ApiTags('order-reports')
@@ -25,6 +26,25 @@ export class WarrantyController {
   @RequirePermissions('warranty.manage')
   @ApiOperation({ summary: 'List and filter customer order reports' })
   list(@Query() query: OrderReportQueryDto) { return this.warranty.list(query); }
+
+  @Get('admin/order-reports/:id/messages')
+  @RequirePermissions('warranty.manage')
+  messages(@Param('id') id: string) { return this.warranty.messages(id); }
+
+  @Post('admin/order-reports/:id/messages')
+  @RequirePermissions('warranty.manage')
+  reply(@Param('id') id: string, @Body() body: SendOrderReportMessageDto,
+    @Req() request: FastifyRequest & { admin: AdminClaims }, @Headers('x-request-id') requestId?: string) {
+    return this.warranty.reply(id, request.admin.sub, body.body, requestId);
+  }
+
+  @Post('bot/order-reports/:id/messages')
+  @SetMetadata(PUBLIC_ROUTE, true)
+  userReply(@Param('id') id: string, @Body() body: SendBotOrderReportMessageDto,
+    @Headers('x-bot-secret') secret?: string) {
+    assertSharedSecret(secret, 'BOT_API_SECRET', 'Invalid bot credential');
+    return this.warranty.userReply(id, body.userId, body.body, body.idempotencyKey);
+  }
 
   @Patch('admin/order-reports/:id')
   @RequirePermissions('warranty.manage')

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, LoaderCircle, MessageSquareWarning, RefreshCw, Search } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, LoaderCircle, MessageCircle, MessageSquareWarning, RefreshCw, Search, Send } from 'lucide-react';
 import type { AuthorizedRequest } from './operations-dashboard';
 import { requestId } from './request-id';
 
@@ -14,6 +14,11 @@ interface ReportRecord {
   product?: { id: string; name: string; slug: string } | null;
 }
 interface Editing { id: string; status: string; originalStatus: string; resolutionNote: string; }
+interface ChatMessage {
+  id: string; direction: 'USER_TO_ADMIN' | 'ADMIN_TO_USER'; body: string; status: string;
+  errorCode?: string | null; createdAt: string;
+}
+interface ChatThread { reportId: string; requestCode: string; items: ChatMessage[]; }
 
 const pageSize = 15;
 const statuses = ['PENDING', 'REVIEWING', 'RESOLVED', 'REJECTED'];
@@ -28,7 +33,12 @@ export function ComplaintManager({ authorized, setMessage }: {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [chat, setChat] = useState<ChatThread | null>(null);
+  const [chatBody, setChatBody] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatSending, setChatSending] = useState(false);
   const activeRequest = useRef<AbortController | null>(null);
+  const activeChatReport = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     activeRequest.current?.abort();
@@ -55,6 +65,46 @@ export function ComplaintManager({ authorized, setMessage }: {
     return () => { window.clearTimeout(timer); activeRequest.current?.abort(); };
   }, [load]);
 
+  const loadChat = useCallback(async (reportId: string, silent = false) => {
+    if (!silent) setChatLoading(true);
+    try {
+      const response = await authorized(`/admin/order-reports/${reportId}/messages`);
+      const body = await readBody<ChatThread & { message?: string | string[] }>(response);
+      if (!response.ok) throw new Error(errorMessage(body, 'Không thể tải hội thoại khiếu nại.'));
+      if (activeChatReport.current === reportId) setChat({ reportId: body.reportId, requestCode: body.requestCode,
+        items: Array.isArray(body.items) ? body.items : [] });
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể tải hội thoại khiếu nại.'); }
+    finally { if (!silent) setChatLoading(false); }
+  }, [authorized, setMessage]);
+
+  useEffect(() => {
+    if (!chat?.reportId) return;
+    const reportId = chat.reportId;
+    const timer = window.setInterval(() => void loadChat(reportId, true), 10_000);
+    return () => window.clearInterval(timer);
+  }, [chat?.reportId, loadChat]);
+
+  async function toggleChat(reportId: string) {
+    if (chat?.reportId === reportId) { activeChatReport.current = null; setChat(null); setChatBody(''); return; }
+    activeChatReport.current = reportId; setChat(null); setChatBody(''); await loadChat(reportId);
+  }
+
+  async function sendChatReply() {
+    if (!chat || !chatBody.trim()) return;
+    setChatSending(true);
+    try {
+      const response = await authorized(`/admin/order-reports/${chat.reportId}/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': requestId() },
+        body: JSON.stringify({ body: chatBody.trim() }),
+      });
+      const body = await readBody<{ message?: string | string[] }>(response);
+      if (!response.ok) throw new Error(errorMessage(body, 'Không thể gửi phản hồi.'));
+      setChatBody(''); setMessage('Đã gửi phản hồi khiếu nại qua Telegram.');
+      await Promise.all([loadChat(chat.reportId), load()]);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể gửi phản hồi.'); }
+    finally { setChatSending(false); }
+  }
+
   async function save() {
     if (!editing) return;
     if (editing.status === editing.originalStatus) {
@@ -75,6 +125,7 @@ export function ComplaintManager({ authorized, setMessage }: {
         ? 'Đã cập nhật khiếu nại và thông báo kết quả cho khách qua Telegram.'
         : 'Đã lưu kết quả, nhưng chưa gửi được thông báo Telegram cho khách.');
       setEditing(null); await load();
+      if (chat?.reportId === editing.id) await loadChat(editing.id);
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể cập nhật khiếu nại.'); }
     finally { setSaving(false); }
   }
@@ -109,8 +160,25 @@ export function ComplaintManager({ authorized, setMessage }: {
               {report.resolutionNote && <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3"><p className="text-[11px] font-medium uppercase tracking-wide text-emerald-300">Kết quả xử lý</p><p className="mt-1 whitespace-pre-wrap text-sm text-emerald-100">{report.resolutionNote}</p></div>}
               {report.user?.id && <div className="mt-3 flex flex-wrap gap-2 text-xs"><a className="button-secondary px-2.5 py-1.5" href={`/admin?view=orders&userId=${report.user.id}`}>Lịch sử đơn</a><a className="button-secondary px-2.5 py-1.5" href={`/admin?view=ledger&userId=${report.user.id}`}>Sổ ví khách</a></div>}
             </div>
-            <button type="button" onClick={() => setEditing(editing?.id === report.id ? null : { id: report.id, status: report.status, originalStatus: report.status, resolutionNote: report.resolutionNote ?? '' })} className="button-secondary shrink-0 px-3 py-2">{editing?.id === report.id ? 'Đóng' : 'Xử lý'}</button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button type="button" onClick={() => void toggleChat(report.id)} className="button-secondary inline-flex items-center gap-2 px-3 py-2"><MessageCircle size={15} />{chat?.reportId === report.id ? 'Đóng chat' : 'Hội thoại'}</button>
+              <button type="button" onClick={() => setEditing(editing?.id === report.id ? null : { id: report.id, status: report.status, originalStatus: report.status, resolutionNote: report.resolutionNote ?? '' })} className="button-secondary px-3 py-2">{editing?.id === report.id ? 'Đóng xử lý' : 'Xử lý'}</button>
+            </div>
           </div>
+          {chat?.reportId === report.id && <div className="mt-4 rounded-2xl border border-sky-500/20 bg-sky-500/5 p-4">
+            <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-sky-100">Trao đổi với {person(report.user)}</p><p className="mt-1 text-xs text-slate-500">Khách bấm “Trả lời shop” trong Telegram để nhắn lại đúng khiếu nại này.</p></div>
+              <button type="button" className="button-secondary p-2" onClick={() => void loadChat(report.id)} disabled={chatLoading} aria-label="Làm mới hội thoại"><RefreshCw size={15} className={chatLoading ? 'animate-spin' : ''} /></button></div>
+            <div className="mt-4 max-h-96 space-y-2 overflow-auto rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+              {chat.items.map((message) => <div key={message.id} className={`max-w-[88%] rounded-2xl px-3 py-2 text-sm ${message.direction === 'ADMIN_TO_USER' ? 'ml-auto bg-indigo-600/80 text-white' : 'bg-slate-800 text-slate-100'}`}>
+                <p className="whitespace-pre-wrap break-words leading-6">{message.body}</p>
+                <p className="mt-1 text-[10px] opacity-60">{dateTime(message.createdAt)} · {messageStatusLabel(message.status)}</p>
+              </div>)}
+              {!chatLoading && chat.items.length === 0 && <p className="py-10 text-center text-sm text-slate-500">Chưa có nội dung trao đổi.</p>}
+              {chatLoading && <p className="flex items-center justify-center gap-2 py-10 text-sm text-slate-500"><LoaderCircle size={16} className="animate-spin" />Đang tải hội thoại…</p>}
+            </div>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row"><textarea className="input min-h-24 flex-1" maxLength={4_000} value={chatBody} onChange={(event) => setChatBody(event.target.value)} placeholder="Nhập phản hồi cho khách…" />
+              <button type="button" className="button-primary inline-flex min-w-32 items-center justify-center gap-2 px-4" disabled={chatSending || !chatBody.trim()} onClick={() => void sendChatReply()}><Send size={16} />{chatSending ? 'Đang gửi…' : 'Gửi'}</button></div>
+          </div>}
           {editing?.id === report.id && <div className="mt-4 grid gap-3 rounded-2xl border border-indigo-500/20 bg-indigo-500/5 p-4 lg:grid-cols-[240px_minmax(0,1fr)_auto] lg:items-end">
             <label><span className="label">Trạng thái</span><select className="input" value={editing.status} onChange={(event) => setEditing({ ...editing, status: event.target.value })}>{!statuses.includes(editing.status) && <option value={editing.status}>{statusLabel(editing.status)} (trạng thái cũ)</option>}{statuses.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}</select></label>
             <label><span className="label">Ghi chú xử lý</span><textarea className="input min-h-24" maxLength={5_000} value={editing.resolutionNote} onChange={(event) => setEditing({ ...editing, resolutionNote: event.target.value })} placeholder="Ví dụ: Đã kiểm tra và gửi tài khoản thay thế cho khách…" /></label>
@@ -130,6 +198,7 @@ function Pagination<T>({ data, onPage }: { data: PageResult<T>; onPage(page: num
 function StatusBadge({ value }: { value: string }) { const color = value === 'PENDING' ? 'bg-amber-500/15 text-amber-300' : value === 'REVIEWING' ? 'bg-sky-500/15 text-sky-300' : value === 'REJECTED' ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'; return <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${color}`}>{statusLabel(value)}</span>; }
 function statusLabel(value: string) { return ({ PENDING: 'Chờ xử lý', REVIEWING: 'Đang kiểm tra', RESOLVED: 'Đã giải quyết', APPROVED: 'Đã chấp nhận', REJECTED: 'Đã từ chối', REPLACED: 'Đã thay thế', REFUNDED: 'Đã hoàn tiền' } as Record<string, string>)[value] ?? value; }
 function categoryLabel(value: string) { return ({ NO_DELIVERY: 'Chưa nhận được hàng', INVALID_CREDENTIALS: 'Không đăng nhập được', PRODUCT_MISMATCH: 'Không đúng mô tả', WARRANTY: 'Yêu cầu bảo hành', OTHER: 'Vấn đề khác' } as Record<string, string>)[value] ?? value; }
+function messageStatusLabel(value: string) { return ({ RECEIVED: 'Khách gửi', PENDING: 'Đang chờ', SENDING: 'Đang gửi', SENT: 'Đã gửi', FAILED: 'Gửi lỗi' } as Record<string, string>)[value] ?? value; }
 function person(user?: ReportRecord['user']) {
   if (!user) return 'Khách đã xóa';
   const handle = user.username ? `@${user.username.replace(/^@+/, '')}` : '';

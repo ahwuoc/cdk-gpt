@@ -59,7 +59,7 @@ function UsersDirectory({ authorized, setMessage }: SharedProps) {
       <div className="divide-y divide-slate-800">
         {data.items.map((user) => <article key={user.id} className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1.5fr)_0.65fr_0.6fr_0.7fr] md:items-center">
           <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="truncate font-medium text-slate-100">{person(user)}</p><Badge value={user.status} /></div><p className="mt-1 truncate text-xs text-slate-500">Telegram {user.telegramId} · Mã {user.referralCode}</p>
-            {user.id && <div className="mt-2 flex flex-wrap gap-2 text-[11px]"><HistoryLink view="orders" userId={user.id}>Đơn hàng</HistoryLink><HistoryLink view="deposits" userId={user.id}>Nạp tiền</HistoryLink><HistoryLink view="ledger" userId={user.id}>Sổ ví</HistoryLink></div>}
+            {user.id && <div className="mt-2 flex flex-wrap gap-2 text-[11px]"><HistoryLink view="orders" userId={user.id}>Đơn hàng</HistoryLink><HistoryLink view="deposits" userId={user.id}>Nạp tiền</HistoryLink><HistoryLink view="ledger" userId={user.id}>Sổ ví</HistoryLink>{user.telegramId && <a className="rounded-lg border border-slate-700 px-2 py-1 text-slate-400 transition hover:border-indigo-500/60 hover:text-indigo-200" href={`/admin?view=messages&telegramId=${encodeURIComponent(user.telegramId)}`}>Nhắn tin</a>}</div>}
           </div>
           <p className="font-semibold text-emerald-300">{money(user.walletBalance)}</p>
           <p className="text-sm text-slate-300">{number(user.purchaseCount)} đơn</p>

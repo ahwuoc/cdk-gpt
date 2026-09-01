@@ -8,6 +8,8 @@ import { DeliveryProcessor, type DeliveryJob } from './delivery.processor';
 import { StockAlertProcessor, type StockAlertJob } from './stock-alert.processor';
 import { PurchaseAlertProcessor } from './purchase-alert.processor';
 import type { PurchaseAlertJob } from '../../api/src/purchase/purchase-alert.queue';
+import { AdminBroadcastProcessor } from './admin-broadcast.processor';
+import type { AdminBroadcastJob } from '../../api/src/messaging/admin-broadcast.queue';
 
 const config = loadConfig();
 const botApiSecret = process.env.BOT_API_SECRET;
@@ -39,11 +41,17 @@ const purchaseAlertWorker = new Worker<PurchaseAlertJob>('purchase-social-proofs
 purchaseAlertWorker.on('failed', (job, error) => console.error({ event: 'purchase-social-proof-failed',
   jobId: job?.id, message: error.message }));
 purchaseAlertWorker.on('error', (error) => console.error({ event: 'purchase-social-proof-worker-error', message: error.message }));
-console.log('Telegram bot, delivery worker, restock-alert worker, and purchase-proof worker started');
+const adminBroadcastProcessor = new AdminBroadcastProcessor(bot);
+const adminBroadcastWorker = new Worker<AdminBroadcastJob>('admin-broadcasts',
+  (job) => adminBroadcastProcessor.process(job), { connection: redisConnectionOptions(config.redisUrl), concurrency: 1,
+    lockDuration: 10 * 60_000, stalledInterval: 60_000, maxStalledCount: 1 });
+adminBroadcastWorker.on('failed', (job, error) => console.error({ event: 'admin-broadcast-failed', jobId: job?.id, message: error.message }));
+adminBroadcastWorker.on('error', (error) => console.error({ event: 'admin-broadcast-worker-error', message: error.message }));
+console.log('Telegram bot, delivery, restock, purchase-proof, and admin-broadcast workers started');
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}, shutting down`);
-  bot.stop(signal); await Promise.all([worker.close(), stockAlertWorker.close(), purchaseAlertWorker.close()]);
+  bot.stop(signal); await Promise.all([worker.close(), stockAlertWorker.close(), purchaseAlertWorker.close(), adminBroadcastWorker.close()]);
   await mongoose.disconnect(); process.exit(0);
 }
 process.once('SIGINT', () => void shutdown('SIGINT'));

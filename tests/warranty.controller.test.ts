@@ -32,3 +32,14 @@ test('order report endpoint forwards a verified request once', async () => {
   expect(create).toHaveBeenCalledTimes(1);
   expect(create).toHaveBeenCalledWith(payload);
 });
+
+test('complaint chat reply verifies the bot secret and preserves the Telegram idempotency key', async () => {
+  const userReply = mock(async () => ({ id: 'message-id', status: 'RECEIVED' }));
+  const controller = new WarrantyController({ userReply } as unknown as WarrantyService);
+  const body = { userId: payload.userId, body: 'Tôi vẫn chưa đăng nhập được.',
+    idempotencyKey: 'telegram-complaint-reply-100' };
+  expect(() => controller.userReply('64b64c0f1de2360012345680', body, 'wrong-secret')).toThrow(UnauthorizedException);
+  await controller.userReply('64b64c0f1de2360012345680', body, 'bot-report-secret');
+  expect(userReply).toHaveBeenCalledTimes(1);
+  expect(userReply).toHaveBeenCalledWith('64b64c0f1de2360012345680', body.userId, body.body, body.idempotencyKey);
+});
