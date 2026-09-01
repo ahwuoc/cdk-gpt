@@ -214,6 +214,30 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
   });
 
+  test('admin can safely test the saved Cake history token without processing transactions', async () => {
+    const bankConfig = {
+      getBankApiTokenForRuntime: async () => 'diagnostic-bank-token',
+    } as unknown as BotConfigService;
+    let requestedUrl = '';
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, undefined,
+      undefined, async (input) => {
+        requestedUrl = String(input);
+        return Response.json({ status: 'success', transactions: [
+          { transactionID: 479740400, amount: 12_000, description: 'TEST DONABC', transactionDate: '02/09/2026', type: 'IN' },
+          { transactionID: 479740401, amount: 5_000, description: 'TEST OUT', transactionDate: '02/09/2026', type: 'OUT' },
+        ] });
+      });
+
+    const result = await service.testCakeHistoryConnection();
+
+    expect(requestedUrl).toBe('https://thueapibank.vn/historyapicakev2/diagnostic-bank-token');
+    expect(result).toMatchObject({ ok: true, provider: 'CAKE', totalTransactions: 2, incomingTransactions: 1 });
+    expect(result.endpoint).not.toContain('diagnostic-bank-token');
+    expect(result.transactions).toHaveLength(2);
+    expect(await WalletTransactionModel.countDocuments()).toBe(0);
+    expect(await PaymentRequestModel.countDocuments()).toBe(0);
+  });
+
   test('a manual Cake history check racing the webhook never credits twice', async () => {
     const { user } = await fixture(0, 0);
     const bankConfig = {

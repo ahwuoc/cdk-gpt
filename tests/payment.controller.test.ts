@@ -34,6 +34,17 @@ describe('Cake payment callback', () => {
     expect(processCakeCallback).toHaveBeenCalledWith(payload.transactions);
   });
 
+  test('admin bank test delegates to the read-only Cake history diagnostic', async () => {
+    const result = { ok: true, provider: 'CAKE', endpoint: 'https://example.test/<token ẩn>',
+      latencyMs: 10, totalTransactions: 2, incomingTransactions: 1, transactions: [] };
+    const testCakeHistoryConnection = mock(async () => result);
+    const controller = new PaymentController({ testCakeHistoryConnection } as unknown as PaymentService,
+      {} as BotConfigService);
+
+    await expect(controller.testCakeHistory()).resolves.toEqual(result);
+    expect(testCakeHistoryConnection).toHaveBeenCalledTimes(1);
+  });
+
   test('authenticated bot checkout forwards product, quantity and current price', async () => {
     const previous = process.env.BOT_API_SECRET;
     process.env.BOT_API_SECRET = 'quick-checkout-test-secret';

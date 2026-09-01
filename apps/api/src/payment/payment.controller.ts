@@ -18,6 +18,9 @@ export class PaymentController {
   approve(@Param('id') id: string, @Body() body: ApprovePaymentRequestDto, @Req() req: FastifyRequest & { admin: AdminClaims }) {
     return this.payments.approve(id, req.admin.sub, body.idempotencyKey);
   }
+  @Post('admin/payments/bank/test') @RequirePermissions('payments.approve')
+  testCakeHistory() { return this.payments.testCakeHistoryConnection(); }
+
   @Post('webhooks/payments') @SetMetadata(PUBLIC_ROUTE, true)
   webhook(@Body() body: PaymentWebhookDto, @Headers('x-webhook-secret') secret?: string) {
     assertSharedSecret(secret, 'PAYMENT_WEBHOOK_SECRET', 'Invalid webhook signature');

@@ -27,6 +27,13 @@ interface BankConfig {
   accountName: string; amount: number; description: string; qrUrl?: string; updatedAt?: string;
 }
 interface BankOption { name: string; code: string; bin: string; shortName: string; }
+interface BankQueryTest {
+  ok: boolean; provider: string; endpoint: string; latencyMs: number; totalTransactions: number;
+  incomingTransactions: number;
+  transactions: Array<{
+    transactionID: string; amount: number; description: string; transactionDate?: string; type: string;
+  }>;
+}
 interface RuntimeConfig {
   shopName: string; adminTelegramIds: string; apiUrl: string; telegramWebhookUrl: string;
   qstashUrl: string; taskBaseUrl: string; qstashConfigured?: boolean; qstashSource?: string;
@@ -64,6 +71,8 @@ export default function AdminPage() {
   const [bankAccountNo, setBankAccountNo] = useState(''); const [bankTemplate, setBankTemplate] = useState('compact2');
   const [bankAccountName, setBankAccountName] = useState(''); const [bankAmount, setBankAmount] = useState(0);
   const [bankDescription, setBankDescription] = useState(''); const [bankOptions, setBankOptions] = useState<BankOption[]>([]);
+  const [bankQueryTest, setBankQueryTest] = useState<BankQueryTest | null>(null);
+  const [bankTesting, setBankTesting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>({ shopName: 'Digital Store', adminTelegramIds: '',
     apiUrl: '', telegramWebhookUrl: '', qstashUrl: 'https://qstash.upstash.io', taskBaseUrl: '' });
   const [qstashToken, setQstashToken] = useState('');
@@ -319,6 +328,21 @@ export default function AdminPage() {
     finally { setBotBusy(false); }
   }
 
+  async function testBankQuery() {
+    setBankTesting(true); setBankQueryTest(null); setBotMessage('');
+    try {
+      const response = await authorized('/admin/payments/bank/test', { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-request-id': requestId() }, body: '{}' });
+      const body = (await readApiBody(response)) as BankQueryTest & { message?: string };
+      if (!response.ok || !body.ok) throw new Error(apiErrorMessage(body, 'Không truy vấn được API Cake'));
+      setBankQueryTest(body); setBotMessageKind('success');
+      setBotMessage(`API Cake hoạt động: nhận ${body.totalTransactions} giao dịch trong ${body.latencyMs} ms.`);
+    } catch (error) {
+      setBotMessageKind('error');
+      setBotMessage(error instanceof Error ? error.message : 'Không truy vấn được API Cake');
+    } finally { setBankTesting(false); }
+  }
+
   async function saveRuntimeConfig(event: FormEvent) {
     event.preventDefault(); setBotBusy(true); setBotMessage('');
     try {
@@ -470,7 +494,32 @@ export default function AdminPage() {
                 <div><label className="label">Nội dung mặc định</label><input className="input" value={bankDescription} onChange={(event) => setBankDescription(event.target.value)} placeholder="NAP TG123456" /></div>
               </div>
               {bankQrUrl && <div className="rounded-xl border border-slate-800 bg-slate-950 p-3"><p className="text-xs text-slate-400">Quick Link hiện tại — mở Cake Bank hoặc ứng dụng ngân hàng để quét QR.</p><a className="mt-2 block break-all text-xs text-indigo-300 underline" href={bankQrUrl} target="_blank" rel="noreferrer">{bankQrUrl}</a></div>}
-              <button type="submit" disabled={botBusy} className="button-primary w-full">{botBusy ? 'Đang lưu…' : 'Lưu cấu hình ngân hàng'}</button>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button type="submit" disabled={botBusy || bankTesting} className="button-primary w-full">{botBusy ? 'Đang lưu…' : 'Lưu cấu hình ngân hàng'}</button>
+                <button type="button" disabled={botBusy || bankTesting} onClick={testBankQuery}
+                  className="button-secondary flex w-full items-center justify-center gap-2">
+                  <Activity size={16} />{bankTesting ? 'Đang query Cake…' : 'Test query API Cake'}
+                </button>
+              </div>
+              <p className="text-[11px] leading-5 text-slate-500">Nút test dùng TOKEN_API_BANK đang lưu trên server, chỉ đọc tối đa 10 giao dịch mới nhất và không cộng tiền.</p>
+              {bankQueryTest && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-medium text-emerald-200">API Cake hoạt động</span>
+                  <span className="text-slate-400">{bankQueryTest.latencyMs} ms · {bankQueryTest.incomingTransactions}/{bankQueryTest.totalTransactions} giao dịch vào</span>
+                </div>
+                <code className="mt-2 block text-[11px] text-slate-500">{bankQueryTest.endpoint}</code>
+                <div className="mt-3 max-h-80 space-y-2 overflow-auto">
+                  {bankQueryTest.transactions.length === 0
+                    ? <p className="text-xs text-amber-200">API trả về thành công nhưng chưa có giao dịch.</p>
+                    : bankQueryTest.transactions.map((transaction) => <div key={transaction.transactionID}
+                      className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-xs">
+                      <div className="flex flex-wrap justify-between gap-2"><code className="text-indigo-300">#{transaction.transactionID}</code>
+                        <span className={transaction.type === 'IN' ? 'text-emerald-300' : 'text-amber-300'}>{transaction.type} · {transaction.amount.toLocaleString('vi-VN')} đ</span></div>
+                      <p className="mt-1 break-words text-slate-300">{transaction.description}</p>
+                      {transaction.transactionDate && <p className="mt-1 text-slate-500">{transaction.transactionDate}</p>}
+                    </div>)}
+                </div>
+              </div>}
             </form>
           </Panel>
         </section>}

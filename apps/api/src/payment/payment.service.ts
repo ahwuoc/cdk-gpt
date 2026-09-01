@@ -190,6 +190,34 @@ export class PaymentService {
       checkout: publicQuickCheckout(quickCheckoutFrom(request)), historyCheck };
   }
 
+  /** Admin-only, read-only probe for diagnosing the saved Cake history token. */
+  async testCakeHistoryConnection() {
+    const token = await this.bankConfig?.getBankApiTokenForRuntime();
+    if (!token) throw new BadRequestException('Chưa cấu hình TOKEN_API_BANK');
+    const startedAt = Date.now();
+    try {
+      const transactions = await fetchCakeHistoryTransactions(token, this.cakeHistoryFetch ?? globalThis.fetch);
+      return {
+        ok: true,
+        provider: 'CAKE',
+        endpoint: `${CAKE_HISTORY_ORIGIN}/historyapicakev2/<token ẩn>`,
+        latencyMs: Date.now() - startedAt,
+        totalTransactions: transactions.length,
+        incomingTransactions: transactions.filter((transaction) => transaction.type === 'IN').length,
+        transactions: transactions.slice(0, 10).map((transaction) => ({
+          transactionID: String(transaction.transactionID),
+          amount: Number(transaction.amount),
+          description: String(transaction.description ?? '').slice(0, 300),
+          transactionDate: transaction.transactionDate,
+          type: transaction.type ?? 'IN',
+        })),
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'phản hồi không hợp lệ';
+      throw new BadRequestException(`Không truy vấn được API lịch sử Cake: ${reason}`);
+    }
+  }
+
   /**
    * Manual customer fallback for a delayed/missed Cake callback. Only recent
    * incoming rows containing this customer's exact transfer code are handed to
@@ -724,7 +752,7 @@ export async function fetchCakeHistoryTransactions(token: string, fetcher: CakeH
   const response = await fetcher(`${CAKE_HISTORY_ORIGIN}/historyapicakev2/${encodeURIComponent(normalizedToken)}`, {
     method: 'GET', headers: { accept: 'application/json' }, signal: AbortSignal.timeout(CAKE_HISTORY_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error('Cake history request failed');
+  if (!response.ok) throw new Error(`Cake history request failed (HTTP ${response.status})`);
   const payload: unknown = await response.json();
   if (!isPlainObject(payload) || String(payload.status ?? '').toLowerCase() !== 'success' ||
     !Array.isArray(payload.transactions)) throw new Error('Cake history response is invalid');
