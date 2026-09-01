@@ -331,20 +331,19 @@ async function createQuickCheckout(ctx: Context, input: { userId: string; produc
     }
     const total = body.amount ?? input.unitPrice * input.quantity;
     const caption = [
-      '⚡ THANH TOÁN NHANH ĐƠN HÀNG', '',
-      `Sản phẩm: ${body.productName ?? input.productName}`,
-      `Số lượng: ${body.quantity ?? input.quantity}`,
-      `Đơn giá: ${formatMoney(body.unitPrice ?? input.unitPrice)}`,
-      `TỔNG THANH TOÁN: ${formatMoney(total)}`, '',
-      `Ngân hàng: ${body.bank.bankId ?? '—'}`,
-      `Số tài khoản: ${body.bank.accountNo}`,
-      `Chủ tài khoản: ${body.bank.accountName ?? '—'}`,
-      `Nội dung bắt buộc: ${body.transferContent}`, '',
-      body.expiresAt ? `⏰ Giữ hàng đến: ${formatDeadline(body.expiresAt)}` : '⏰ Hãy thanh toán trước khi mã hết hạn.',
-      'Chuyển ĐÚNG tổng tiền và nội dung trước thời hạn. Khi Cake callback thành công, bot tự tạo đủ đơn và gửi hàng; không cần nạp ví rồi mua lại.',
+      '⚡ THANH TOÁN ĐƠN HÀNG',
+      `🛍 ${body.productName ?? input.productName}`,
+      `📦 ${body.quantity ?? input.quantity} × ${formatMoney(body.unitPrice ?? input.unitPrice)}`,
+      `💵 CẦN CHUYỂN: ${formatMoney(total)}`, '',
+      `🏦 ${body.bank.bankId ?? '—'} · ${body.bank.accountNo}`,
+      `👤 ${body.bank.accountName ?? '—'}`,
+      `📝 Nội dung: ${body.transferContent}`,
+      body.expiresAt ? `⏰ Hạn: ${formatDeadline(body.expiresAt)}` : '⏰ Thanh toán trước khi mã hết hạn.', '',
+      '✅ Chuyển đúng số tiền + nội dung.',
+      '👇 Chuyển xong hãy bấm “Kiểm tra & nhận hàng”.',
     ].join('\n');
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('🔄 Kiểm tra & nhận hàng', `checkout:check:${body.id}`)],
+      [Markup.button.callback('✅ Đã chuyển — Kiểm tra & nhận hàng', `checkout:check:${body.id}`)],
       [Markup.button.callback('🛍 Chọn sản phẩm khác', 'menu:products'), Markup.button.callback('🏠 Menu chính', 'menu:home')],
     ]);
     try {

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
@@ -11,6 +11,7 @@ import { IdempotencyConflictError, InsufficientBalanceError, InventoryStatus, Or
 import { DELIVERY_QUEUE, type DeliveryQueueClient } from '../delivery/delivery.queue';
 import { InventoryReservationService } from '../inventory/inventory-reservation.service';
 import type { PurchaseDto } from './purchase.dto';
+import { PURCHASE_ALERT_QUEUE, type PurchaseAlertQueueClient } from './purchase-alert.queue';
 
 export interface PurchaseBatchInput {
   userId: string;
@@ -58,6 +59,7 @@ export class PurchaseService {
     private readonly orders: OrderRepository,
     private readonly walletTransactions: WalletTransactionRepository,
     @Inject(DELIVERY_QUEUE) private readonly deliveryQueue: DeliveryQueueClient,
+    @Optional() @Inject(PURCHASE_ALERT_QUEUE) private readonly purchaseAlerts?: PurchaseAlertQueueClient,
   ) {}
 
   async purchase(input: PurchaseDto) {
@@ -65,6 +67,7 @@ export class PurchaseService {
     if (prior) {
       this.assertSameRequest(prior, input);
       if (prior.status === OrderStatus.PENDING_DELIVERY) await this.deliveryQueue.enqueue(prior._id.toString());
+      await this.enqueuePurchaseAlert(prior._id, prior.userId, prior.productId, 1);
       return prior;
     }
     const session = await this.connection.startSession();
@@ -123,6 +126,7 @@ export class PurchaseService {
         if (concurrent) {
           this.assertSameRequest(concurrent, input);
           if (concurrent.status === OrderStatus.PENDING_DELIVERY) await this.deliveryQueue.enqueue(concurrent._id.toString());
+          await this.enqueuePurchaseAlert(concurrent._id, concurrent.userId, concurrent.productId, 1);
           return concurrent;
         }
       }
@@ -130,6 +134,7 @@ export class PurchaseService {
     } finally { await session.endSession(); }
     if (!order) throw new Error('Purchase transaction did not produce an order');
     await this.deliveryQueue.enqueue(order._id.toString());
+    await this.enqueuePurchaseAlert(order._id, order.userId, order.productId, 1);
     return order;
   }
 
@@ -290,7 +295,7 @@ export class PurchaseService {
     const prior = await this.findBatch(keys);
     if (prior.length) {
       const complete = this.assertCompleteBatch(prior, input, keys);
-      await this.enqueueBatch(complete);
+      await this.dispatchBatch(complete);
       return complete;
     }
 
@@ -307,7 +312,7 @@ export class PurchaseService {
         else throw error;
       } else throw error;
     } finally { await session.endSession(); }
-    await this.enqueueBatch(created);
+    await this.dispatchBatch(created);
     return created;
   }
 
@@ -319,7 +324,10 @@ export class PurchaseService {
     return this.createBatch(input, keys, session);
   }
 
-  dispatchBatch(orders: Array<{ _id: Types.ObjectId }>) { return this.enqueueBatch(orders); }
+  async dispatchBatch(orders: Array<{ _id: Types.ObjectId }>) {
+    await this.enqueueBatch(orders);
+    await this.enqueueBatchPurchaseAlert(orders);
+  }
 
   private async createBatch(input: PurchaseBatchInput, keys: string[], session: ClientSession): Promise<BatchOrder[]> {
     const userId = new Types.ObjectId(input.userId);
@@ -425,6 +433,34 @@ export class PurchaseService {
         console.error({ event: 'quick-checkout-delivery-enqueue-failed', orderId: order._id.toString(),
           message: error instanceof Error ? error.message : 'unknown error' });
       }
+    }
+  }
+
+  private async enqueueBatchPurchaseAlert(orders: Array<{ _id: Types.ObjectId }>) {
+    if (!orders.length || !this.purchaseAlerts) return;
+    const ids = orders.map((order) => order._id);
+    const stored = await this.orderModel.find({ _id: { $in: ids } })
+      .select('_id userId productId metadata.paymentRequestId').sort({ createdAt: 1 }).lean();
+    if (stored.length !== ids.length) return;
+    const first = stored[0]!;
+    if (stored.some((order) => !order.userId.equals(first.userId) || !order.productId.equals(first.productId))) return;
+    const paymentRequestId = stored.map((order) => order.metadata?.paymentRequestId)
+      .find((value): value is string => typeof value === 'string' && Types.ObjectId.isValid(value));
+    await this.enqueuePurchaseAlert(paymentRequestId ? new Types.ObjectId(paymentRequestId) : first._id,
+      first.userId, first.productId, stored.length);
+  }
+
+  private async enqueuePurchaseAlert(groupId: Types.ObjectId, buyerId: Types.ObjectId,
+    productId: Types.ObjectId, quantity: number) {
+    if (!this.purchaseAlerts) return;
+    try {
+      await this.purchaseAlerts.enqueue({ purchaseGroupId: groupId.toString(), buyerId: buyerId.toString(),
+        productId: productId.toString(), quantity });
+    } catch (error) {
+      // The order is already committed. A social-proof notification must never
+      // make the buyer see a false purchase failure.
+      console.error({ event: 'purchase-social-proof-queue-failed', purchaseGroupId: groupId.toString(),
+        message: error instanceof Error ? error.message : 'unknown error' });
     }
   }
 

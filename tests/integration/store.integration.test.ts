@@ -17,11 +17,13 @@ import {
 } from '@store/database';
 import { InventoryStatus, OutOfStockError, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
 import { PurchaseService } from '../../apps/api/src/purchase/purchase.service';
+import type { PurchaseAlertQueueClient } from '../../apps/api/src/purchase/purchase-alert.queue';
 import { DeliveryQueue } from '../../apps/api/src/delivery/delivery.queue';
 import { WalletService } from '../../apps/api/src/wallet/wallet.service';
 import { PaymentService } from '../../apps/api/src/payment/payment.service';
 import { DeliveryProcessor } from '../../apps/bot/src/delivery.processor';
 import { StockAlertProcessor } from '../../apps/bot/src/stock-alert.processor';
+import { PurchaseAlertProcessor } from '../../apps/bot/src/purchase-alert.processor';
 import { InventoryReservationService } from '../../apps/api/src/inventory/inventory-reservation.service';
 import { InventoryImportService } from '../../apps/api/src/inventory/inventory-import.service';
 import { InventoryAdminService } from '../../apps/api/src/inventory/inventory-admin.service';
@@ -54,9 +56,9 @@ const queueStub = {
   requeue: async (orderId: string) => { queued.push(orderId); return { id: orderId }; },
 } as unknown as DeliveryQueue;
 
-function purchaseService() {
+function purchaseService(purchaseAlerts?: PurchaseAlertQueueClient) {
   return new PurchaseService(mongoose.connection, ProductModel, OrderModel, userRepository(), reservationService(),
-    orderRepository(), walletRepository(), queueStub);
+    orderRepository(), walletRepository(), queueStub, purchaseAlerts);
 }
 function walletService() { return new WalletService(mongoose.connection, userRepository(), walletRepository()); }
 function paymentService() { return new PaymentService(mongoose.connection, PaymentRequestModel, walletService()); }
@@ -250,7 +252,8 @@ integration('digital store on a MongoDB replica set', () => {
     const bankConfig = {
       getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
     } as unknown as BotConfigService;
-    const purchases = purchaseService();
+    const queuedPurchaseAlerts: Array<{ purchaseGroupId: string; productId: string; buyerId: string; quantity: number }> = [];
+    const purchases = purchaseService({ enqueue: async (job) => { queuedPurchaseAlerts.push(job); return { id: job.purchaseGroupId }; } });
     const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchases);
     const checkouts = await Promise.all(Array.from({ length: 5 }, () => service.createBankCheckout(
       user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-request')));
@@ -282,6 +285,8 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
     expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'PURCHASE' })).toBe(2);
     expect(await PaymentRequestModel.countDocuments({ providerReference: '579740339', status: PaymentRequestStatus.APPROVED })).toBe(1);
+    expect(queuedPurchaseAlerts).toHaveLength(1);
+    expect(queuedPurchaseAlerts[0]).toMatchObject({ productId: product._id.toString(), buyerId: user._id.toString(), quantity: 2 });
     expect(new Set(queued).size).toBe(2);
     const retried = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-request');
     expect(retried.id).toBe(checkout.id);
@@ -894,6 +899,29 @@ integration('digital store on a MongoDB replica set', () => {
     await processor.process(job);
     expect(messages).toBe(1);
     expect(await NotificationModel.countDocuments({ userId: user._id, channel: 'TELEGRAM', status: 'SENT' })).toBe(1);
+  });
+
+  test('a real purchase sends one anonymous social-proof message to other customers', async () => {
+    const { product, user: buyer } = await fixture(0);
+    const observer = await UserModel.create({ telegramId: '900000777', status: UserStatus.ACTIVE,
+      walletBalance: 0, referralCode: 'PROOFOBSERVER', purchaseCount: 0, deletedAt: null });
+    const messages: Array<{ chatId: string | number; text: string }> = [];
+    const processor = new PurchaseAlertProcessor({ telegram: { sendMessage: async (chatId: string | number, text: string) => {
+      messages.push({ chatId, text }); return { message_id: 1 };
+    } } } as never);
+    const task = { purchaseGroupId: new Types.ObjectId().toString(), productId: product._id.toString(),
+      buyerId: buyer._id.toString(), quantity: 3 };
+
+    await processor.processBatch(task);
+    await processor.processBatch(task);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.chatId).toBe(observer.telegramId);
+    expect(messages[0]?.text).toContain(product.name);
+    expect(messages[0]?.text).toContain('Số lượng: *3*');
+    expect(messages[0]?.text).not.toContain(buyer.telegramId);
+    expect(await NotificationModel.countDocuments({ userId: observer._id,
+      referenceType: 'PURCHASE_SOCIAL_PROOF', status: 'SENT' })).toBe(1);
   });
 
   test('11. an unknown encryption key version cannot be decrypted', () => {

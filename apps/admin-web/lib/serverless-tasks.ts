@@ -12,6 +12,7 @@ import { getServerlessApi } from '../../api/src/serverless';
 import { QStashTaskPublisher } from '../../api/src/serverless/qstash';
 import { DeliveryProcessor } from '../../bot/src/delivery.processor';
 import { StockAlertProcessor, type StockAlertBatch } from '../../bot/src/stock-alert.processor';
+import { PurchaseAlertProcessor, type PurchaseAlertBatch } from '../../bot/src/purchase-alert.processor';
 
 type TelegramClient = { telegram: Telegram };
 const PENDING_DELIVERY_RECOVERY_LIMIT = 10;
@@ -46,6 +47,23 @@ export function restockTaskFrom(value: unknown): StockAlertBatch | undefined {
   };
 }
 
+export function purchaseAlertTaskFrom(value: unknown): PurchaseAlertBatch | undefined {
+  if (!isRecord(value) || typeof value.purchaseGroupId !== 'string' || typeof value.productId !== 'string' ||
+    typeof value.buyerId !== 'string' || !Types.ObjectId.isValid(value.purchaseGroupId) ||
+    !Types.ObjectId.isValid(value.productId) || !Types.ObjectId.isValid(value.buyerId) ||
+    typeof value.quantity !== 'number' || !Number.isSafeInteger(value.quantity) || value.quantity < 1 || value.quantity > 100) {
+    return undefined;
+  }
+  if (value.cursor !== undefined && (typeof value.cursor !== 'string' || !Types.ObjectId.isValid(value.cursor))) return undefined;
+  if (value.limit !== undefined && (typeof value.limit !== 'number' || !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 100)) return undefined;
+  return {
+    purchaseGroupId: value.purchaseGroupId, productId: value.productId, buyerId: value.buyerId,
+    quantity: value.quantity,
+    ...(typeof value.cursor === 'string' ? { cursor: value.cursor } : {}),
+    ...(typeof value.limit === 'number' ? { limit: value.limit } : {}),
+  };
+}
+
 export async function processDeliveryTask(orderId: string, retried = 0) {
   const { client, runtime } = await currentTelegramRuntime();
   const processor = new DeliveryProcessor(client, runtime.adminTelegramIds);
@@ -74,6 +92,21 @@ export async function processRestockTask(task: StockAlertBatch) {
       limit: task.limit ?? 50,
     }, {
       deduplicationId: `product-restocked-${task.importBatchId}-${result.nextCursor}`,
+      retries: 5,
+    });
+  }
+  return result;
+}
+
+export async function processPurchaseAlertTask(task: PurchaseAlertBatch) {
+  const { client, config } = await currentTelegramRuntime();
+  const processor = new PurchaseAlertProcessor(client);
+  const result = await processor.processBatch(task);
+  if ('nextCursor' in result && result.nextCursor) {
+    await new QStashTaskPublisher(() => config.getQStashRuntimeConfig()).publish('/api/internal/tasks/purchase-alert', {
+      ...task, cursor: result.nextCursor, limit: task.limit ?? 50,
+    }, {
+      deduplicationId: `purchase-proof-${task.purchaseGroupId}-${result.nextCursor}`,
       retries: 5,
     });
   }

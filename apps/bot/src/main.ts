@@ -6,6 +6,8 @@ import '@store/database';
 import { BotRuntimeManager } from './bot-runtime.manager';
 import { DeliveryProcessor, type DeliveryJob } from './delivery.processor';
 import { StockAlertProcessor, type StockAlertJob } from './stock-alert.processor';
+import { PurchaseAlertProcessor } from './purchase-alert.processor';
+import type { PurchaseAlertJob } from '../../api/src/purchase/purchase-alert.queue';
 
 const config = loadConfig();
 const botApiSecret = process.env.BOT_API_SECRET;
@@ -28,11 +30,21 @@ const stockAlertWorker = new Worker<StockAlertJob>('product-restock-alerts', (jo
 });
 stockAlertWorker.on('failed', (job, error) => console.error({ event: 'product-restock-alert-failed', jobId: job?.id, message: error.message }));
 stockAlertWorker.on('error', (error) => console.error({ event: 'product-restock-alert-worker-error', message: error.message }));
-console.log('Telegram bot, delivery worker, and restock-alert worker started');
+const purchaseAlertProcessor = new PurchaseAlertProcessor(bot);
+const purchaseAlertWorker = new Worker<PurchaseAlertJob>('purchase-social-proofs',
+  (job) => purchaseAlertProcessor.process(job), {
+    connection: redisConnectionOptions(config.redisUrl), concurrency: 1,
+    lockDuration: 10 * 60_000, stalledInterval: 60_000, maxStalledCount: 1,
+  });
+purchaseAlertWorker.on('failed', (job, error) => console.error({ event: 'purchase-social-proof-failed',
+  jobId: job?.id, message: error.message }));
+purchaseAlertWorker.on('error', (error) => console.error({ event: 'purchase-social-proof-worker-error', message: error.message }));
+console.log('Telegram bot, delivery worker, restock-alert worker, and purchase-proof worker started');
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}, shutting down`);
-  bot.stop(signal); await Promise.all([worker.close(), stockAlertWorker.close()]); await mongoose.disconnect(); process.exit(0);
+  bot.stop(signal); await Promise.all([worker.close(), stockAlertWorker.close(), purchaseAlertWorker.close()]);
+  await mongoose.disconnect(); process.exit(0);
 }
 process.once('SIGINT', () => void shutdown('SIGINT'));
 process.once('SIGTERM', () => void shutdown('SIGTERM'));
