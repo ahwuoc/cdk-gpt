@@ -1,9 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import { randomBytes } from 'node:crypto';
-import { ActorType, PaymentRequest, type PaymentRequestDocument, WalletReferenceType } from '@store/database';
+import { ActorType, PaymentRequest, type PaymentRequestDocument, type RuntimeLease, WalletReferenceType } from '@store/database';
 import { MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY, PaymentRequestStatus, WalletTransactionType } from '@store/shared';
 import { isMongoDuplicateKey } from '@store/shared';
 import { loadConfig } from '@store/config';
@@ -12,6 +12,11 @@ import { PurchaseService } from '../purchase/purchase.service';
 import { WalletService } from '../wallet/wallet.service';
 
 const BANK_PROVIDER = 'BANK_API';
+const CAKE_HISTORY_ORIGIN = 'https://thueapibank.vn';
+const CAKE_HISTORY_CHECK_COOLDOWN_MS = 10_000;
+const CAKE_HISTORY_TIMEOUT_MS = 8_000;
+const CAKE_HISTORY_MAX_TRANSACTIONS = 500;
+export const CAKE_HISTORY_FETCHER = Symbol('CAKE_HISTORY_FETCHER');
 export interface BankTransaction {
   transactionID: string | number;
   amount: number | string;
@@ -37,6 +42,12 @@ interface QuickCheckoutMetadata {
   processingAt?: string;
 }
 
+type CakeHistoryCheckStatus = 'MATCHED' | 'NOT_FOUND' | 'COOLDOWN' | 'UNAVAILABLE' | 'NOT_NEEDED';
+interface CakeHistoryCheckResult {
+  status: CakeHistoryCheckStatus;
+  retryAfterSeconds?: number;
+}
+
 @Injectable()
 export class PaymentService {
   private readonly config = loadConfig();
@@ -44,7 +55,9 @@ export class PaymentService {
   constructor(@InjectConnection() private readonly connection: Connection,
     @InjectModel('PaymentRequest') private readonly requests: Model<PaymentRequest>, private readonly wallet: WalletService,
     @Optional() private readonly bankConfig?: BotConfigService,
-    @Optional() private readonly purchases?: PurchaseService) {}
+    @Optional() private readonly purchases?: PurchaseService,
+    @Optional() @InjectModel('RuntimeLease') private readonly leases?: Model<RuntimeLease>,
+    @Optional() @Inject(CAKE_HISTORY_FETCHER) private readonly cakeHistoryFetch?: CakeHistoryFetch) {}
 
   async create(userId: string, amount: number, provider: string, idempotencyKey: string) {
     if (!Types.ObjectId.isValid(userId) || !Number.isSafeInteger(amount) || amount <= 0) {
@@ -159,6 +172,13 @@ export class PaymentService {
     await this.expireBankTopups();
     let request = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).lean();
     if (!request) throw new NotFoundException('Payment request not found');
+    let historyCheck: CakeHistoryCheckResult = { status: 'NOT_NEEDED' };
+    if (request.status === PaymentRequestStatus.PENDING || request.status === PaymentRequestStatus.EXPIRED) {
+      historyCheck = await this.reconcileFromCakeHistory(request);
+      request = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).lean();
+      if (!request) throw new NotFoundException('Payment request not found');
+      if (request.status === PaymentRequestStatus.APPROVED) historyCheck = { status: 'MATCHED' };
+    }
     if (request.status === PaymentRequestStatus.APPROVED && quickCheckoutFrom(request)) {
       await this.fulfillQuickCheckout(request._id.toString());
       request = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).lean();
@@ -167,7 +187,52 @@ export class PaymentService {
     return { id: request._id.toString(), requestCode: request.requestCode, amount: request.amount,
       receivedAmount: receivedAmountFrom(request),
       status: request.status, transferContent: transferContentFrom(request), expiresAt: expirationFrom(request),
-      checkout: publicQuickCheckout(quickCheckoutFrom(request)) };
+      checkout: publicQuickCheckout(quickCheckoutFrom(request)), historyCheck };
+  }
+
+  /**
+   * Manual customer fallback for a delayed/missed Cake callback. Only recent
+   * incoming rows containing this customer's exact transfer code are handed to
+   * the same idempotent callback pipeline. The transactionID unique indexes and
+   * wallet idempotency key therefore protect a history check racing a webhook.
+   */
+  private async reconcileFromCakeHistory(request: PaymentRequest & { _id: Types.ObjectId }): Promise<CakeHistoryCheckResult> {
+    const transferCode = transferContentFrom(request) ?? request.requestCode;
+    const lease = await this.acquireCakeHistoryCheckLease(request.userId.toString());
+    if (!lease.acquired) return { status: 'COOLDOWN', retryAfterSeconds: lease.retryAfterSeconds };
+    const token = await this.bankConfig?.getBankApiTokenForRuntime();
+    if (!token) return { status: 'UNAVAILABLE' };
+    try {
+      const transactions = await fetchCakeHistoryTransactions(token, this.cakeHistoryFetch ?? globalThis.fetch);
+      const matching = transactions.filter((transaction) =>
+        String(transaction.type ?? 'IN').toUpperCase() === 'IN' &&
+        extractTransferCodes(String(transaction.description ?? '')).includes(transferCode.toUpperCase()));
+      if (!matching.length) return { status: 'NOT_FOUND' };
+      await this.processCakeCallback(matching);
+      return { status: 'MATCHED' };
+    } catch {
+      // A manual poll is only a fallback. Keep returning the current request
+      // state so a temporary provider outage never breaks the normal callback.
+      return { status: 'UNAVAILABLE' };
+    }
+  }
+
+  private async acquireCakeHistoryCheckLease(userId: string) {
+    if (!this.leases) return { acquired: true, retryAfterSeconds: 0 };
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + CAKE_HISTORY_CHECK_COOLDOWN_MS);
+    const token = randomBytes(12).toString('hex');
+    try {
+      const lease = await this.leases.findOneAndUpdate({ _id: `cake-history:${userId}`,
+        $or: [{ expiresAt: { $lte: now } }, { token }] },
+      { $set: { token, expiresAt } }, { upsert: true, new: true, setDefaultsOnInsert: true }).lean();
+      return { acquired: lease?.token === token, retryAfterSeconds: Math.ceil(CAKE_HISTORY_CHECK_COOLDOWN_MS / 1000) };
+    } catch (error) {
+      if (!isMongoDuplicateKey(error)) throw error;
+      const existing = await this.leases.findById(`cake-history:${userId}`).select('expiresAt').lean();
+      const remaining = existing ? existing.expiresAt.getTime() - Date.now() : CAKE_HISTORY_CHECK_COOLDOWN_MS;
+      return { acquired: false, retryAfterSeconds: Math.max(1, Math.ceil(remaining / 1000)) };
+    }
   }
 
   async recoverApprovedQuickCheckouts(limit = 25) {
@@ -648,6 +713,40 @@ function isExpectedSoftCheckoutFailure(error: unknown) {
 function extractTransferCodes(description: string) {
   const matches = description.toUpperCase().matchAll(/(?:^|[^A-Z0-9])((?:NAP|DON)[A-F0-9]{16})(?=$|[^A-Z0-9])/g);
   return [...new Set([...matches].map((match) => match[1]).filter((value): value is string => Boolean(value)))];
+}
+
+export type CakeHistoryFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/** Fetch and strictly normalize Cake history without ever exposing the token to a client. */
+export async function fetchCakeHistoryTransactions(token: string, fetcher: CakeHistoryFetch = globalThis.fetch) {
+  const normalizedToken = token.trim();
+  if (!normalizedToken || normalizedToken.length > 500) throw new Error('Cake history token is invalid');
+  const response = await fetcher(`${CAKE_HISTORY_ORIGIN}/historyapicakev2/${encodeURIComponent(normalizedToken)}`, {
+    method: 'GET', headers: { accept: 'application/json' }, signal: AbortSignal.timeout(CAKE_HISTORY_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error('Cake history request failed');
+  const payload: unknown = await response.json();
+  if (!isPlainObject(payload) || String(payload.status ?? '').toLowerCase() !== 'success' ||
+    !Array.isArray(payload.transactions)) throw new Error('Cake history response is invalid');
+  return payload.transactions.slice(0, CAKE_HISTORY_MAX_TRANSACTIONS)
+    .map(normalizeCakeHistoryTransaction).filter((transaction): transaction is BankTransaction => Boolean(transaction));
+}
+
+function normalizeCakeHistoryTransaction(value: unknown): BankTransaction | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const transactionID = String(value.transactionID ?? '').trim();
+  const amount = Number(value.amount);
+  const description = typeof value.description === 'string' ? value.description.trim() : '';
+  const type = String(value.type ?? 'IN').trim().toUpperCase();
+  const transactionDate = typeof value.transactionDate === 'string' ? value.transactionDate.trim() : undefined;
+  if (!/^\d{1,100}$/.test(transactionID) || !Number.isSafeInteger(amount) || amount <= 0 ||
+    !description || description.length > 1000 || !['IN', 'OUT'].includes(type) ||
+    (transactionDate?.length ?? 0) > 100) return undefined;
+  return { transactionID, amount, description, type, ...(transactionDate ? { transactionDate } : {}) };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function lateQuickCheckout(checkout: QuickCheckoutMetadata): QuickCheckoutMetadata {

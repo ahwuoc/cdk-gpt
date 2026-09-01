@@ -72,6 +72,10 @@ type DepositResponse = {
     orderCodes?: string[];
     fulfillmentError?: string;
   };
+  historyCheck?: {
+    status?: 'MATCHED' | 'NOT_FOUND' | 'COOLDOWN' | 'UNAVAILABLE' | 'NOT_NEEDED';
+    retryAfterSeconds?: number;
+  };
 };
 
 type OrderReportResponse = { id?: string; requestCode?: string; status?: string; existing?: boolean; message?: string | string[] };
@@ -389,10 +393,22 @@ async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, bot
       return;
     }
     if (body.status === 'EXPIRED') {
+      if (body.historyCheck?.status === 'UNAVAILABLE') {
+        await ctx.reply('⚠️ Mã đã hết hạn và API lịch sử Cake đang tạm thời không phản hồi. Nếu bạn đã chuyển tiền, hãy thử kiểm tra lại sau; callback vẫn được xử lý tự động khi gửi tới.', {
+          ...Markup.inlineKeyboard([[Markup.button.callback('🔄 Kiểm tra lại', `${quickCheckout ? 'checkout' : 'deposit'}:check:${requestId}`)],
+            [Markup.button.callback('🏠 Menu chính', 'menu:home')]]),
+        });
+        return;
+      }
       await ctx.reply('⌛ Mã nạp tiền này đã hết hạn. Hãy tạo yêu cầu nạp mới.', inlineMenu());
       return;
     }
-    await ctx.reply(`⏳ Chưa thấy giao dịch ${formatMoney(body.amount ?? 0)}. Hãy chuyển đúng số tiền và nội dung, rồi thử lại sau ít phút.`, {
+    const pendingMessage = body.historyCheck?.status === 'UNAVAILABLE'
+      ? `⚠️ API lịch sử Cake đang tạm thời không phản hồi. Chưa thể đối soát ${formatMoney(body.amount ?? 0)}; callback tự động vẫn hoạt động, bạn hãy thử lại sau.`
+      : body.historyCheck?.status === 'COOLDOWN'
+        ? `⏱ Bạn vừa kiểm tra. Hãy đợi khoảng ${body.historyCheck.retryAfterSeconds ?? 10} giây rồi thử lại để tránh gửi quá nhiều yêu cầu.`
+        : `⏳ Đã dò lịch sử nhưng chưa thấy giao dịch ${formatMoney(body.amount ?? 0)} đúng nội dung. Hãy chuyển đúng số tiền và nội dung, rồi thử lại sau ít phút.`;
+    await ctx.reply(pendingMessage, {
       ...Markup.inlineKeyboard([
         [Markup.button.callback('🔄 Kiểm tra lại', `${quickCheckout ? 'checkout' : 'deposit'}:check:${requestId}`)],
         [Markup.button.callback(quickCheckout ? '🛍 Sản phẩm' : '💳 Nạp khoản khác', quickCheckout ? 'menu:products' : 'menu:deposit'),
@@ -663,7 +679,7 @@ function formatDeadline(value: string) {
     day: '2-digit', month: '2-digit', year: 'numeric' }).format(parsed);
 }
 function bankPollingHint() {
-  return 'Chuyển ĐÚNG số tiền và ĐÚNG nội dung. Cake sẽ gửi callback và hệ thống tự cộng tiền; nút “Kiểm tra tiền” chỉ làm mới trạng thái.';
+  return 'Chuyển ĐÚNG số tiền và ĐÚNG nội dung. Cake sẽ gửi callback tự động; nếu callback chậm, nút “Kiểm tra tiền” sẽ đối soát trực tiếp lịch sử giao dịch.';
 }
 /** Small orders bound callback work and limit abuse consistently on every runtime. */
 function maximumTelegramPurchaseQuantity() { return MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY; }

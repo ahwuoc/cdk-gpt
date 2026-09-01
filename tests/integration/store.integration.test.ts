@@ -12,7 +12,7 @@ import { EncryptionService } from '@store/encryption';
 import { redisConnectionOptions } from '@store/config';
 import {
   AdminModel, AuditLogModel, ImportBatchModel, InventoryItemModel, InventoryRepository, NotificationModel,
-  OrderModel, OrderRepository, PaymentRequestModel, ProductModel, RoleModel, SettingModel, UserModel,
+  OrderModel, OrderRepository, PaymentRequestModel, ProductModel, RoleModel, RuntimeLeaseModel, SettingModel, UserModel,
   UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel, DatabaseModule,
 } from '@store/database';
 import { InventoryStatus, OutOfStockError, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
@@ -178,6 +178,70 @@ integration('digital store on a MongoDB replica set', () => {
     await service.processCakeCallback([{ ...transaction, transactionID: '479740340', type: 'OUT' }]);
     expect((await UserModel.findById(user._id))!.walletBalance).toBe(3_000);
     expect(await PaymentRequestModel.countDocuments({ providerReference: '479740339', status: PaymentRequestStatus.APPROVED })).toBe(1);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+  });
+
+  test('the customer history check recovers a missed Cake callback', async () => {
+    const { user } = await fixture(0, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+      getBankApiTokenForRuntime: async () => 'test-bank-token',
+    } as unknown as BotConfigService;
+    let requestedUrl = '';
+    let fetchCount = 0;
+    let transferContent = '';
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, undefined,
+      RuntimeLeaseModel, async (input) => {
+        fetchCount++;
+        requestedUrl = String(input);
+        return Response.json({ status: 'success', message: 'Thành công', transactions: [{
+          transactionID: 479740341, amount: 4_000, description: `NGUOI MUA ${transferContent} chuyen tien`,
+          transactionDate: '08/08/2026', type: 'IN',
+        }] });
+      });
+    const deposit = await service.createBankDeposit(user._id.toString(), 4_000, 'cake-history-recovery');
+    transferContent = deposit.transferContent;
+
+    const checked = await service.checkBankDeposit(deposit.id, user._id.toString());
+
+    expect(checked).toMatchObject({ status: PaymentRequestStatus.APPROVED, receivedAmount: 4_000,
+      historyCheck: { status: 'MATCHED' } });
+    expect(requestedUrl).toBe('https://thueapibank.vn/historyapicakev2/test-bank-token');
+    expect(fetchCount).toBe(1);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(4_000);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+  });
+
+  test('a manual Cake history check racing the webhook never credits twice', async () => {
+    const { user } = await fixture(0, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+      getBankApiTokenForRuntime: async () => 'test-bank-token',
+    } as unknown as BotConfigService;
+    let historyStarted!: () => void;
+    let releaseHistory!: () => void;
+    const started = new Promise<void>((resolve) => { historyStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    let transaction: { transactionID: string; amount: number; description: string; transactionDate: string; type: string };
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, undefined,
+      RuntimeLeaseModel, async () => {
+        historyStarted();
+        await release;
+        return Response.json({ status: 'success', transactions: [transaction] });
+      });
+    const deposit = await service.createBankDeposit(user._id.toString(), 5_000, 'cake-history-webhook-race');
+    transaction = { transactionID: '479740342', amount: 5_000,
+      description: `BUI THANH PHUONG ${deposit.transferContent}`, transactionDate: '08/08/2026', type: 'IN' };
+
+    const manualCheck = service.checkBankDeposit(deposit.id, user._id.toString());
+    await started;
+    const webhook = service.processCakeCallback([transaction]);
+    releaseHistory();
+    await Promise.all([manualCheck, webhook]);
+
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(5_000);
+    expect(await PaymentRequestModel.countDocuments({ providerReference: transaction.transactionID,
+      status: PaymentRequestStatus.APPROVED })).toBe(1);
     expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
   });
 

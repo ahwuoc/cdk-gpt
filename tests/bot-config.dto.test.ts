@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import { expect, test } from 'bun:test';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
