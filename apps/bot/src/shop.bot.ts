@@ -65,6 +65,9 @@ type DepositResponse = {
   quantity?: number;
   unitPrice?: number;
   checkoutStatus?: string;
+  cancelled?: boolean;
+  activeCheckoutId?: string;
+  activeCheckoutCode?: string;
   checkout?: {
     productName?: string;
     quantity?: number;
@@ -147,6 +150,19 @@ export function createShopBot(
   bot.action(/^checkout:check:([a-f\d]{24})$/, async (ctx) => {
     await ctx.answerCbQuery('Đang kiểm tra thanh toán…');
     await checkDeposit(ctx, ctx.match[1], apiUrl, botApiSecret, data, true);
+  });
+  bot.action(/^checkout:cancel-confirm:([a-f\d]{24})$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.reply('⚠️ Chỉ hủy nếu bạn CHƯA chuyển khoản. Nếu đã chuyển, hãy giữ mã và bấm kiểm tra thanh toán.', {
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🗑 Xác nhận hủy mã', `checkout:cancel:${ctx.match[1]}`)],
+        [Markup.button.callback('↩️ Giữ mã — kiểm tra tiền', `checkout:check:${ctx.match[1]}`)],
+      ]),
+    });
+  });
+  bot.action(/^checkout:cancel:([a-f\d]{24})$/, async (ctx) => {
+    await ctx.answerCbQuery('Đang hủy mã thanh toán…');
+    await cancelQuickCheckout(ctx, ctx.match[1], apiUrl, botApiSecret, data);
   });
   bot.action('menu:home', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('🏠 Menu chính', inlineMenu()); });
 
@@ -354,6 +370,16 @@ async function createQuickCheckout(ctx: Context, input: { userId: string; produc
         idempotencyKey: `checkout:${ctx.chat.id}:${ctx.update.update_id}:${input.productId}:${input.quantity}` }),
     });
     const body = await response.json().catch(() => ({})) as DepositResponse & { message?: string | string[] };
+    if (!response.ok && body.activeCheckoutId) {
+      await ctx.reply(`⚠️ ${readErrorMessage(body.message, 'Bạn đang có một mã thanh toán chưa xử lý.')}`, {
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('✅ Kiểm tra mã hiện tại', `checkout:check:${body.activeCheckoutId}`)],
+          [Markup.button.callback('🗑 Hủy mã hiện tại', `checkout:cancel-confirm:${body.activeCheckoutId}`)],
+          [Markup.button.callback('🏠 Menu chính', 'menu:home')],
+        ]),
+      });
+      return;
+    }
     if (!response.ok || !body.id || !body.transferContent || !body.qrUrl || !body.bank?.accountNo) {
       throw new Error(readErrorMessage(body.message, 'Không thể tạo mã thanh toán nhanh.'));
     }
@@ -372,6 +398,7 @@ async function createQuickCheckout(ctx: Context, input: { userId: string; produc
     ].join('\n');
     const keyboard = Markup.inlineKeyboard([
       [Markup.button.callback('✅ Đã chuyển — Kiểm tra & nhận hàng', `checkout:check:${body.id}`)],
+      [Markup.button.callback('🗑 Hủy mã thanh toán', `checkout:cancel-confirm:${body.id}`)],
       [Markup.button.callback('🛍 Chọn sản phẩm khác', 'menu:products'), Markup.button.callback('🏠 Menu chính', 'menu:home')],
     ]);
     try {
@@ -419,6 +446,13 @@ async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, bot
       await ctx.reply(`✅ Đã nhận ${formatMoney(receivedAmount)}. Số dư hiện tại: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, inlineMenu());
       return;
     }
+    if (body.cancelled) {
+      await ctx.reply('🗑 Mã thanh toán này đã được hủy. Bạn có thể chọn sản phẩm và tạo mã mới.', {
+        ...Markup.inlineKeyboard([[Markup.button.callback('🛍 Chọn sản phẩm', 'menu:products')],
+          [Markup.button.callback('🏠 Menu chính', 'menu:home')]]),
+      });
+      return;
+    }
     if (body.status === 'EXPIRED') {
       if (body.historyCheck?.status === 'UNAVAILABLE') {
         await ctx.reply('⚠️ Mã đã hết hạn và API lịch sử Cake đang tạm thời không phản hồi. Nếu bạn đã chuyển tiền, hãy thử kiểm tra lại sau; callback vẫn được xử lý tự động khi gửi tới.', {
@@ -438,12 +472,45 @@ async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, bot
     await ctx.reply(pendingMessage, {
       ...Markup.inlineKeyboard([
         [Markup.button.callback('🔄 Kiểm tra lại', `${quickCheckout ? 'checkout' : 'deposit'}:check:${requestId}`)],
+        ...(quickCheckout ? [[Markup.button.callback('🗑 Hủy mã thanh toán', `checkout:cancel-confirm:${requestId}`)]] : []),
         [Markup.button.callback(quickCheckout ? '🛍 Sản phẩm' : '💳 Nạp khoản khác', quickCheckout ? 'menu:products' : 'menu:deposit'),
           Markup.button.callback('🏠 Menu chính', 'menu:home')],
       ]),
     });
   } catch (error) {
     await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể kiểm tra giao dịch.'}`, inlineMenu());
+  }
+}
+
+async function cancelQuickCheckout(ctx: Context, requestId: string, apiUrl: string, botApiSecret: string,
+  data: ShopBotDataContext) {
+  if (!ctx.from) return;
+  const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username,
+    [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '));
+  try {
+    const response = await fetch(`${apiUrl}/api/bot/checkouts/${requestId}/cancel`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId: user._id.toString() }),
+    });
+    const body = await response.json().catch(() => ({})) as DepositResponse & { message?: string | string[] };
+    if (!response.ok) throw new Error(readErrorMessage(body.message, 'Không thể hủy mã thanh toán.'));
+    if (body.cancelled) {
+      await ctx.reply('✅ Đã hủy mã thanh toán. Hàng không bị giữ và bạn có thể tạo đơn mới ngay.', {
+        ...Markup.inlineKeyboard([[Markup.button.callback('🛍 Chọn sản phẩm khác', 'menu:products')],
+          [Markup.button.callback('🏠 Menu chính', 'menu:home')]]),
+      });
+      return;
+    }
+    if (body.status === 'APPROVED') {
+      await ctx.reply('⚠️ Khoản thanh toán đã được ghi nhận nên không thể hủy. Hãy kiểm tra để nhận trạng thái đơn.', {
+        ...Markup.inlineKeyboard([[Markup.button.callback('✅ Kiểm tra & nhận hàng', `checkout:check:${requestId}`)],
+          [Markup.button.callback('🏠 Menu chính', 'menu:home')]]),
+      });
+      return;
+    }
+    await ctx.reply('⌛ Mã thanh toán đã hết hạn hoặc không còn ở trạng thái chờ.', inlineMenu());
+  } catch (error) {
+    await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể hủy mã thanh toán.'}`, inlineMenu());
   }
 }
 

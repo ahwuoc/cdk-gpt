@@ -43,6 +43,11 @@ export class PaymentController {
     return this.payments.createBankCheckout(body.userId, body.productId, body.quantity,
       body.expectedUnitPrice, body.idempotencyKey);
   }
+  @Post('bot/checkouts/:id/cancel') @SetMetadata(PUBLIC_ROUTE, true)
+  cancelBotCheckout(@Param('id') id: string, @Body() body: CheckBotDepositDto, @Headers('x-bot-secret') secret?: string) {
+    assertSharedSecret(secret, 'BOT_API_SECRET', 'Invalid bot credential');
+    return this.payments.cancelBankCheckout(id, body.userId);
+  }
   @Post('bot/deposits/:id/check') @SetMetadata(PUBLIC_ROUTE, true)
   checkBotDeposit(@Param('id') id: string, @Body() body: CheckBotDepositDto, @Headers('x-bot-secret') secret?: string) {
     assertSharedSecret(secret, 'BOT_API_SECRET', 'Invalid bot credential');

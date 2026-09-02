@@ -474,6 +474,49 @@ integration('digital store on a MongoDB replica set', () => {
       reservedPaymentRequestId: { $exists: true } })).toBe(0);
   });
 
+  test('a customer can cancel an unpaid quick-checkout, create another QR, and a late transfer is preserved in the wallet', async () => {
+    const { product, user } = await fixture(3, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const abandoned = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'cancel-unpaid-checkout');
+    const stranger = await UserModel.create({ telegramId: '81234567890', status: UserStatus.ACTIVE, walletBalance: 0,
+      referralCode: 'CANCELSTRANGER', purchaseCount: 0, deletedAt: null });
+
+    await expect(service.cancelBankCheckout(abandoned.id, stranger._id.toString())).rejects.toThrow('Không tìm thấy mã thanh toán');
+    const cancelled = await service.cancelBankCheckout(abandoned.id, user._id.toString());
+    const replacement = await service.createBankCheckout(user._id.toString(), product._id.toString(), 1, 100, 'checkout-after-cancel');
+    const transaction = { transactionID: '579740347', amount: 200,
+      description: `THANH TOAN ${abandoned.transferContent}`, transactionDate: '25/08/2026', type: 'IN' };
+    await service.processCakeCallback([transaction]);
+
+    expect(cancelled).toMatchObject({ id: abandoned.id, status: PaymentRequestStatus.EXPIRED, cancelled: true });
+    expect(replacement.id).not.toBe(abandoned.id);
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(200);
+    expect(await OrderModel.countDocuments({ userId: user._id })).toBe(0);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+  });
+
+  test('cancelling while the Cake callback arrives either fulfills once or preserves the whole payment', async () => {
+    const { product, user } = await fixture(1, 0);
+    const bankConfig = {
+      getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
+    } as unknown as BotConfigService;
+    const service = new PaymentService(mongoose.connection, PaymentRequestModel, walletService(), bankConfig, purchaseService());
+    const checkout = await service.createBankCheckout(user._id.toString(), product._id.toString(), 1, 100, 'cancel-callback-race');
+    const transaction = { transactionID: '579740349', amount: 100,
+      description: `THANH TOAN ${checkout.transferContent}`, transactionDate: '25/08/2026', type: 'IN' };
+
+    await Promise.all([service.cancelBankCheckout(checkout.id, user._id.toString()), service.processCakeCallback([transaction])]);
+
+    const balance = (await UserModel.findById(user._id))?.walletBalance ?? -1;
+    const orderCount = await OrderModel.countDocuments({ userId: user._id });
+    expect(balance + orderCount * 100).toBe(100);
+    expect(orderCount).toBeLessThanOrEqual(1);
+    expect(await WalletTransactionModel.countDocuments({ userId: user._id, type: 'DEPOSIT' })).toBe(1);
+  });
+
   test('an unpaid QR does not block a wallet buyer and a later transfer is kept in their wallet', async () => {
     const { product, user } = await fixture(2, 100, 1);
     const bankConfig = {

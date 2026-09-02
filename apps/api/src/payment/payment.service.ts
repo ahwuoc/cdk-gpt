@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
@@ -130,12 +130,16 @@ export class PaymentService {
         if (existing) { request = existing; return; }
         const quote = await this.purchases!.quoteBatchForPayment({ userId, productId, quantity,
           expectedUnitPrice }, session);
-        const activeCheckout = await this.requests.exists({ userId: objectUserId, provider: BANK_PROVIDER,
+        const activeCheckout = await this.requests.findOne({ userId: objectUserId, provider: BANK_PROVIDER,
           status: PaymentRequestStatus.PENDING, deletedAt: null,
           'metadata.quickCheckout': { $exists: true }, 'metadata.expiresAt': { $gt: new Date().toISOString() } })
-          .session(session);
+          .select('_id requestCode').session(session).lean();
         if (activeCheckout) {
-          throw new BadRequestException('Bạn đã có mã thanh toán đang chờ. Hãy dùng mã hiện tại hoặc đợi mã hết hạn.');
+          throw new ConflictException({
+            message: 'Bạn đã có mã thanh toán đang chờ. Hãy dùng mã hiện tại hoặc hủy mã cũ trước.',
+            activeCheckoutId: activeCheckout._id.toString(),
+            activeCheckoutCode: activeCheckout.requestCode,
+          });
         }
         const checkout: QuickCheckoutMetadata = {
           productId: quote.productId, productName: quote.productName, quantity: quote.quantity,
@@ -154,6 +158,43 @@ export class PaymentService {
     if (!request) throw new Error('Bank checkout could not be created');
     const stored = this.assertSameBankCheckout(request, userId, productId, quantity, expectedUnitPrice);
     return bankCheckoutResponse(request, stored, bank, expiresAt.toISOString());
+  }
+
+  /**
+   * Atomically closes an unpaid quick-checkout. A Cake callback that wins the
+   * race creates the order; a cancellation that wins turns the QR into a late
+   * payment, so any later transfer is credited to the wallet without buying.
+   */
+  async cancelBankCheckout(requestId: string, userId: string) {
+    if (!Types.ObjectId.isValid(requestId) || !Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Thông tin mã thanh toán không hợp lệ');
+    }
+    const session = await this.connection.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const current = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).session(session);
+        if (!current || !quickCheckoutFrom(current)) throw new NotFoundException('Không tìm thấy mã thanh toán của bạn');
+        if (current.status !== PaymentRequestStatus.PENDING) return;
+        const cancelledAt = new Date().toISOString();
+        const updated = await this.requests.findOneAndUpdate({ _id: current._id, userId: current.userId,
+          provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING, providerReference: { $exists: false } }, {
+          $set: {
+            status: PaymentRequestStatus.EXPIRED,
+            'metadata.userCancelledAt': cancelledAt,
+            'metadata.quickCheckout.status': 'FAILED',
+            'metadata.quickCheckout.fulfillmentError': 'Bạn đã hủy mã thanh toán này. Nếu tiền đã chuyển tới, hệ thống sẽ cộng vào ví.',
+          },
+          $unset: { 'metadata.quickCheckout.processingAt': 1 },
+        }, { new: true, session });
+        if (!updated) return;
+        await this.purchases?.releaseBankCheckoutReservation(updated._id.toString(), session);
+      });
+    } finally { await session.endSession(); }
+    const result = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).lean();
+    if (!result) throw new NotFoundException('Không tìm thấy mã thanh toán của bạn');
+    const checkout = quickCheckoutFrom(result);
+    return { id: result._id.toString(), requestCode: result.requestCode, status: result.status,
+      cancelled: wasUserCancelled(result), checkout: publicQuickCheckout(checkout) };
   }
 
   private assertSameBankCheckout(request: PaymentRequestDocument, userId: string, productId: string,
@@ -187,7 +228,7 @@ export class PaymentService {
     return { id: request._id.toString(), requestCode: request.requestCode, amount: request.amount,
       receivedAmount: receivedAmountFrom(request),
       status: request.status, transferContent: transferContentFrom(request), expiresAt: expirationFrom(request),
-      checkout: publicQuickCheckout(quickCheckoutFrom(request)), historyCheck };
+      cancelled: wasUserCancelled(request), checkout: publicQuickCheckout(quickCheckoutFrom(request)), historyCheck };
   }
 
   /** Admin-only, read-only probe for diagnosing the saved Cake history token. */
@@ -464,7 +505,8 @@ export class PaymentService {
         const metadata: Record<string, unknown> = { ...existing.metadata,
           bankTransaction: { id: providerReference, date: transaction.transactionDate }, latePayment };
         let checkoutCanFulfill = Boolean(checkout && !latePayment);
-        if (latePayment && checkout) metadata.quickCheckout = lateQuickCheckout(checkout);
+        if (wasUserCancelled(existing) && checkout) metadata.quickCheckout = cancelledQuickCheckout(checkout);
+        else if (latePayment && checkout) metadata.quickCheckout = lateQuickCheckout(checkout);
         else if (checkout?.reservationMode === 'SOFT') {
           const availability = await this.purchases?.softCheckoutAvailability({
             userId: existing.userId.toString(), productId: checkout.productId, quantity: checkout.quantity,
@@ -782,6 +824,17 @@ function lateQuickCheckout(checkout: QuickCheckoutMetadata): QuickCheckoutMetada
     fulfillmentError: 'Thanh toán sau thời hạn mã QR; tiền đã được cộng vào ví. Vui lòng đặt đơn mới.' };
   delete failed.processingAt;
   return failed;
+}
+
+function cancelledQuickCheckout(checkout: QuickCheckoutMetadata): QuickCheckoutMetadata {
+  const failed: QuickCheckoutMetadata = { ...checkout, status: 'FAILED',
+    fulfillmentError: 'Mã thanh toán đã được bạn hủy; tiền chuyển tới sau đó đã được cộng vào ví. Vui lòng đặt đơn mới.' };
+  delete failed.processingAt;
+  return failed;
+}
+
+function wasUserCancelled(request: Pick<PaymentRequest, 'metadata'>) {
+  return typeof request.metadata?.userCancelledAt === 'string';
 }
 
 function unavailableQuickCheckout(checkout: QuickCheckoutMetadata, reason?: string): QuickCheckoutMetadata {

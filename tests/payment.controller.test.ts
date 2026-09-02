@@ -64,4 +64,24 @@ describe('Cake payment callback', () => {
       else process.env.BOT_API_SECRET = previous;
     }
   });
+
+  test('authenticated customer can cancel only their own quick checkout through the bot endpoint', async () => {
+    const previous = process.env.BOT_API_SECRET;
+    process.env.BOT_API_SECRET = 'cancel-checkout-test-secret';
+    try {
+      const result = { id: '65b65b65b65b65b65b65b65b', requestCode: 'DONCANCELLED',
+        status: 'EXPIRED' as const, cancelled: true, checkout: undefined };
+      const cancelBankCheckout = mock(async () => result);
+      const controller = new PaymentController({ cancelBankCheckout } as unknown as PaymentService, {} as BotConfigService);
+      const body = { userId: '64b64b64b64b64b64b64b64b' };
+
+      expect(() => controller.cancelBotCheckout(result.id, body, 'wrong-secret')).toThrow(UnauthorizedException);
+      await expect(controller.cancelBotCheckout(result.id, body, 'cancel-checkout-test-secret')).resolves.toEqual(result);
+      expect(cancelBankCheckout).toHaveBeenCalledTimes(1);
+      expect(cancelBankCheckout).toHaveBeenCalledWith(result.id, body.userId);
+    } finally {
+      if (previous === undefined) delete process.env.BOT_API_SECRET;
+      else process.env.BOT_API_SECRET = previous;
+    }
+  });
 });
