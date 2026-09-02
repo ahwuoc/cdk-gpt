@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import {
   ArrowUpRight,
+  BookOpen,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
   CircleDollarSign,
   ClipboardList,
   Coins,
+  Eye,
   LoaderCircle,
   PackageCheck,
   RefreshCw,
@@ -16,6 +18,7 @@ import {
   TriangleAlert,
   Users,
   WalletCards,
+  X,
 } from 'lucide-react';
 
 export type AuthorizedRequest = (path: string, init?: RequestInit) => Promise<Response>;
@@ -57,8 +60,20 @@ interface OrderRecord {
   paymentMethod?: string;
   createdAt: string;
   deliveredAt?: string;
-  product?: { _id?: string; name?: string; slug?: string } | null;
+  failureReason?: string;
+  product?: { id?: string; _id?: string; name?: string; slug?: string } | null;
   user?: Person | null;
+}
+
+interface OrderDetail extends OrderRecord {
+  updatedAt: string;
+  user?: (Person & { status?: string; walletBalance?: number; purchaseCount?: number; createdAt?: string }) | null;
+  product?: ({ id?: string; name?: string; slug?: string; description?: string; price?: number; status?: string;
+    instructions?: string | null; warrantyPolicy?: string | null; warrantyDays?: number }) | null;
+  inventory?: { id: string; status: string; maskedPreview?: Record<string, unknown>; importBatchId?: string | null;
+    reservedAt?: string | null; reservationExpiresAt?: string | null; soldAt?: string | null; createdAt?: string; updatedAt?: string } | null;
+  walletTransaction?: { id: string; amount: number; balanceBefore: number; balanceAfter: number; type: string;
+    reason: string; referenceType: string; referenceId?: string | null; actorType: string; createdAt: string } | null;
 }
 
 interface DepositRecord {
@@ -209,6 +224,8 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
       query={ordersQuery}
       setQuery={setOrdersQuery}
       refresh={loadOrders}
+      authorized={authorized}
+      setMessage={setMessage}
     />}
     {view === 'deposits' && <DepositsHistory
       data={deposits}
@@ -231,14 +248,29 @@ function Overview({ summary, loading, onOrders, onDeposits }: { summary: Summary
   </div>;
 }
 
-function OrdersHistory({ data, loading, query, setQuery, refresh }: {
+function OrdersHistory({ data, loading, query, setQuery, refresh, authorized, setMessage }: {
   data: PageResult<OrderRecord>;
   loading: boolean;
   query: { search: string; userId: string; status: string; from: string; to: string; page: number };
   setQuery: Dispatch<SetStateAction<{ search: string; userId: string; status: string; from: string; to: string; page: number }>>;
   refresh(): Promise<void>;
+  authorized: AuthorizedRequest;
+  setMessage(message: string): void;
 }) {
-  return <HistoryPanel title="Lịch sử đơn hàng" subtitle="Mỗi đơn hiển thị tên, @username và Telegram ID của người mua." icon={<ClipboardList size={19} />} loading={loading} refresh={refresh}>
+  const [detail, setDetail] = useState<OrderDetail | null>(null);
+  const [detailBusy, setDetailBusy] = useState<string | null>(null);
+  const openDetail = useCallback(async (id: string) => {
+    setDetailBusy(id);
+    try {
+      const response = await authorized(`/admin/orders/${id}`);
+      const body = await readApiBody<OrderDetail>(response);
+      if (!response.ok) throw new Error(messageFromBody(body, 'Không thể tải chi tiết đơn hàng.'));
+      setDetail(body);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể tải chi tiết đơn hàng.'); }
+    finally { setDetailBusy(null); }
+  }, [authorized, setMessage]);
+
+  return <><HistoryPanel title="Lịch sử đơn hàng" subtitle="Bấm vào một đơn để xem khách mua, sản phẩm, thanh toán, hàng giao và hướng dẫn." icon={<ClipboardList size={19} />} loading={loading} refresh={refresh}>
     {query.userId && <ScopedUserFilter userId={query.userId} clear={() => { clearUrlUserFilter(); setQuery((current) => ({ ...current, userId: '', page: 1 })); }} />}
     <FilterBar>
       <SearchField value={query.search} onChange={(search) => setQuery((current) => ({ ...current, search, page: 1 }))} placeholder="Mã đơn, @username, Telegram ID hoặc sản phẩm" />
@@ -251,12 +283,12 @@ function OrdersHistory({ data, loading, query, setQuery, refresh }: {
       <DateField label="Đến ngày" value={query.to} onChange={(to) => setQuery((current) => ({ ...current, to, page: 1 }))} />
     </FilterBar>
     <div className="mt-4 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
-      {data.items.map((order) => <OrderRow key={order.id} order={order} />)}
+      {data.items.map((order) => <OrderRow key={order.id} order={order} onOpen={() => void openDetail(order.id)} opening={detailBusy === order.id} />)}
       {!loading && data.items.length === 0 && <EmptyState icon={<ClipboardList />} text="Không tìm thấy đơn hàng phù hợp." />}
       {loading && <LoadingRows />}
     </div>
     <Pagination data={data} onPage={(page) => setQuery((current) => ({ ...current, page }))} />
-  </HistoryPanel>;
+  </HistoryPanel>{detail && <OrderDetailDialog order={detail} close={() => setDetail(null)} />}</>;
 }
 
 function DepositsHistory({ data, loading, query, setQuery, refresh }: {
@@ -307,8 +339,9 @@ function HistoryPreview({ title, icon, action, onClick, loading, empty, children
   </section>;
 }
 
-function OrderRow({ order, compact = false }: { order: OrderRecord; compact?: boolean }) {
-  return <article className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${compact ? 'px-5' : ''}`}>
+function OrderRow({ order, compact = false, onOpen, opening = false }: { order: OrderRecord; compact?: boolean; onOpen?: () => void; opening?: boolean }) {
+  return <article className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${compact ? 'px-5' : ''} ${onOpen ? 'cursor-pointer transition hover:bg-slate-900/80 focus-within:bg-slate-900/80' : ''}`}
+    onClick={onOpen}>
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-2"><code className="text-xs font-semibold text-indigo-200">{order.orderCode}</code><StatusBadge value={order.status} type="order" /></div>
       <p className="mt-1 truncate text-sm font-medium text-slate-100">{order.product?.name ?? 'Sản phẩm đã xóa'}</p>
@@ -317,7 +350,7 @@ function OrderRow({ order, compact = false }: { order: OrderRecord; compact?: bo
         {order.quantity && order.quantity > 1 ? <span>· SL {order.quantity}</span> : null}
       </div>
     </div>
-    <div className="flex items-center justify-between gap-3 sm:block sm:text-right"><p className="font-semibold text-emerald-300">{money(order.totalAmount)}</p><p className="mt-1 text-xs text-slate-500">{paymentName(order.paymentMethod)}</p></div>
+    <div className="flex items-center justify-between gap-3 sm:text-right"><div><p className="font-semibold text-emerald-300">{money(order.totalAmount)}</p><p className="mt-1 text-xs text-slate-500">{paymentName(order.paymentMethod)}</p></div>{onOpen && <button type="button" disabled={opening} onClick={(event) => { event.stopPropagation(); onOpen(); }} className="button-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs">{opening ? <LoaderCircle size={14} className="animate-spin" /> : <Eye size={14} />} Chi tiết</button>}</div>
   </article>;
 }
 
@@ -340,11 +373,61 @@ function BuyerIdentity({ user }: { user?: Person | null }) {
     {user.displayName && <span className="font-medium text-slate-300">{user.displayName}</span>}
     {username
       ? <a href={`https://t.me/${encodeURIComponent(username)}`} target="_blank" rel="noreferrer"
-        className="font-medium text-sky-300 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-200">@{username}</a>
+        onClick={(event) => event.stopPropagation()} className="font-medium text-sky-300 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-200">@{username}</a>
       : <span className="text-amber-300">Không có @username</span>}
     {user.telegramId && <code className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-indigo-200">ID {user.telegramId}</code>}
   </>;
 }
+
+function OrderDetailDialog({ order, close }: { order: OrderDetail; close(): void }) {
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [close]);
+  const preview = Object.entries(order.inventory?.maskedPreview ?? {});
+  const username = order.user?.username?.replace(/^@+/, '').trim();
+  return <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="order-detail-title" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+    <div className="max-h-[94vh] w-full max-w-4xl overflow-y-auto rounded-t-3xl border border-slate-700 bg-slate-900 shadow-2xl sm:rounded-3xl">
+      <header className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-800 bg-slate-900/95 px-5 py-4 backdrop-blur sm:px-6">
+        <div><p className="text-xs font-medium uppercase tracking-wide text-indigo-300">Chi tiết đơn hàng</p><div className="mt-1 flex flex-wrap items-center gap-2"><h3 id="order-detail-title" className="font-mono text-lg font-semibold text-white">{order.orderCode}</h3><StatusBadge value={order.status} type="order" /></div><p className="mt-1 text-xs text-slate-500">Tạo {dateTime(order.createdAt)} · Cập nhật {dateTime(order.updatedAt)}</p></div>
+        <button type="button" onClick={close} className="rounded-xl border border-slate-700 p-2 text-slate-400 transition hover:text-white" aria-label="Đóng chi tiết"><X size={18} /></button>
+      </header>
+      <div className="grid gap-4 p-5 sm:p-6 lg:grid-cols-2">
+        <DetailCard title="Đơn hàng & sản phẩm" icon={<ClipboardList size={17} />}>
+          <DetailLine label="Sản phẩm" value={order.product?.name ?? 'Sản phẩm đã xóa'} />
+          {order.product?.description && <p className="rounded-xl bg-slate-950/70 p-3 text-xs leading-5 text-slate-300 whitespace-pre-wrap">{order.product.description}</p>}
+          <div className="grid grid-cols-2 gap-2"><Metric label="Số lượng" value={number(order.quantity)} /><Metric label="Đơn giá" value={money(order.unitPrice)} /><Metric label="Tổng tiền" value={money(order.totalAmount)} accent /><Metric label="Thanh toán" value={paymentName(order.paymentMethod)} /></div>
+          <DetailLine label="Giao hàng" value={order.deliveryStatus ?? '—'} />
+          <DetailLine label="Giao lúc" value={dateTime(order.deliveredAt)} />
+          {order.failureReason && <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">Lỗi giao hàng: {order.failureReason}</p>}
+        </DetailCard>
+        <DetailCard title="Khách hàng" icon={<Users size={17} />}>
+          <DetailLine label="Tên" value={order.user?.displayName ?? 'Không có tên'} />
+          <DetailLine label="Username" value={username ? `@${username}` : 'Không có @username'} />
+          <DetailLine label="Telegram ID" value={order.user?.telegramId ?? '—'} mono />
+          <div className="grid grid-cols-2 gap-2"><Metric label="Số dư hiện tại" value={money(order.user?.walletBalance)} accent /><Metric label="Tổng lượt mua" value={number(order.user?.purchaseCount)} /></div>
+          <div className="flex flex-wrap gap-2">{username && <a href={`https://t.me/${encodeURIComponent(username)}`} target="_blank" rel="noreferrer" className="button-secondary px-3 py-2 text-xs">Mở Telegram</a>}{order.user?.telegramId && <a href={`/admin?view=messages&telegramId=${encodeURIComponent(order.user.telegramId)}`} className="button-secondary px-3 py-2 text-xs">Nhắn qua bot</a>}{order.user?.id && <a href={`/admin?view=ledger&userId=${encodeURIComponent(order.user.id)}`} className="button-secondary px-3 py-2 text-xs">Xem sổ ví</a>}</div>
+        </DetailCard>
+        <DetailCard title="Thanh toán & sổ ví" icon={<WalletCards size={17} />}>
+          {order.walletTransaction ? <><div className="grid grid-cols-2 gap-2"><Metric label="Biến động" value={`${order.walletTransaction.amount > 0 ? '+' : ''}${money(order.walletTransaction.amount)}`} accent={order.walletTransaction.amount > 0} danger={order.walletTransaction.amount < 0} /><Metric label="Loại" value={order.walletTransaction.type} /><Metric label="Số dư trước" value={money(order.walletTransaction.balanceBefore)} /><Metric label="Số dư sau" value={money(order.walletTransaction.balanceAfter)} /></div><DetailLine label="Lý do" value={order.walletTransaction.reason} /><DetailLine label="Mã giao dịch" value={order.walletTransaction.id} mono /><DetailLine label="Ghi nhận" value={dateTime(order.walletTransaction.createdAt)} /></> : <p className="text-sm text-slate-500">Đơn này không có giao dịch ví liên kết.</p>}
+        </DetailCard>
+        <DetailCard title="Hàng đã giao" icon={<PackageCheck size={17} />}>
+          <DetailLine label="Inventory ID" value={order.inventory?.id ?? 'Không còn dữ liệu kho'} mono />
+          <DetailLine label="Trạng thái" value={order.inventory?.status ?? '—'} />
+          <DetailLine label="Lô nhập" value={order.inventory?.importBatchId ?? '—'} mono />
+          <DetailLine label="Bán lúc" value={dateTime(order.inventory?.soldAt ?? undefined)} />
+          {preview.length > 0 && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Dữ liệu che bớt</p><div className="flex flex-wrap gap-2">{preview.map(([key, value]) => <code key={key} className="rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-300">{key}: {String(value)}</code>)}</div></div>}
+        </DetailCard>
+        {(order.product?.instructions || order.product?.warrantyPolicy) && <div className="lg:col-span-2"><DetailCard title="Hướng dẫn & bảo hành" icon={<BookOpen size={17} />}>{order.product.instructions && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Hướng dẫn sử dụng</p><p className="whitespace-pre-wrap rounded-xl bg-slate-950/70 p-4 text-sm leading-6 text-slate-200">{order.product.instructions}</p></div>}{order.product.warrantyPolicy && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Chính sách bảo hành {order.product.warrantyDays ? `· ${order.product.warrantyDays} ngày` : ''}</p><p className="whitespace-pre-wrap rounded-xl bg-slate-950/70 p-4 text-sm leading-6 text-slate-200">{order.product.warrantyPolicy}</p></div>}</DetailCard></div>}
+      </div>
+    </div>
+  </div>;
+}
+
+function DetailCard({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) { return <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-950/45 p-4"><h4 className="flex items-center gap-2 font-medium text-slate-100"><span className="text-indigo-300">{icon}</span>{title}</h4>{children}</section>; }
+function DetailLine({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="flex items-start justify-between gap-4 text-xs"><span className="shrink-0 text-slate-500">{label}</span><span className={`break-all text-right text-slate-200 ${mono ? 'font-mono text-[11px]' : ''}`}>{value}</span></div>; }
+function Metric({ label, value, accent = false, danger = false }: { label: string; value: string; accent?: boolean; danger?: boolean }) { return <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3"><p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p><p className={`mt-1 text-sm font-semibold ${danger ? 'text-rose-300' : accent ? 'text-emerald-300' : 'text-slate-100'}`}>{value}</p></div>; }
 
 function QuickAction({ icon, title, description, action, onClick, danger = false }: { icon: ReactNode; title: string; description: string; action: string; onClick(): void; danger?: boolean }) {
   return <button type="button" onClick={onClick} className="group flex items-center gap-3 rounded-2xl border border-slate-700/80 bg-slate-950/50 p-4 text-left transition hover:border-indigo-500/60 hover:bg-slate-950">

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import type { ClientSession, Connection, Types } from 'mongoose';
 import { IdempotencyConflictError, InsufficientBalanceError, WalletTransactionType } from '@store/shared';
@@ -42,16 +42,24 @@ export class WalletService {
     const signedAmount = input.amount * direction;
     const existing = await this.transactions.findByIdempotencyKey(input.idempotencyKey, session);
     if (existing) {
-      if (!existing.userId.equals(input.userId) || existing.amount !== signedAmount) throw new IdempotencyConflictError();
+      const sameReference = existing.referenceType === input.referenceType
+        && objectIdEquals(existing.referenceId, input.referenceId);
+      const strictAdminAdjustment = input.idempotencyKey.startsWith('admin-wallet:');
+      if (!existing.userId.equals(input.userId) || existing.amount !== signedAmount
+        || (strictAdminAdjustment && (existing.type !== input.type || existing.reason !== input.reason || !sameReference))) {
+        throw new IdempotencyConflictError();
+      }
       return existing;
     }
     const before = allowInactive ? await this.users.findExisting(input.userId, session) : await this.users.findActive(input.userId, session);
-    if (!before) throw new Error(allowInactive ? 'User not found' : 'Active user not found');
+    if (!before) throw new NotFoundException(allowInactive ? 'Customer not found' : 'Active customer not found');
     const after = direction === 1
       ? allowInactive
         ? await this.users.creditReceivedFunds(input.userId, input.amount, session)
         : await this.users.credit(input.userId, input.amount, session)
-      : await this.users.debitBalance(input.userId, input.amount, session);
+      : allowInactive
+        ? await this.users.debitExistingBalance(input.userId, input.amount, session)
+        : await this.users.debitBalance(input.userId, input.amount, session);
     if (!after) {
       if (direction === -1) throw new InsufficientBalanceError();
       throw new Error('Wallet credit failed');
@@ -74,4 +82,25 @@ export class WalletService {
     return this.debit({ userId, amount, type: WalletTransactionType.ADMIN_DEBIT, reason: 'Administrative wallet debit',
       referenceType: WalletReferenceType.MANUAL, referenceId, idempotencyKey: key, actorType: ActorType.ADMIN, actorId: adminId }, session);
   }
+
+  adminAdjust(userId: Types.ObjectId, amount: number, direction: 'CREDIT' | 'DEBIT', reason: string,
+    adminId: Types.ObjectId, key: string, session?: ClientSession) {
+    return this.change({
+      userId,
+      amount,
+      type: direction === 'CREDIT' ? WalletTransactionType.ADMIN_CREDIT : WalletTransactionType.ADMIN_DEBIT,
+      reason,
+      referenceType: WalletReferenceType.USER,
+      referenceId: userId,
+      idempotencyKey: key,
+      actorType: ActorType.ADMIN,
+      actorId: adminId,
+      metadata: { direction },
+    }, direction === 'CREDIT' ? 1 : -1, session, true);
+  }
+}
+
+function objectIdEquals(left?: Types.ObjectId, right?: Types.ObjectId) {
+  if (!left && !right) return true;
+  return Boolean(left && right && left.equals(right));
 }

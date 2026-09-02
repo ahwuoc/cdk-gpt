@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/permissions.guard';
 import { AnalyticsService } from './analytics.service';
@@ -18,6 +18,11 @@ export class AnalyticsController {
   @RequirePermissions('analytics.read')
   @ApiOperation({ summary: 'Paginated order history for administrators' })
   orders(@Query() query: OrderHistoryQueryDto) { return this.analytics.orders(query); }
+
+  @Get('orders/:id')
+  @RequirePermissions('analytics.read')
+  @ApiOperation({ summary: 'Full safe order detail for administrators' })
+  order(@Param('id') id: string) { return this.analytics.orderDetail(id); }
 
   @Get('deposits')
   @RequirePermissions('analytics.read')

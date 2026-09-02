@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { FilterQuery, Model, PipelineStage, Types as MongooseTypes } from 'mongoose';
@@ -162,6 +162,53 @@ export class AnalyticsService {
       limit,
       total,
       totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async orderDetail(id: string) {
+    if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid order id');
+    const order = await this.orderModel.findById(id).lean().exec();
+    if (!order) throw new NotFoundException('Order not found');
+
+    const [user, product, inventory, walletTransaction] = await Promise.all([
+      this.userModel.findById(order.userId).select('telegramId username displayName status walletBalance purchaseCount createdAt').lean().exec(),
+      this.productModel.findById(order.productId).select('name slug description instructions warrantyPolicy warrantyDays price status').lean().exec(),
+      this.inventoryModel.findById(order.inventoryItemId)
+        .select('status maskedPreview importBatchId reservedAt reservationExpiresAt soldAt createdAt updatedAt').lean().exec(),
+      order.walletTransactionId
+        ? this.walletTransactionModel.findById(order.walletTransactionId).lean().exec()
+        : this.walletTransactionModel.findOne({ referenceType: 'ORDER', referenceId: order._id }).lean().exec(),
+    ]);
+
+    return {
+      id: order._id.toString(), orderCode: order.orderCode, quantity: order.quantity,
+      unitPrice: order.unitPrice, totalAmount: order.totalAmount, status: order.status,
+      paymentMethod: order.paymentMethod, deliveryStatus: order.deliveryStatus,
+      failureReason: order.failureReason ?? null, createdAt: order.createdAt, updatedAt: order.updatedAt,
+      deliveredAt: order.deliveredAt ?? null,
+      user: user ? {
+        id: user._id.toString(), telegramId: user.telegramId, username: user.username ?? null,
+        displayName: user.displayName ?? null, status: user.status, walletBalance: user.walletBalance,
+        purchaseCount: user.purchaseCount, createdAt: user.createdAt,
+      } : null,
+      product: product ? {
+        id: product._id.toString(), name: product.name, slug: product.slug, description: product.description,
+        price: product.price, status: product.status, instructions: product.instructions ?? null,
+        warrantyPolicy: product.warrantyPolicy ?? null, warrantyDays: product.warrantyDays,
+      } : null,
+      inventory: inventory ? {
+        id: inventory._id.toString(), status: inventory.status, maskedPreview: inventory.maskedPreview,
+        importBatchId: inventory.importBatchId?.toString() ?? null, reservedAt: inventory.reservedAt ?? null,
+        reservationExpiresAt: inventory.reservationExpiresAt ?? null, soldAt: inventory.soldAt ?? null,
+        createdAt: inventory.createdAt, updatedAt: inventory.updatedAt,
+      } : null,
+      walletTransaction: walletTransaction ? {
+        id: walletTransaction._id.toString(), amount: walletTransaction.amount,
+        balanceBefore: walletTransaction.balanceBefore, balanceAfter: walletTransaction.balanceAfter,
+        type: walletTransaction.type, reason: walletTransaction.reason, referenceType: walletTransaction.referenceType,
+        referenceId: walletTransaction.referenceId?.toString() ?? null, actorType: walletTransaction.actorType,
+        createdAt: walletTransaction.createdAt,
+      } : null,
     };
   }
 

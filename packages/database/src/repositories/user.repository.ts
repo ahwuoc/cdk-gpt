@@ -37,6 +37,14 @@ export class UserRepository {
     );
   }
 
+  /** Manual admin corrections must still work while a customer is suspended. */
+  debitExistingBalance(id: Types.ObjectId, amount: number, session: ClientSession) {
+    return this.users.findOneAndUpdate(
+      { _id: id, deletedAt: null, walletBalance: { $gte: amount } },
+      { $inc: { walletBalance: -amount } }, { new: true, session, runValidators: true },
+    );
+  }
+
   credit(id: Types.ObjectId, amount: number, session: ClientSession) {
     return this.users.findOneAndUpdate(
       { _id: id, status: UserStatus.ACTIVE, deletedAt: null }, { $inc: { walletBalance: amount } },

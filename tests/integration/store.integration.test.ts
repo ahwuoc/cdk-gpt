@@ -709,6 +709,26 @@ integration('digital store on a MongoDB replica set', () => {
       apiKey: '[REDACTED]', nested: { credential: '[REDACTED]' }, safe: 'visible' });
   });
 
+  test('admin wallet corrections are idempotent, audited in the ledger, and never create a negative balance', async () => {
+    const { user, adminId } = await fixture(0, 500);
+    user.status = UserStatus.SUSPENDED; await user.save();
+    const wallets = walletService();
+
+    const first = await wallets.adminAdjust(user._id, 250, 'CREDIT', 'Bù giao dịch chuyển khoản thiếu', adminId, 'admin-wallet:adjust-credit');
+    const retry = await wallets.adminAdjust(user._id, 250, 'CREDIT', 'Bù giao dịch chuyển khoản thiếu', adminId, 'admin-wallet:adjust-credit');
+    expect(first._id.toString()).toBe(retry._id.toString());
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(750);
+    expect(await WalletTransactionModel.countDocuments({ idempotencyKey: 'admin-wallet:adjust-credit' })).toBe(1);
+
+    await wallets.adminAdjust(user._id, 125, 'DEBIT', 'Thu hồi số dư cộng nhầm', adminId, 'admin-wallet:adjust-debit');
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(625);
+    await expect(wallets.adminAdjust(user._id, 626, 'DEBIT', 'Không được âm ví', adminId, 'admin-wallet:adjust-too-much'))
+      .rejects.toThrow('Insufficient wallet balance');
+    expect((await UserModel.findById(user._id))?.walletBalance).toBe(625);
+    await expect(wallets.adminAdjust(user._id, 250, 'CREDIT', 'Lý do khác cùng request', adminId, 'admin-wallet:adjust-credit'))
+      .rejects.toThrow('Idempotency key was already used');
+  });
+
   test('admin can identify and find an order buyer by Telegram @username', async () => {
     const { product, user } = await fixture(1, 100);
     user.username = 'buyer_handle';
@@ -723,6 +743,26 @@ integration('digital store on a MongoDB replica set', () => {
     expect(result.items[0]).toMatchObject({ id: order._id.toString(), user: {
       id: user._id.toString(), username: 'buyer_handle', displayName: 'Buyer Name', telegramId: user.telegramId,
     } });
+  });
+
+  test('admin order detail joins customer, product, masked stock, and wallet accounting without encrypted payloads', async () => {
+    const { product, user } = await fixture(1, 100);
+    product.instructions = 'Đăng nhập và đổi mật khẩu ngay.';
+    product.warrantyPolicy = 'Bảo hành nếu tài khoản sai.';
+    await product.save();
+    const order = await purchaseService().purchase({ userId: user._id.toString(), productId: product._id.toString(),
+      expectedUnitPrice: 100, idempotencyKey: 'order-detail-admin' });
+
+    const detail = await analyticsService().orderDetail(order._id.toString());
+
+    expect(detail).toMatchObject({ id: order._id.toString(), orderCode: order.orderCode,
+      user: { id: user._id.toString(), telegramId: user.telegramId, walletBalance: 0 },
+      product: { id: product._id.toString(), instructions: 'Đăng nhập và đổi mật khẩu ngay.' },
+      inventory: { id: order.inventoryItemId.toString(), maskedPreview: { password: 'se****-0' } },
+      walletTransaction: { amount: -100, balanceBefore: 100, balanceAfter: 0, type: 'PURCHASE' },
+    });
+    expect(JSON.stringify(detail)).not.toContain('encryptedPayload');
+    expect(JSON.stringify(detail)).not.toContain('secret-0');
   });
 
   test('a customer can report only their order once and an admin can resolve it', async () => {

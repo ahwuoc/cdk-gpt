@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity, CalendarDays, ChevronLeft, ChevronRight, CircleDollarSign, FileClock,
-  LoaderCircle, RefreshCw, Search, ShieldCheck, Users,
+  LoaderCircle, MinusCircle, PlusCircle, RefreshCw, Search, ShieldCheck, Users, X,
 } from 'lucide-react';
 import type { AuthorizedRequest } from './operations-dashboard';
+import { requestId } from './request-id';
 
 export type ManagementView = 'users' | 'ledger' | 'audit';
 
@@ -38,12 +39,13 @@ export function ManagementHub({ view, authorized, setMessage }: {
 
 function UsersDirectory({ authorized, setMessage }: SharedProps) {
   const [query, setQuery] = useState({ search: '', status: '', from: '', to: '', page: 1 });
+  const [adjusting, setAdjusting] = useState<UserRecord | null>(null);
   const { data, loading, load } = usePaginatedAdminQuery<UserRecord>(
     authorized, '/admin/users', query, setMessage, 'Không thể tải danh sách khách hàng.',
   );
 
-  return <ManagementPanel icon={<Users />} eyebrow="Khách hàng" title="Khách hàng Telegram"
-    subtitle="Tra cứu người dùng, số dư ví, lượt mua và thời điểm tham gia." loading={loading} refresh={load}>
+  return <><ManagementPanel icon={<Users />} eyebrow="Khách hàng" title="Khách hàng Telegram"
+    subtitle="Tra cứu người dùng, điều chỉnh số dư ví, xem lịch sử và nhắn tin tại một chỗ." loading={loading} refresh={load}>
     <Filters>
       <SearchField value={query.search} onChange={(search) => setQuery((current) => ({ ...current, search, page: 1 }))} placeholder="Tên, username, Telegram ID hoặc mã giới thiệu" />
       <select className="input h-11 py-2" value={query.status} onChange={(event) => setQuery((current) => ({ ...current, status: event.target.value, page: 1 }))}>
@@ -61,7 +63,7 @@ function UsersDirectory({ authorized, setMessage }: SharedProps) {
           <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="truncate font-medium text-slate-100">{person(user)}</p><Badge value={user.status} /></div><p className="mt-1 truncate text-xs text-slate-500">Telegram {user.telegramId} · Mã {user.referralCode}</p>
             {user.id && <div className="mt-2 flex flex-wrap gap-2 text-[11px]"><HistoryLink view="orders" userId={user.id}>Đơn hàng</HistoryLink><HistoryLink view="deposits" userId={user.id}>Nạp tiền</HistoryLink><HistoryLink view="ledger" userId={user.id}>Sổ ví</HistoryLink>{user.telegramId && <a className="rounded-lg border border-slate-700 px-2 py-1 text-slate-400 transition hover:border-indigo-500/60 hover:text-indigo-200" href={`/admin?view=messages&telegramId=${encodeURIComponent(user.telegramId)}`}>Nhắn tin</a>}</div>}
           </div>
-          <p className="font-semibold text-emerald-300">{money(user.walletBalance)}</p>
+          <div><p className="font-semibold text-emerald-300">{money(user.walletBalance)}</p>{user.id && <button type="button" onClick={() => setAdjusting(user)} className="mt-2 inline-flex items-center gap-1 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-[11px] font-medium text-indigo-200 transition hover:border-indigo-400 hover:bg-indigo-500/20"><CircleDollarSign size={13} /> Cộng / trừ tiền</button>}</div>
           <p className="text-sm text-slate-300">{number(user.purchaseCount)} đơn</p>
           <p className="text-xs text-slate-400">{dateTime(user.createdAt)}</p>
         </article>)}
@@ -70,7 +72,71 @@ function UsersDirectory({ authorized, setMessage }: SharedProps) {
       </div>
     </div>
     <Pagination data={data} onPage={(next) => setQuery((current) => ({ ...current, page: next }))} />
-  </ManagementPanel>;
+  </ManagementPanel>{adjusting?.id && <WalletAdjustmentDialog user={adjusting} authorized={authorized}
+    close={() => setAdjusting(null)} saved={async (result) => {
+      setMessage(`${result.direction === 'CREDIT' ? 'Đã cộng' : 'Đã trừ'} ${money(Math.abs(result.amount))}. Số dư mới: ${money(result.balanceAfter)}.`);
+      setAdjusting(null); await load();
+    }} />}</>;
+}
+
+interface WalletAdjustmentResult {
+  direction: 'CREDIT' | 'DEBIT'; amount: number; balanceBefore: number; balanceAfter: number;
+}
+
+function WalletAdjustmentDialog({ user, authorized, close, saved }: {
+  user: UserRecord; authorized: AuthorizedRequest; close(): void;
+  saved(result: WalletAdjustmentResult): Promise<void>;
+}) {
+  const [direction, setDirection] = useState<'CREDIT' | 'DEBIT'>('CREDIT');
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const numericAmount = Number(amount);
+  const validAmount = Number.isSafeInteger(numericAmount) && numericAmount > 0;
+  const projected = direction === 'CREDIT' ? user.walletBalance + (validAmount ? numericAmount : 0)
+    : user.walletBalance - (validAmount ? numericAmount : 0);
+
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape' && !busy) close(); };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [busy, close]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setError('');
+    if (!validAmount) return setError('Số tiền phải là số nguyên dương.');
+    if (direction === 'DEBIT' && numericAmount > user.walletBalance) return setError('Không thể trừ quá số dư hiện tại.');
+    if (reason.trim().length < 3) return setError('Hãy nhập lý do ít nhất 3 ký tự để lưu vào sổ ví.');
+    if (direction === 'DEBIT' && !window.confirm(`Xác nhận trừ ${money(numericAmount)} của ${person(user)}?`)) return;
+    setBusy(true);
+    try {
+      if (!user.id) throw new Error('Không tìm thấy ID khách hàng.');
+      const response = await authorized(`/admin/users/${user.id}/wallet-adjustments`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-request-id': requestId() },
+        body: JSON.stringify({ direction, amount: numericAmount, reason: reason.trim() }),
+      });
+      const body = await json<WalletAdjustmentResult>(response);
+      if (!response.ok) throw new Error(message(body, 'Không thể điều chỉnh số dư.'));
+      await saved(body);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Không thể điều chỉnh số dư.'); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/80 p-0 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="wallet-adjustment-title" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) close(); }}>
+    <form onSubmit={(event) => void submit(event)} className="w-full max-w-xl rounded-t-3xl border border-slate-700 bg-slate-900 p-5 shadow-2xl sm:rounded-3xl sm:p-6">
+      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-indigo-300">Điều chỉnh ví khách hàng</p><h3 id="wallet-adjustment-title" className="mt-1 text-xl font-semibold text-white">{person(user)}</h3><p className="mt-1 text-xs text-slate-400">Telegram {user.telegramId} · Hiện có {money(user.walletBalance)}</p></div><button type="button" onClick={close} disabled={busy} className="rounded-xl border border-slate-700 p-2 text-slate-400 hover:text-white" aria-label="Đóng"><X size={18} /></button></div>
+      <div className="mt-5 grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => setDirection('CREDIT')} className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-3 text-sm font-medium transition ${direction === 'CREDIT' ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200' : 'border-slate-700 text-slate-400 hover:border-slate-600'}`}><PlusCircle size={17} /> Cộng tiền</button>
+        <button type="button" onClick={() => setDirection('DEBIT')} className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-3 text-sm font-medium transition ${direction === 'DEBIT' ? 'border-rose-400/60 bg-rose-500/15 text-rose-200' : 'border-slate-700 text-slate-400 hover:border-slate-600'}`}><MinusCircle size={17} /> Trừ tiền</button>
+      </div>
+      <label className="mt-4 block text-xs font-medium uppercase tracking-wide text-slate-400">Số tiền (VNĐ)<input autoFocus inputMode="numeric" className="input mt-2" value={amount} onChange={(event) => setAmount(event.target.value.replace(/\D/g, '').slice(0, 13))} placeholder="Ví dụ: 100000" /></label>
+      <label className="mt-4 block text-xs font-medium uppercase tracking-wide text-slate-400">Lý do<textarea className="input mt-2 min-h-24 resize-y" maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Ví dụ: Hoàn tiền đơn ORD-... hoặc điều chỉnh sai lệch" /></label>
+      <div className="mt-4 grid grid-cols-3 gap-2 rounded-2xl border border-slate-800 bg-slate-950/70 p-3 text-center text-xs"><div><p className="text-slate-500">Trước</p><p className="mt-1 font-medium text-slate-200">{money(user.walletBalance)}</p></div><div><p className="text-slate-500">Thay đổi</p><p className={`mt-1 font-medium ${direction === 'CREDIT' ? 'text-emerald-300' : 'text-rose-300'}`}>{direction === 'CREDIT' ? '+' : '-'}{money(validAmount ? numericAmount : 0)}</p></div><div><p className="text-slate-500">Sau</p><p className={`mt-1 font-medium ${projected < 0 ? 'text-rose-300' : 'text-white'}`}>{money(projected)}</p></div></div>
+      {error && <p className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>}
+      <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={close} disabled={busy} className="button-secondary px-4 py-2.5">Hủy</button><button type="submit" disabled={busy || !validAmount || reason.trim().length < 3 || projected < 0} className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 ${direction === 'CREDIT' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-rose-600 hover:bg-rose-500'}`}>{busy ? <LoaderCircle size={16} className="animate-spin" /> : direction === 'CREDIT' ? <PlusCircle size={16} /> : <MinusCircle size={16} />}{direction === 'CREDIT' ? 'Xác nhận cộng tiền' : 'Xác nhận trừ tiền'}</button></div>
+    </form>
+  </div>;
 }
 
 function WalletLedger({ authorized, setMessage }: SharedProps) {
