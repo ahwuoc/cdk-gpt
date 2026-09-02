@@ -875,6 +875,15 @@ integration('digital store on a MongoDB replica set', () => {
 
     const second = await UserModel.create({ telegramId: '991122334455', status: UserStatus.ACTIVE, walletBalance: 0,
       referralCode: 'BROADCAST2', purchaseCount: 0, deletedAt: null });
+    await messaging.receiveUser({ userId: second._id.toString(), body: 'Tin nhắn mới nhất.',
+      idempotencyKey: 'second-user-support-reply' });
+    const inbox = await messaging.listConversations({ page: 1, limit: 20 });
+    expect(inbox.total).toBe(2);
+    expect(inbox.items[0]).toMatchObject({ messageCount: 1, user: { telegramId: second.telegramId },
+      lastMessage: { body: 'Tin nhắn mới nhất.', direction: 'USER_TO_ADMIN' } });
+    const searchedInbox = await messaging.listConversations({ page: 1, limit: 20, search: user.telegramId });
+    expect(searchedInbox.items.map((item) => item.user.telegramId)).toEqual([user.telegramId]);
+
     const campaign = await NotificationModel.create({ adminId, channel: 'ADMIN_WEB', title: 'Telegram broadcast',
       body: 'Thông báo thử nghiệm.', status: 'PENDING', referenceType: 'ADMIN_BROADCAST', metadata: {} });
     const deliveredTo: string[] = [];

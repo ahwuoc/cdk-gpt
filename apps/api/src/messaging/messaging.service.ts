@@ -9,7 +9,7 @@ import {
   claimableCustomerMessageDelivery, customerMessageId,
 } from '@store/database';
 import { UserStatus, isMongoDuplicateKey } from '@store/shared';
-import type { AdminMessageQueryDto, BroadcastQueryDto, ReceiveSupportMessageDto } from './messaging.dto';
+import type { AdminConversationQueryDto, AdminMessageQueryDto, BroadcastQueryDto, ReceiveSupportMessageDto } from './messaging.dto';
 import { ADMIN_BROADCAST_QUEUE, type AdminBroadcastQueueClient } from './admin-broadcast.queue';
 import { TelegramMessenger } from './telegram-messenger';
 
@@ -87,6 +87,42 @@ export class MessagingService {
       page, limit, total, totalPages: Math.ceil(total / limit) };
   }
 
+  async listConversations(query: AdminConversationQueryDto) {
+    const page = query.page ?? 1; const limit = query.limit ?? 50;
+    const search = query.search?.trim().replace(/^@/, '');
+    const searchRegex = search ? new RegExp(escapeRegex(search), 'i') : undefined;
+    type ConversationAggregate = {
+      items: Array<{
+        messageCount: number;
+        lastMessage: CustomerMessage & { _id: Types.ObjectId };
+        user: User & { _id: Types.ObjectId };
+      }>;
+      metadata: Array<{ total: number }>;
+    };
+    const [result] = await this.messages.aggregate<ConversationAggregate>([
+      { $match: { conversationType: CustomerConversationType.DIRECT } },
+      { $sort: { createdAt: -1, _id: -1 } },
+      { $group: { _id: '$userId', lastMessage: { $first: '$$ROOT' }, messageCount: { $sum: 1 } } },
+      { $lookup: { from: this.users.collection.name, localField: '_id', foreignField: '_id', as: 'user' } },
+      { $unwind: '$user' },
+      { $match: { 'user.deletedAt': null, ...(searchRegex ? { $or: [
+        { 'user.telegramId': searchRegex }, { 'user.username': searchRegex },
+        { 'user.displayName': searchRegex }, { 'lastMessage.body': searchRegex },
+      ] } : {}) } },
+      { $sort: { 'lastMessage.createdAt': -1, 'lastMessage._id': -1 } },
+      { $facet: {
+        items: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+        metadata: [{ $count: 'total' }],
+      } },
+    ]);
+    const items = (result?.items ?? []).map((item) => ({
+      user: publicUser(item.user), messageCount: item.messageCount,
+      lastMessage: publicMessage(item.lastMessage, item.user),
+    }));
+    const total = result?.metadata[0]?.total ?? 0;
+    return { items, page, limit, total, totalPages: Math.ceil(total / limit) };
+  }
+
   async sendBroadcast(adminId: string, rawBody: string, requestId?: string) {
     const body = normalizeBody(rawBody); const adminObjectId = new Types.ObjectId(adminId);
     const key = `admin-broadcast:${requestId?.trim() || randomUUID()}`;
@@ -153,4 +189,8 @@ function publicMessage(message: CustomerMessage & { _id: Types.ObjectId }, user?
     status: message.status, errorCode: message.errorCode ?? null, createdAt: message.createdAt,
     user: user ? { id: user._id.toString(), telegramId: user.telegramId,
       username: user.username ?? null, displayName: user.displayName ?? null } : null };
+}
+function publicUser(user: User & { _id: Types.ObjectId }) {
+  return { id: user._id.toString(), telegramId: user.telegramId,
+    username: user.username ?? null, displayName: user.displayName ?? null };
 }

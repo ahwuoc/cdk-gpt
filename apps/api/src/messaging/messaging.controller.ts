@@ -4,7 +4,7 @@ import { PUBLIC_ROUTE } from '../auth/auth.guard';
 import type { AdminClaims } from '../auth/auth.service';
 import { RequirePermissions } from '../auth/permissions.guard';
 import { assertSharedSecret } from '../auth/shared-secret';
-import { AdminMessageQueryDto, BroadcastQueryDto, ReceiveSupportMessageDto,
+import { AdminConversationQueryDto, AdminMessageQueryDto, BroadcastQueryDto, ReceiveSupportMessageDto,
   SendBroadcastMessageDto, SendDirectMessageDto } from './messaging.dto';
 import { MessagingService } from './messaging.service';
 
@@ -14,6 +14,9 @@ export class MessagingController {
 
   @Get('admin/messages') @RequirePermissions('bot.manage')
   list(@Query() query: AdminMessageQueryDto) { return this.messaging.list(query); }
+
+  @Get('admin/messages/conversations') @RequirePermissions('bot.manage')
+  conversations(@Query() query: AdminConversationQueryDto) { return this.messaging.listConversations(query); }
 
   @Post('admin/messages/direct') @RequirePermissions('bot.manage')
   direct(@Body() body: SendDirectMessageDto, @Req() request: FastifyRequest & { admin: AdminClaims },

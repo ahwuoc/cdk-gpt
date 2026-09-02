@@ -40,6 +40,17 @@ export class AdminMessageQueryDto {
   limit = 30;
 }
 
+export class AdminConversationQueryDto {
+  @IsOptional() @Transform(({ value }) => String(value ?? '').trim()) @IsString() @Length(1, 100)
+  search?: string;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1)
+  page = 1;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100)
+  limit = 50;
+}
+
 export class BroadcastQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1)
   page = 1;
