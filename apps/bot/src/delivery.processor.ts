@@ -2,14 +2,18 @@ import { UnrecoverableError, type Job } from 'bullmq';
 import mongoose, { Types } from 'mongoose';
 import type { Telegram } from 'telegraf';
 import {
-  InventoryItemModel, InventoryRepository, NotificationModel, OrderModel, OrderRepository, ProductModel, UserModel,
+  InventoryItemModel, InventoryRepository, NotificationModel, OrderModel, OrderRepository, PaymentRequestModel,
+  ProductModel, UserModel, type Order,
 } from '@store/database';
 import { EncryptionService } from '@store/encryption';
 import { DeliveryStatus, InventoryStatus, OrderStatus } from '@store/shared';
 
 export interface DeliveryJob { orderId: string; }
 export interface TelegramBotClient {
-  telegram: { sendMessage(chatId: string | number, text: string, extra?: Parameters<Telegram['sendMessage']>[2]): Promise<{ message_id: number }> };
+  telegram: {
+    sendMessage(chatId: string | number, text: string, extra?: Parameters<Telegram['sendMessage']>[2]): Promise<{ message_id: number }>;
+    deleteMessage?(chatId: string | number, messageId: number): Promise<unknown>;
+  };
 }
 
 export class DeliveryProcessor {
@@ -48,7 +52,7 @@ export class DeliveryProcessor {
     catch { throw new UnrecoverableError('Inventory payload cannot be decrypted'); }
     const message = renderTemplate(product.deliveryTemplate, payload);
     try {
-      const sent = await this.bot.telegram.sendMessage(user.telegramId, message);
+      const sent = await this.bot.telegram.sendMessage(user.telegramId, message, deliveryCopyKeyboard(message));
       const session = await mongoose.startSession();
       try {
         await session.withTransaction(async () => {
@@ -61,6 +65,7 @@ export class DeliveryProcessor {
           await OrderModel.updateOne({ _id: orderId }, { $set: { 'metadata.telegramMessageId': sent.message_id } }, { session });
         }, { writeConcern: { w: 'majority' } });
       } finally { await session.endSession(); }
+      await this.clearCheckoutPrompt(claimed, user.telegramId);
       return { status: 'delivered' };
     } catch (error) {
       const classification = classifyTelegramError(error);
@@ -74,6 +79,21 @@ export class DeliveryProcessor {
       // Timeout or post-send database error is ambiguous: retain RESERVED and require an admin decision.
       throw new UnrecoverableError('Ambiguous delivery result; inventory retained for manual review');
     }
+  }
+
+  private async clearCheckoutPrompt(order: Order, telegramId: string) {
+    try {
+      const paymentRequestId = order.metadata?.paymentRequestId;
+      if (typeof paymentRequestId !== 'string' || !Types.ObjectId.isValid(paymentRequestId) ||
+        !this.bot.telegram.deleteMessage) return;
+      const request = await PaymentRequestModel.findById(paymentRequestId).select('metadata.telegramPrompt').lean();
+      const prompt = request?.metadata?.telegramPrompt;
+      if (!prompt || typeof prompt !== 'object' || Array.isArray(prompt)) return;
+      const chatId = String((prompt as Record<string, unknown>).chatId ?? '');
+      const messageId = Number((prompt as Record<string, unknown>).messageId);
+      if (chatId !== telegramId || !Number.isSafeInteger(messageId) || messageId < 1) return;
+      await this.bot.telegram.deleteMessage(chatId, messageId);
+    } catch { /* Cleanup must never turn a successful delivery into a failed order. */ }
   }
 
   async onFailed(job: Job<DeliveryJob> | undefined, error: Error) {
@@ -95,6 +115,23 @@ function renderTemplate(template: string, payload: Record<string, unknown>) {
   return template.replace(/\{\{\s*([^{}]+?)\s*\}\}/gu, (_, key: string) => {
     const value = payload[key.trim()]; return value === undefined || value === null ? '' : String(value);
   });
+}
+
+function deliveryCopyKeyboard(message: string): Parameters<Telegram['sendMessage']>[2] {
+  const parts = copyTextParts(message);
+  const inline_keyboard = parts.map((text, index) => [{
+    text: parts.length === 1 ? '📋 Sao chép tài khoản' : `📋 Sao chép ${index + 1}/${parts.length}`,
+    copy_text: { text },
+  }]);
+  // Telegraf 4.16 bundles Bot API types older than copy_text, but forwards the
+  // current Bot API object unchanged to Telegram.
+  return { reply_markup: { inline_keyboard } } as unknown as Parameters<Telegram['sendMessage']>[2];
+}
+
+function copyTextParts(message: string) {
+  const parts: string[] = [];
+  for (let offset = 0; offset < message.length; offset += 256) parts.push(message.slice(offset, offset + 256));
+  return parts;
 }
 
 function classifyTelegramError(error: unknown): 'TEMPORARY_CONFIRMED_FAILURE' | 'PERMANENT' | 'AMBIGUOUS' {

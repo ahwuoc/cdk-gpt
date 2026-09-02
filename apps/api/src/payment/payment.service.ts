@@ -197,6 +197,19 @@ export class PaymentService {
       cancelled: wasUserCancelled(result), checkout: publicQuickCheckout(checkout) };
   }
 
+  async saveBankCheckoutPrompt(requestId: string, userId: string, chatId: string, messageId: number) {
+    if (!Types.ObjectId.isValid(requestId) || !Types.ObjectId.isValid(userId) || !/^-?\d{1,32}$/.test(chatId) ||
+      !Number.isSafeInteger(messageId) || messageId < 1) {
+      throw new BadRequestException('Thông tin tin nhắn thanh toán không hợp lệ');
+    }
+    const request = await this.requests.findOneAndUpdate({ _id: requestId, userId, provider: BANK_PROVIDER,
+      deletedAt: null, 'metadata.quickCheckout': { $exists: true } }, { $set: {
+      'metadata.telegramPrompt': { chatId, messageId },
+    } }, { new: true }).select('_id').lean();
+    if (!request) throw new NotFoundException('Không tìm thấy mã thanh toán của bạn');
+    return { id: request._id.toString(), saved: true };
+  }
+
   private assertSameBankCheckout(request: PaymentRequestDocument, userId: string, productId: string,
     quantity: number, expectedUnitPrice: number) {
     const checkout = quickCheckoutFrom(request);

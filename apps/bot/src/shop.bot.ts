@@ -402,9 +402,11 @@ async function createQuickCheckout(ctx: Context, input: { userId: string; produc
       [Markup.button.callback('🛍 Chọn sản phẩm khác', 'menu:products'), Markup.button.callback('🏠 Menu chính', 'menu:home')],
     ]);
     try {
-      await ctx.replyWithPhoto(body.qrUrl, { caption, ...keyboard });
+      const sent = await ctx.replyWithPhoto(body.qrUrl, { caption, ...keyboard });
+      await rememberCheckoutPrompt(apiUrl, botApiSecret, body.id, input.userId, ctx.chat.id, sent.message_id);
     } catch {
-      await ctx.reply(`${caption}\n\nQR: ${body.qrUrl}`, keyboard);
+      const sent = await ctx.reply(`${caption}\n\nQR: ${body.qrUrl}`, keyboard);
+      await rememberCheckoutPrompt(apiUrl, botApiSecret, body.id, input.userId, ctx.chat.id, sent.message_id);
     }
   } catch (error) {
     await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể tạo mã thanh toán nhanh.'}`, inlineMenu());
@@ -425,14 +427,21 @@ async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, bot
     if (body.status === 'APPROVED') {
       const receivedAmount = body.receivedAmount ?? body.amount ?? 0;
       if (body.checkout?.status === 'FULFILLED') {
+        await clearPaidPrompt(ctx);
         const orderCodes = body.checkout.orderCodes?.length ? `\nMã đơn: ${body.checkout.orderCodes.join(', ')}` : '';
-        await ctx.reply(`✅ Đã nhận thanh toán ${formatMoney(receivedAmount)} và tạo ${body.checkout.quantity ?? 0} đơn *${markdownEscape(body.checkout.productName ?? 'sản phẩm')}*.${orderCodes}\n\nHệ thống đang gửi hàng tự động.`,
-          { parse_mode: 'Markdown', ...inlineMenu() });
+        await ctx.reply(`✅ Thanh toán thành công ${formatMoney(receivedAmount)}\n🛍 *${markdownEscape(body.checkout.productName ?? 'Sản phẩm')}* × ${body.checkout.quantity ?? 0}${orderCodes}\n\n📦 Tài khoản đang được gửi ngay bên dưới.`,
+          { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[
+            Markup.button.callback('📦 Xem đơn hàng', 'menu:orders'), Markup.button.callback('🏠 Menu chính', 'menu:home'),
+          ]]) });
         return;
       }
       if (body.checkout?.status === 'FAILED') {
+        await clearPaidPrompt(ctx);
         const refreshed = await data.users.findById(user._id).select('walletBalance').lean();
-        await ctx.reply(`⚠️ Đã nhận ${formatMoney(receivedAmount)} nhưng chưa thể tạo đơn tự động.\n\n${body.checkout.fulfillmentError ?? 'Vui lòng chọn mua lại.'}\nSố tiền hiện nằm trong ví: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, inlineMenu());
+        await ctx.reply(`⚠️ Đã nhận ${formatMoney(receivedAmount)} nhưng chưa thể tạo đơn tự động.\n\n${body.checkout.fulfillmentError ?? 'Vui lòng chọn mua lại.'}\nSố tiền hiện nằm trong ví: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, {
+          ...Markup.inlineKeyboard([[Markup.button.callback('🛍 Chọn mua lại', 'menu:products'),
+            Markup.button.callback('💰 Xem số dư', 'menu:balance')]]),
+        });
         return;
       }
       if (body.checkout) {
@@ -442,8 +451,12 @@ async function checkDeposit(ctx: Context, requestId: string, apiUrl: string, bot
         });
         return;
       }
+      await clearPaidPrompt(ctx);
       const refreshed = await data.users.findById(user._id).select('walletBalance').lean();
-      await ctx.reply(`✅ Đã nhận ${formatMoney(receivedAmount)}. Số dư hiện tại: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, inlineMenu());
+      await ctx.reply(`✅ Đã nhận ${formatMoney(receivedAmount)}. Số dư hiện tại: ${formatMoney(refreshed?.walletBalance ?? user.walletBalance)}.`, {
+        ...Markup.inlineKeyboard([[Markup.button.callback('💰 Xem số dư', 'menu:balance'),
+          Markup.button.callback('🏠 Menu chính', 'menu:home')]]),
+      });
       return;
     }
     if (body.cancelled) {
@@ -512,6 +525,25 @@ async function cancelQuickCheckout(ctx: Context, requestId: string, apiUrl: stri
   } catch (error) {
     await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể hủy mã thanh toán.'}`, inlineMenu());
   }
+}
+
+async function rememberCheckoutPrompt(apiUrl: string, botApiSecret: string, requestId: string, userId: string,
+  chatId: string | number, messageId: number) {
+  try {
+    const response = await fetch(`${apiUrl}/api/bot/checkouts/${requestId}/prompt`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId, chatId: String(chatId), messageId }),
+    });
+    if (!response.ok) console.error({ event: 'checkout-prompt-save-failed', requestId, status: response.status });
+  } catch (error) {
+    console.error({ event: 'checkout-prompt-save-failed', requestId,
+      message: error instanceof Error ? error.message : 'unknown error' });
+  }
+}
+
+async function clearPaidPrompt(ctx: Context) {
+  try { await ctx.deleteMessage(); return; } catch { /* The delivery worker may already have removed the QR. */ }
+  try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* Old prompt can safely remain read-only. */ }
 }
 
 function readErrorMessage(message: unknown, fallback: string) {

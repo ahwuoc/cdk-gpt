@@ -6,7 +6,7 @@ import type { AdminClaims } from '../auth/auth.service';
 import { assertSharedSecret, sharedSecretMatches } from '../auth/shared-secret';
 import { BotConfigService } from '../bot-config/bot-config.service';
 import { ApprovePaymentRequestDto, CakeCallbackDto, CheckBotDepositDto, CreateBotCheckoutDto,
-  CreateBotDepositDto, CreatePaymentRequestDto, PaymentWebhookDto } from './payment.dto';
+  CreateBotDepositDto, CreatePaymentRequestDto, PaymentWebhookDto, SaveBotCheckoutPromptDto } from './payment.dto';
 import { PaymentService } from './payment.service';
 
 @Controller()
@@ -47,6 +47,12 @@ export class PaymentController {
   cancelBotCheckout(@Param('id') id: string, @Body() body: CheckBotDepositDto, @Headers('x-bot-secret') secret?: string) {
     assertSharedSecret(secret, 'BOT_API_SECRET', 'Invalid bot credential');
     return this.payments.cancelBankCheckout(id, body.userId);
+  }
+  @Post('bot/checkouts/:id/prompt') @SetMetadata(PUBLIC_ROUTE, true)
+  saveBotCheckoutPrompt(@Param('id') id: string, @Body() body: SaveBotCheckoutPromptDto,
+    @Headers('x-bot-secret') secret?: string) {
+    assertSharedSecret(secret, 'BOT_API_SECRET', 'Invalid bot credential');
+    return this.payments.saveBankCheckoutPrompt(id, body.userId, body.chatId, body.messageId);
   }
   @Post('bot/deposits/:id/check') @SetMetadata(PUBLIC_ROUTE, true)
   checkBotDeposit(@Param('id') id: string, @Body() body: CheckBotDepositDto, @Headers('x-bot-secret') secret?: string) {

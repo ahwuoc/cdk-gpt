@@ -41,6 +41,15 @@ export class CheckBotDepositDto {
   userId!: string;
 }
 
+export class SaveBotCheckoutPromptDto extends CheckBotDepositDto {
+  @Transform(({ value }) => String(value ?? '').trim())
+  @Matches(/^-?\d{1,32}$/)
+  chatId!: string;
+
+  @Type(() => Number) @IsInt() @Min(1) @Max(Number.MAX_SAFE_INTEGER)
+  messageId!: number;
+}
+
 export class CakeCallbackTransactionDto {
   @Transform(({ value }) => String(value ?? '').trim())
   @IsString() @Matches(/^\d{1,100}$/, { message: 'transactionID phải là chuỗi số' })

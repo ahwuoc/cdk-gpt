@@ -27,6 +27,10 @@ export class BotRuntimeManager {
       if (!this.current) throw new Error('Telegram bot is not active');
       return this.current.telegram.sendMessage(chatId, text, extra);
     },
+    deleteMessage: (chatId: string | number, messageId: number) => {
+      if (!this.current) throw new Error('Telegram bot is not active');
+      return this.current.telegram.deleteMessage(chatId, messageId);
+    },
   };
 
   constructor(private readonly environmentToken: string, private readonly apiUrl: string,

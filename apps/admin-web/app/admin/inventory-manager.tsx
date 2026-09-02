@@ -105,7 +105,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
       <label className="relative md:col-span-2 xl:col-span-2"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-10 font-mono text-xs" value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value, page: 1 }))} placeholder="Tìm theo ID hàng hoặc ID lô" /></label>
     </div>
 
-    <div className="mt-4 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
+    <div className="mt-4 max-h-[min(68vh,720px)] divide-y divide-slate-800 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl border border-slate-800 bg-slate-950/60">
       {busy && <Loading />}
       {!busy && data.items.map((item) => <InventoryRow key={item.id} item={item} product={products.find((product) => product._id === item.productId)}
         pending={actionId === item.id || actionId === `batch:${item.importBatchId}`} onRemove={() => void removeItem(item)}

@@ -290,6 +290,9 @@ integration('digital store on a MongoDB replica set', () => {
     expect(checkout).toMatchObject({ amount: 200, quantity: 2, unitPrice: 100, productName: product.name, status: PaymentRequestStatus.PENDING });
     expect(checkout.qrUrl).toContain('amount=200');
     expect(checkout.transferContent).toMatch(/^DON[A-F0-9]+$/);
+    await service.saveBankCheckoutPrompt(checkout.id, user._id.toString(), user.telegramId, 4321);
+    expect((await PaymentRequestModel.findById(checkout.id).lean())?.metadata.telegramPrompt)
+      .toEqual({ chatId: user.telegramId, messageId: 4321 });
     // Creating a QR is only a payment intent. Unpaid customers must never be
     // able to hold real inventory and block everyone else from buying it.
     expect(await InventoryItemModel.countDocuments({ productId: product._id, status: InventoryStatus.AVAILABLE })).toBe(2);
@@ -317,6 +320,21 @@ integration('digital store on a MongoDB replica set', () => {
     expect(new Set(queued).size).toBe(2);
     const retried = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-request');
     expect(retried.id).toBe(checkout.id);
+    const order = await OrderModel.findOne({ userId: user._id }).sort({ createdAt: 1 }).lean();
+    expect(order).toBeTruthy();
+    let copyText = '';
+    const deletedPrompts: Array<[string | number, number]> = [];
+    const delivery = new DeliveryProcessor({ telegram: {
+      sendMessage: async (_chatId, _message, extra) => {
+        copyText = ((extra as { reply_markup?: { inline_keyboard?: Array<Array<{ copy_text?: { text?: string } }>> } })
+          .reply_markup?.inline_keyboard?.[0]?.[0]?.copy_text?.text ?? '');
+        return { message_id: 9876 };
+      },
+      deleteMessage: async (chatId, messageId) => { deletedPrompts.push([chatId, messageId]); },
+    } }, []);
+    await delivery.process({ id: 'copy-button-delivery', data: { orderId: order!._id.toString() } } as never);
+    expect(copyText).toContain('Login:');
+    expect(deletedPrompts).toEqual([[user.telegramId, 4321]]);
   });
 
   test('a stock race cannot create a partial quick-checkout order or lose the bank payment', async () => {
