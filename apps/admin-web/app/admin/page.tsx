@@ -1,8 +1,9 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Bot, Boxes, CircleDollarSign, Eye, FileUp, KeyRound, LayoutDashboard, ListChecks, LogOut,
-  MessagesSquare, MessageSquareWarning, Package, QrCode, RefreshCw, ServerCog, ShoppingCart, Tags, Users, WalletCards } from 'lucide-react';
+import { Activity, Bot, Boxes, CheckCircle2, CircleDollarSign, Eye, FileUp, Info, KeyRound, LayoutDashboard,
+  ListChecks, LogOut, MessagesSquare, MessageSquareWarning, Package, QrCode, RefreshCw, ServerCog, ShoppingCart,
+  Tags, TriangleAlert, Users, WalletCards, X } from 'lucide-react';
 import { inventoryPatternExample, parseInventoryPatternLine, parseInventoryPatternTemplate } from '@store/shared';
 import { CategoryManager } from './category-manager';
 import { ComplaintManager } from './complaint-manager';
@@ -52,6 +53,9 @@ interface BotConfig {
 }
 type AdminSection = 'dashboard' | 'orders' | 'reports' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
   | 'messages' | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
+type FlashMessageKind = 'success' | 'error' | 'warning' | 'info';
+interface FlashMessageState { id: number; text: string; kind: FlashMessageKind; }
+const flashDurationMs = 6_000;
 
 export default function AdminPage() {
   const [tokens, setTokens] = useState<Tokens | null>(null);
@@ -78,10 +82,33 @@ export default function AdminPage() {
     apiUrl: '', telegramWebhookUrl: '', qstashUrl: 'https://qstash.upstash.io', taskBaseUrl: '' });
   const [qstashToken, setQstashToken] = useState('');
   const [botBusy, setBotBusy] = useState(false);
-  const [botMessage, setBotMessage] = useState(''); const [botMessageKind, setBotMessageKind] = useState<'error' | 'success'>('success');
-  const [message, setMessage] = useState('');
+  const [flash, setFlash] = useState<FlashMessageState | null>(null);
+  const [flashRemainingMs, setFlashRemainingMs] = useState(flashDurationMs);
   const [section, setSection] = useState<AdminSection>('dashboard');
   const selectedProduct = products.find((product) => product._id === productId);
+
+  const setMessage = useCallback((text: string, kind?: FlashMessageKind) => {
+    const normalized = text.trim();
+    if (normalized) setFlashRemainingMs(flashDurationMs);
+    setFlash((current) => normalized
+      ? { id: (current?.id ?? 0) + 1, text: normalized, kind: kind ?? flashMessageKind(normalized) }
+      : null);
+  }, []);
+
+  useEffect(() => {
+    if (!flash) return;
+    const activeId = flash.id;
+    const expiresAt = Date.now() + flashDurationMs;
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, expiresAt - Date.now());
+      setFlashRemainingMs(remaining);
+      if (remaining === 0) {
+        window.clearInterval(timer);
+        setFlash((current) => current?.id === activeId ? null : current);
+      }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [flash]);
 
   const navigate = useCallback((next: AdminSection) => {
     setSection(next);
@@ -178,7 +205,7 @@ export default function AdminPage() {
     queueMicrotask(() => void Promise.all([loadProducts(controller.signal), loadCategories(controller.signal)])
       .catch((error) => { if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message); }));
     return () => controller.abort();
-  }, [loadCategories, loadProducts, tokens?.accessToken]);
+  }, [loadCategories, loadProducts, setMessage, tokens?.accessToken]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage('');
@@ -242,7 +269,8 @@ export default function AdminPage() {
       setItemId(id);
       const response = await authorized(`/admin/inventory/${id}/payload`, { headers: { 'x-request-id': requestId() } });
       const body = await response.json() as RevealedInventory & { message?: string };
-      if (!response.ok) throw new Error(body.message ?? 'Access denied'); setPayload(body);
+      if (!response.ok) throw new Error(body.message ?? 'Access denied');
+      setPayload(body); setMessage('Đã tải và định dạng dữ liệu kho. Lượt xem đã được ghi vào nhật ký.');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to read item'); }
     finally { setBusy(false); }
   }
@@ -255,7 +283,7 @@ export default function AdminPage() {
   }, [authorized]);
 
   const loadBotConfig = useCallback(async () => {
-    setBotBusy(true); setBotMessage('');
+    setBotBusy(true); setMessage('');
     try {
       const response = await authorized('/admin/bot-config');
       const body = (await readApiBody(response)) as BotConfig; if (!response.ok) throw new Error(apiErrorMessage(body, 'Không thể tải cấu hình bot'));
@@ -267,19 +295,19 @@ export default function AdminPage() {
       if (body.runtime) setRuntimeConfig(runtimeWithPublicDefaults(body.runtime));
       setQstashToken('');
       await loadBankOptions();
-      setBotMessageKind('success'); setBotMessage(body.configured ? 'Đã tải trạng thái bot.' : 'Chưa có token Telegram nào được lưu.');
+      setMessage(body.configured ? 'Đã tải trạng thái bot.' : 'Chưa có token Telegram nào được lưu.', body.configured ? 'success' : 'warning');
     } catch (error) {
-      setBotMessageKind('error'); setBotMessage(error instanceof Error ? error.message : 'Không thể tải cấu hình bot');
+      setMessage(error instanceof Error ? error.message : 'Không thể tải cấu hình bot', 'error');
     }
     finally { setBotBusy(false); }
-  }, [authorized, loadBankOptions]);
+  }, [authorized, loadBankOptions, setMessage]);
 
   useEffect(() => {
     if (tokens?.accessToken) queueMicrotask(() => void loadBotConfig());
   }, [loadBotConfig, tokens?.accessToken]);
 
   async function saveWelcomeMessage(event: FormEvent) {
-    event.preventDefault(); setBotBusy(true); setBotMessage('');
+    event.preventDefault(); setBotBusy(true); setMessage('');
     try {
       const message = welcomeMessage.trim();
       if (!message) throw new Error('Hãy nhập lời chào cho bot.');
@@ -287,15 +315,15 @@ export default function AdminPage() {
         headers: { 'content-type': 'application/json', 'x-request-id': requestId() }, body: JSON.stringify({ message }) });
       const body = (await readApiBody(response)) as Partial<BotConfig>; if (!response.ok) throw new Error(apiErrorMessage(body, 'Không thể lưu lời chào'));
       setBotConfig((current) => current ? { ...current, ...body, welcomeMessage: message } : { configured: false, ...body, welcomeMessage: message });
-      setBotMessageKind('success'); setBotMessage(`Đã lưu lời chào. Bot sẽ nạp nội dung mới trong tối đa ${body.reloadWithinSeconds ?? 15} giây.`);
+      setMessage(`Đã lưu lời chào. Bot sẽ nạp nội dung mới trong tối đa ${body.reloadWithinSeconds ?? 15} giây.`, 'success');
     } catch (error) {
-      setBotMessageKind('error'); setBotMessage(error instanceof Error ? error.message : 'Không thể lưu lời chào');
+      setMessage(error instanceof Error ? error.message : 'Không thể lưu lời chào', 'error');
     }
     finally { setBotBusy(false); }
   }
 
   async function saveBotToken(event: FormEvent) {
-    event.preventDefault(); setBotBusy(true); setBotMessage('');
+    event.preventDefault(); setBotBusy(true); setMessage('');
     try {
       const token = normalizeBotToken(botToken);
       if (!token) throw new Error('Hãy nhập token Telegram từ @BotFather.');
@@ -304,16 +332,15 @@ export default function AdminPage() {
         body: JSON.stringify({ token }) });
       const body = (await readApiBody(response)) as BotConfig; if (!response.ok) throw new Error(apiErrorMessage(body, 'Token Telegram không hợp lệ'));
       setBotConfig((current) => current ? { ...current, ...body } : body); setBotToken('');
-      setBotMessageKind('success');
-      setBotMessage(`Đã lưu token. Bot @${body.botUsername ?? body.botId} sẽ tự nạp lại trong tối đa ${body.reloadWithinSeconds} giây.`);
+      setMessage(`Đã lưu token. Bot @${body.botUsername ?? body.botId} sẽ tự nạp lại trong tối đa ${body.reloadWithinSeconds} giây.`, 'success');
     } catch (error) {
-      setBotMessageKind('error'); setBotMessage(error instanceof Error ? error.message : 'Không thể cập nhật token');
+      setMessage(error instanceof Error ? error.message : 'Không thể cập nhật token', 'error');
     }
     finally { setBotBusy(false); }
   }
 
   async function saveBankConfig(event: FormEvent) {
-    event.preventDefault(); setBotBusy(true); setBotMessage('');
+    event.preventDefault(); setBotBusy(true); setMessage('');
     try {
       if (!bankId.trim() || !bankAccountNo.trim() || !bankAccountName.trim()) throw new Error('Hãy nhập đủ mã ngân hàng, số tài khoản và tên tài khoản.');
       const response = await authorized('/admin/bot-config/bank', { method: 'PUT',
@@ -323,30 +350,29 @@ export default function AdminPage() {
       const body = (await readApiBody(response)) as { bank?: BankConfig; reloadWithinSeconds?: number; message?: string };
       if (!response.ok || !body.bank) throw new Error(apiErrorMessage(body, 'Không thể lưu cấu hình ngân hàng'));
       setBotConfig((current) => current ? { ...current, bank: body.bank } : { configured: false, bank: body.bank });
-      setBankToken(''); setBotMessageKind('success'); setBotMessage(`Đã lưu cấu hình VietQR. Token ngân hàng được mã hóa và không hiển thị lại.`);
+      setBankToken(''); setMessage('Đã lưu cấu hình VietQR. Token ngân hàng được mã hóa và không hiển thị lại.', 'success');
     } catch (error) {
-      setBotMessageKind('error'); setBotMessage(error instanceof Error ? error.message : 'Không thể lưu cấu hình ngân hàng');
+      setMessage(error instanceof Error ? error.message : 'Không thể lưu cấu hình ngân hàng', 'error');
     }
     finally { setBotBusy(false); }
   }
 
   async function testBankQuery() {
-    setBankTesting(true); setBankQueryTest(null); setBotMessage('');
+    setBankTesting(true); setBankQueryTest(null); setMessage('');
     try {
       const response = await authorized('/admin/payments/bank/test', { method: 'POST',
         headers: { 'content-type': 'application/json', 'x-request-id': requestId() }, body: '{}' });
       const body = (await readApiBody(response)) as BankQueryTest & { message?: string };
       if (!response.ok || !body.ok) throw new Error(apiErrorMessage(body, 'Không truy vấn được API Cake'));
-      setBankQueryTest(body); setBotMessageKind('success');
-      setBotMessage(`API Cake hoạt động: nhận ${body.totalTransactions} giao dịch trong ${body.latencyMs} ms.`);
+      setBankQueryTest(body);
+      setMessage(`API Cake hoạt động: nhận ${body.totalTransactions} giao dịch trong ${body.latencyMs} ms.`, 'success');
     } catch (error) {
-      setBotMessageKind('error');
-      setBotMessage(error instanceof Error ? error.message : 'Không truy vấn được API Cake');
+      setMessage(error instanceof Error ? error.message : 'Không truy vấn được API Cake', 'error');
     } finally { setBankTesting(false); }
   }
 
   async function saveRuntimeConfig(event: FormEvent) {
-    event.preventDefault(); setBotBusy(true); setBotMessage('');
+    event.preventDefault(); setBotBusy(true); setMessage('');
     try {
       const response = await authorized('/admin/bot-config/runtime', { method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-request-id': requestId() }, body: JSON.stringify({
@@ -359,10 +385,9 @@ export default function AdminPage() {
       if (!response.ok || !body.runtime) throw new Error(apiErrorMessage(body, 'Không thể lưu cấu hình runtime'));
       setRuntimeConfig(body.runtime); setQstashToken('');
       setBotConfig((current) => current ? { ...current, runtime: body.runtime } : { configured: false, runtime: body.runtime });
-      setBotMessageKind('success');
-      setBotMessage(`Đã lưu cấu hình runtime vào MongoDB. Bot và queue nhận thay đổi trong tối đa ${body.reloadWithinSeconds ?? 15} giây.`);
+      setMessage(`Đã lưu cấu hình runtime vào MongoDB. Bot và queue nhận thay đổi trong tối đa ${body.reloadWithinSeconds ?? 15} giây.`, 'success');
     } catch (error) {
-      setBotMessageKind('error'); setBotMessage(error instanceof Error ? error.message : 'Không thể lưu cấu hình runtime');
+      setMessage(error instanceof Error ? error.message : 'Không thể lưu cấu hình runtime', 'error');
     } finally { setBotBusy(false); }
   }
 
@@ -371,10 +396,12 @@ export default function AdminPage() {
   const cakeCallbackUrl = runtimeConfig.apiUrl.trim()
     ? `${runtimeConfig.apiUrl.trim().replace(/\/+$/, '')}/api/webhooks/bank/cake` : '';
 
-  if (!tokens) return <Login email={email} password={password} busy={busy} message={message} setEmail={setEmail} setPassword={setPassword} submit={login} />;
+  if (!tokens) return <><FlashMessage message={flash} remainingMs={flashRemainingMs} close={() => setMessage('')} />
+    <Login email={email} password={password} busy={busy} setEmail={setEmail} setPassword={setPassword} submit={login} /></>;
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
+      <FlashMessage message={flash} remainingMs={flashRemainingMs} close={() => setMessage('')} />
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
           <button type="button" onClick={() => navigate('dashboard')} className="flex min-w-0 items-center gap-3 text-left">
@@ -387,8 +414,6 @@ export default function AdminPage() {
       <div className="mx-auto grid max-w-[1500px] gap-6 px-4 py-5 sm:px-6 lg:grid-cols-[240px_minmax(0,1fr)] lg:py-7">
         <AdminSidebar section={section} navigate={navigate} />
         <div className="min-w-0">
-        {message && <div role="status" className="mb-5 flex items-start justify-between gap-3 rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-sm text-indigo-100"><span>{message}</span><button type="button" onClick={() => setMessage('')} className="text-indigo-200 hover:text-white" aria-label="Đóng thông báo">×</button></div>}
-
         {(['dashboard', 'orders', 'deposits'] as AdminSection[]).includes(section) && <OperationsDashboard
           view={section === 'orders' ? 'orders' : section === 'deposits' ? 'deposits' : 'overview'}
           authorized={authorized} setMessage={setMessage}
@@ -472,7 +497,6 @@ export default function AdminPage() {
                 <button type="submit" disabled={botBusy || !botToken.trim()} className="button-primary">{botBusy ? 'Đang xử lý…' : 'Lưu token'}</button>
               </div>
             </form>
-            {botMessage && <div role="status" className={`mt-4 rounded-xl border p-3 text-sm ${botMessageKind === 'error' ? 'border-rose-500/30 bg-rose-500/10 text-rose-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'}`}>{botMessage}</div>}
             <p className="mt-3 text-xs leading-5 text-slate-500">Token được kiểm tra với Telegram, mã hóa AES-256-GCM và không bao giờ hiển thị lại dưới dạng đầy đủ.</p>
           </Panel>
         </section>}
@@ -564,12 +588,48 @@ export default function AdminPage() {
   );
 }
 
-function Login(props: { email: string; password: string; busy: boolean; message: string; setEmail(value: string): void; setPassword(value: string): void; submit(event: FormEvent): void }) {
+function FlashMessage({ message, remainingMs, close }: {
+  message: FlashMessageState | null; remainingMs: number; close(): void;
+}) {
+  if (!message) return null;
+  const styles = {
+    success: { icon: <CheckCircle2 size={20} />, border: 'border-emerald-400/40', background: 'bg-emerald-950/95',
+      text: 'text-emerald-50', muted: 'text-emerald-200', progress: 'bg-emerald-400' },
+    error: { icon: <TriangleAlert size={20} />, border: 'border-rose-400/45', background: 'bg-rose-950/95',
+      text: 'text-rose-50', muted: 'text-rose-200', progress: 'bg-rose-400' },
+    warning: { icon: <TriangleAlert size={20} />, border: 'border-amber-400/45', background: 'bg-amber-950/95',
+      text: 'text-amber-50', muted: 'text-amber-200', progress: 'bg-amber-400' },
+    info: { icon: <Info size={20} />, border: 'border-indigo-400/40', background: 'bg-slate-900/95',
+      text: 'text-indigo-50', muted: 'text-indigo-200', progress: 'bg-indigo-400' },
+  }[message.kind];
+  const progress = Math.max(0, Math.min(100, (remainingMs / flashDurationMs) * 100));
+  return <div className="pointer-events-none fixed inset-x-0 top-3 z-[100] flex justify-center px-3 sm:top-5">
+    <div role={message.kind === 'error' ? 'alert' : 'status'} aria-live="polite"
+      className={`flash-message pointer-events-auto relative w-full max-w-xl animate-[flash-in_180ms_ease-out] overflow-hidden rounded-2xl border shadow-2xl shadow-black/40 backdrop-blur-xl ${styles.border} ${styles.background} ${styles.text}`}>
+      <div className="flex items-start gap-3 px-4 py-3.5 sm:px-5">
+        <span className={`mt-0.5 shrink-0 ${styles.muted}`}>{styles.icon}</span>
+        <p className="min-w-0 flex-1 text-sm font-medium leading-5">{message.text}</p>
+        <span className={`min-w-10 rounded-lg bg-black/20 px-2 py-1 text-center font-mono text-[11px] tabular-nums ${styles.muted}`}>{(remainingMs / 1_000).toFixed(1)}s</span>
+        <button type="button" onClick={close} className={`rounded-lg p-1 transition hover:bg-white/10 ${styles.muted}`} aria-label="Đóng thông báo"><X size={17} /></button>
+      </div>
+      <div className="h-1 bg-black/20"><div className={`h-full transition-[width] duration-100 ease-linear ${styles.progress}`} style={{ width: `${progress}%` }} /></div>
+    </div>
+  </div>;
+}
+
+function flashMessageKind(message: string): FlashMessageKind {
+  if (/^(?:đã|✅|thành công)|\bhoạt động\b/iu.test(message)) return 'success';
+  if (/không thể|không hợp lệ|thất bại|\blỗi\b|\bfailed\b|\binvalid\b|access denied|session expired/iu.test(message)) return 'error';
+  if (/^(?:hãy|chưa|phát hiện)|cảnh báo|\btrùng\b/iu.test(message)) return 'warning';
+  return 'info';
+}
+
+function Login(props: { email: string; password: string; busy: boolean; setEmail(value: string): void; setPassword(value: string): void; submit(event: FormEvent): void }) {
   return <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-slate-100"><form onSubmit={props.submit} className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-8 shadow-2xl">
     <div className="mb-8 flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-500/15 text-indigo-400"><KeyRound /></div><h1 className="text-2xl font-semibold">Admin sign in</h1><p className="mt-2 text-sm text-slate-400">JWT access and rotating refresh tokens protect this console.</p>
     <label className="label mt-8">Email</label><input className="input" type="email" value={props.email} onChange={(event) => props.setEmail(event.target.value)} required />
     <label className="label mt-4">Password</label><input className="input" type="password" value={props.password} onChange={(event) => props.setPassword(event.target.value)} required />
-    {props.message && <p className="mt-4 text-sm text-rose-400">{props.message}</p>}<button disabled={props.busy} className="button-primary mt-6 w-full">{props.busy ? 'Signing in…' : 'Sign in'}</button>
+    <button disabled={props.busy} className="button-primary mt-6 w-full">{props.busy ? 'Signing in…' : 'Sign in'}</button>
   </form></main>;
 }
 
