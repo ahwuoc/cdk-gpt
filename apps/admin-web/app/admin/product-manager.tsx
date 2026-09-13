@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { PackagePlus, Pencil, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import { Boxes, FileText, PackagePlus, Pencil, Plus, RefreshCw, Save, Settings2, ShoppingBag, Trash2, X } from 'lucide-react';
 import { requestId } from './request-id';
 import { productDiscountPercent } from '@store/shared';
 import { missingDeliveryTemplateKeys, normalizeProductFieldKey, synchronizedInventoryFormat,
@@ -161,33 +161,40 @@ export function ProductManager({ products, categories, pagination, authorized, r
   return <div className="space-y-6">
     <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
       <div className="mb-5 flex items-start justify-between gap-3">
-        <div className="flex gap-3 text-indigo-400"><PackagePlus /><div><h2 className="font-semibold text-slate-100">{editingId ? 'Sửa sản phẩm' : 'Thêm sản phẩm'}</h2><p className="mt-1 text-xs leading-5 text-slate-400">Tạo sản phẩm trước, sau đó chọn sản phẩm để nhập kho.</p></div></div>
+        <div className="flex gap-3 text-indigo-400"><PackagePlus /><div><h2 className="font-semibold text-slate-100">{editingId ? 'Sửa sản phẩm' : 'Thêm sản phẩm'}</h2><p className="mt-1 text-xs leading-5 text-slate-400">Chia theo từng nhóm để dễ sửa, dễ thêm field và kiểm tra trước khi lưu.</p></div></div>
         {editingId && <button type="button" onClick={reset} className="button-secondary flex items-center gap-2 px-3 py-2"><X size={15} />Hủy sửa</button>}
       </div>
-      <form onSubmit={submit} className="space-y-5">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Tên sản phẩm"><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} required /></Field>
-          <Field label="Slug"><input className="input font-mono" value={draft.slug} onChange={(event) => setDraft({ ...draft, slug: slugify(event.target.value) })} placeholder="tai-khoan-chatgpt" required /></Field>
-          <Field label="Giá bán"><input className="input" type="number" min="0" step="1" value={draft.price} onChange={(event) => setDraft({ ...draft, price: Number(event.target.value) })} required />
-            {previewDiscount > 0 && <p className="mt-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">🔥 Sau khi lưu: <span className="line-through opacity-70">{formatMoney(previewOriginalPrice!)}</span> → <b>{formatMoney(draft.price)}</b> · giảm {previewDiscount}%</p>}
-          </Field>
-          <Field label="Trạng thái"><select className="input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as ProductStatus })}><option value="DRAFT">Bản nháp</option><option value="ACTIVE">Đang bán</option><option value="INACTIVE">Tạm ngừng</option></select></Field>
-          <Field label="Danh mục"><select className="input" value={draft.categoryId ?? ''} onChange={(event) => setDraft({ ...draft, categoryId: event.target.value || undefined })}><option value="">Chưa phân loại</option>{categories.map((category) => <option key={category._id} value={category._id}>{category.name}</option>)}</select></Field>
-        </div>
-        <Field label="Mô tả"><textarea className="input min-h-24" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} required /></Field>
-        <Field label="URL hình ảnh — mỗi dòng một URL"><textarea className="input min-h-20 font-mono text-xs" value={draft.imageUrls.join('\n')} onChange={(event) => setDraft({ ...draft, imageUrls: event.target.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean) })} /></Field>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Hướng dẫn sử dụng"><textarea className="input min-h-24" value={draft.instructions} onChange={(event) => setDraft({ ...draft, instructions: event.target.value })} /></Field>
-          <Field label="Chính sách bảo hành"><textarea className="input min-h-24" value={draft.warrantyPolicy} onChange={(event) => setDraft({ ...draft, warrantyPolicy: event.target.value })} /></Field>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Field label="Số ngày bảo hành"><NumberInput value={draft.warrantyDays} min={0} onChange={(value) => setDraft({ ...draft, warrantyDays: value })} /></Field>
-          <Field label="Giới hạn mỗi khách"><NumberInput value={draft.purchaseLimitPerUser} min={0} onChange={(value) => setDraft({ ...draft, purchaseLimitPerUser: value })} /></Field>
-          <Field label="Cảnh báo tồn kho"><NumberInput value={draft.lowStockThreshold} min={0} onChange={(value) => setDraft({ ...draft, lowStockThreshold: value })} /></Field>
-          <Field label="Thứ tự hiển thị"><NumberInput value={draft.sortOrder} onChange={(value) => setDraft({ ...draft, sortOrder: value })} /></Field>
-        </div>
-        <div>
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-slate-200">Cấu trúc dữ liệu kho</p><p className="text-xs text-slate-500">Mọi trường đều là text. Bạn có thể tự đặt tên/key, thêm hoặc xóa trường; pattern và mẫu giao hàng sẽ đồng bộ theo key.</p></div><button type="button" onClick={addField} className="button-secondary flex shrink-0 items-center gap-2 px-3 py-2"><Plus size={15} />Thêm trường</button></div>
+      <form onSubmit={submit} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-5">
+        <FormSection icon={<ShoppingBag size={18} />} title="Thông tin bán" subtitle="Tên, giá, trạng thái và cách sản phẩm xuất hiện trong shop.">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Tên sản phẩm"><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="ChatGPT Plus Gmail Momo KBH" required /></Field>
+            <Field label="Slug"><input className="input font-mono" value={draft.slug} onChange={(event) => setDraft({ ...draft, slug: slugify(event.target.value) })} placeholder="chatgpt-plus-gmail" required /></Field>
+            <Field label="Giá bán"><input className="input" type="number" min="0" step="1" value={draft.price} onChange={(event) => setDraft({ ...draft, price: Number(event.target.value) })} required />
+              {previewDiscount > 0 && <p className="mt-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">🔥 Sau khi lưu: <span className="line-through opacity-70">{formatMoney(previewOriginalPrice!)}</span> → <b>{formatMoney(draft.price)}</b> · giảm {previewDiscount}%</p>}
+            </Field>
+            <Field label="Trạng thái"><select className="input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as ProductStatus })}><option value="DRAFT">Bản nháp</option><option value="ACTIVE">Đang bán</option><option value="INACTIVE">Tạm ngừng</option></select></Field>
+            <Field label="Danh mục"><select className="input" value={draft.categoryId ?? ''} onChange={(event) => setDraft({ ...draft, categoryId: event.target.value || undefined })}><option value="">Chưa phân loại</option>{categories.map((category) => <option key={category._id} value={category._id}>{category.name}</option>)}</select></Field>
+            <Field label="Thứ tự hiển thị"><NumberInput value={draft.sortOrder} onChange={(value) => setDraft({ ...draft, sortOrder: value })} /></Field>
+          </div>
+        </FormSection>
+
+        <FormSection icon={<FileText size={18} />} title="Nội dung hiển thị" subtitle="Phần khách đọc trên Telegram: mô tả, ảnh, hướng dẫn và bảo hành.">
+          <Field label="Mô tả"><textarea className="input min-h-24" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Nêu rõ loại tài khoản, thời hạn, điều kiện bảo hành..." required /></Field>
+          <Field label="URL hình ảnh — mỗi dòng một URL"><textarea className="input min-h-20 font-mono text-xs" value={draft.imageUrls.join('\n')} onChange={(event) => setDraft({ ...draft, imageUrls: event.target.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean) })} placeholder="https://..." /></Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Hướng dẫn sử dụng"><textarea className="input min-h-24" value={draft.instructions} onChange={(event) => setDraft({ ...draft, instructions: event.target.value })} placeholder="Đăng nhập, đổi mật khẩu, lưu 2FA..." /></Field>
+            <Field label="Chính sách bảo hành"><textarea className="input min-h-24" value={draft.warrantyPolicy} onChange={(event) => setDraft({ ...draft, warrantyPolicy: event.target.value })} placeholder="Điều kiện đổi trả, thời gian xử lý..." /></Field>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Số ngày bảo hành"><NumberInput value={draft.warrantyDays} min={0} onChange={(value) => setDraft({ ...draft, warrantyDays: value })} /></Field>
+            <Field label="Giới hạn mỗi khách"><NumberInput value={draft.purchaseLimitPerUser} min={0} onChange={(value) => setDraft({ ...draft, purchaseLimitPerUser: value })} /></Field>
+            <Field label="Cảnh báo tồn kho"><NumberInput value={draft.lowStockThreshold} min={0} onChange={(value) => setDraft({ ...draft, lowStockThreshold: value })} /></Field>
+          </div>
+        </FormSection>
+
+        <FormSection icon={<Settings2 size={18} />} title="Cấu trúc dữ liệu kho" subtitle="Định nghĩa các cột khi nhập hàng, ví dụ email, password, 2fa, link-payment.">
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-slate-200">Các trường dữ liệu</p><p className="text-xs text-slate-500">Mọi trường đều là text. Bạn có thể tự đặt tên/key; pattern và mẫu giao hàng sẽ đồng bộ theo key.</p></div><button type="button" onClick={addField} className="button-secondary flex shrink-0 items-center gap-2 px-3 py-2"><Plus size={15} />Thêm trường</button></div>
           {hasInventory && <div className="mb-3 rounded-xl border border-indigo-500/25 bg-indigo-500/10 p-3 text-xs leading-5 text-indigo-100"><b>Bạn vẫn đổi được key cũ.</b> Khi lưu, hệ thống sẽ đổi key trong toàn bộ hàng đã nhập và mã hóa lại an toàn. “Nhạy cảm” và “Gửi cho khách” của trường cũ vẫn được khóa để tránh làm lộ hoặc mất dữ liệu.</div>}
           <div className="space-y-3">{draft.fieldDefinitions.map((field, index) => {
             const existingField = hasInventory && index < originalFieldCount;
@@ -205,14 +212,26 @@ export function ProductManager({ products, categories, pagination, authorized, r
               </div>
             </div>;
           })}</div>
-        </div>
+        </FormSection>
+
+        <FormSection icon={<Boxes size={18} />} title="Nhập kho & giao hàng" subtitle="Pattern dùng để tách dữ liệu khi nhập kho; template là nội dung bot gửi sau khi mua.">
         <Field label="Pattern nhập kho — mỗi hàng một dòng">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-slate-500">Sau khi thêm key, bấm nút để cập nhật cả pattern và nội dung giao cho khách.</span><button type="button" onClick={refreshInventoryFormat} className="button-secondary px-3 py-1.5 text-xs">Đồng bộ pattern &amp; template</button></div>
           <input className="input font-mono" value={draft.inventoryPattern} onChange={(event) => setDraft({ ...draft, inventoryPattern: event.target.value })} placeholder="{{email}}----{{password}}----{{2fa}}" required />
           <p className="mt-2 text-xs leading-5 text-slate-500">Có thể tùy biến chữ và dấu ngăn cách. Ví dụ <code>{'Email={{email}} | Pass={{password}} / 2FA={{2fa}}'}</code>. Phần trong <code>{'{{ }}'}</code> là key để hệ thống nhận đúng cột.</p>
         </Field>
         <Field label="Template giao hàng"><textarea className="input min-h-28 font-mono text-xs" value={draft.deliveryTemplate} onChange={(event) => setDraft({ ...draft, deliveryTemplate: event.target.value })} required /><p className="mt-2 text-xs text-slate-500">Ví dụ: <code>Tài khoản: {'{{login}}'} · Mật khẩu: {'{{password}}'}</code></p></Field>
-        <button disabled={saving} className="button-primary flex w-full items-center justify-center gap-2"><Save size={16} />{saving ? 'Đang lưu…' : editingId ? 'Lưu thay đổi' : 'Tạo sản phẩm'}</button>
+        </FormSection>
+        </div>
+
+        <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
+          <ProductDraftSummary draft={draft} editingProduct={editingProduct} categories={categories} previewDiscount={previewDiscount} previewOriginalPrice={previewOriginalPrice} />
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+            <p className="text-sm font-semibold text-white">Thao tác</p>
+            <button disabled={saving} className="button-primary mt-4 flex w-full items-center justify-center gap-2"><Save size={16} />{saving ? 'Đang lưu…' : editingId ? 'Lưu thay đổi' : 'Tạo sản phẩm'}</button>
+            {editingId && <button type="button" onClick={reset} className="button-secondary mt-3 flex w-full items-center justify-center gap-2"><X size={15} />Hủy sửa</button>}
+          </div>
+        </aside>
       </form>
     </div>
 
@@ -226,6 +245,52 @@ export function ProductManager({ products, categories, pagination, authorized, r
       {pagination.totalPages > 1 && <div className="mt-5 flex items-center justify-between border-t border-slate-800 pt-4"><button type="button" disabled={pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)} className="button-secondary px-3 py-2">Trang trước</button><span className="text-xs text-slate-400">{(pagination.page - 1) * pagination.limit + 1}–{Math.min(pagination.page * pagination.limit, pagination.total)} / {pagination.total}</span><button type="button" disabled={pagination.page >= pagination.totalPages} onClick={() => onPageChange(pagination.page + 1)} className="button-secondary px-3 py-2">Trang sau</button></div>}</div>
     </div>
   </div>;
+}
+
+function FormSection({ icon, title, subtitle, children }: {
+  icon: React.ReactNode; title: string; subtitle: string; children: React.ReactNode;
+}) {
+  return <section className="rounded-2xl border border-slate-800 bg-slate-950/45 p-4">
+    <div className="mb-4 flex gap-3">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-300">{icon}</span>
+      <div><h3 className="font-semibold text-white">{title}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{subtitle}</p></div>
+    </div>
+    <div className="space-y-4">{children}</div>
+  </section>;
+}
+
+function ProductDraftSummary({ draft, editingProduct, categories, previewDiscount, previewOriginalPrice }: {
+  draft: ProductInput; editingProduct?: ProductRecord; categories: CategoryRecord[];
+  previewDiscount: number; previewOriginalPrice?: number;
+}) {
+  const category = categories.find((item) => item._id === draft.categoryId);
+  const totalStock = editingProduct ? editingProduct.availableStock + editingProduct.reservedStock + editingProduct.soldStock : 0;
+  return <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+    <p className="text-sm font-semibold text-white">Tóm tắt sản phẩm</p>
+    <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/80 p-4">
+      <div className="flex items-center justify-between gap-3"><Status value={draft.status} /><span className="text-xs text-slate-500">{category?.name ?? 'Chưa phân loại'}</span></div>
+      <h3 className="mt-3 break-words text-base font-semibold text-slate-100">{draft.name || 'Tên sản phẩm'}</h3>
+      <p className="mt-1 truncate font-mono text-xs text-slate-500">{draft.slug || 'slug-san-pham'}</p>
+      <div className="mt-4">
+        {previewDiscount > 0 && previewOriginalPrice && <p className="text-xs text-slate-500 line-through">{formatMoney(previewOriginalPrice)}</p>}
+        <p className={`text-2xl font-semibold ${previewDiscount > 0 ? 'text-rose-300' : 'text-indigo-200'}`}>{formatMoney(draft.price || 0)}</p>
+        {previewDiscount > 0 && <span className="mt-2 inline-flex rounded-full bg-rose-500/15 px-2 py-1 text-[11px] font-semibold text-rose-300">SALE -{previewDiscount}%</span>}
+      </div>
+    </div>
+    <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+      <MiniStat label="Field" value={draft.fieldDefinitions.length} />
+      <MiniStat label="Ảnh" value={draft.imageUrls.length} />
+      <MiniStat label="Kho" value={totalStock} />
+    </div>
+    <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">Pattern</p>
+      <code className="mt-1 block break-all text-xs text-indigo-200">{draft.inventoryPattern || 'Chưa có pattern'}</code>
+    </div>
+  </div>;
+}
+
+function MiniStat({ label, value }: { label: string; value: number }) {
+  return <div className="rounded-xl bg-slate-900 p-3"><p className="text-slate-500">{label}</p><p className="mt-1 text-base font-semibold text-slate-100">{value}</p></div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <div><span className="label">{label}</span>{children}</div>; }
