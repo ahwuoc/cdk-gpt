@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Boxes, ChevronLeft, ChevronRight, Eye, LoaderCircle, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Boxes, ChevronLeft, ChevronRight, Eye, Filter, LoaderCircle, PackageCheck, RefreshCw, Search, Trash2 } from 'lucide-react';
 import type { ProductRecord } from './product-manager';
 import { requestId } from './request-id';
 
@@ -27,6 +27,14 @@ interface InventoryPage {
 
 const pageSize = 20;
 const emptyPage: InventoryPage = { items: [], page: 1, limit: pageSize, total: 0, totalPages: 0 };
+const statuses: Array<{ value: '' | InventoryStatus; label: string }> = [
+  { value: '', label: 'Tất cả' },
+  { value: 'AVAILABLE', label: 'Có sẵn' },
+  { value: 'RESERVED', label: 'Đang giữ' },
+  { value: 'SOLD', label: 'Đã bán' },
+  { value: 'DISABLED', label: 'Vô hiệu' },
+  { value: 'RETURNED', label: 'Đã hoàn' },
+];
 
 export function InventoryManager({ products, authorized, reloadProducts, onReveal, setMessage, refreshKey }: {
   products: ProductRecord[];
@@ -40,6 +48,9 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
   const [busy, setBusy] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const [filter, setFilter] = useState({ productId: '', status: '', search: '', page: 1 });
+  const activeProduct = products.find((product) => product._id === filter.productId);
+  const stats = inventoryStats(products, filter.productId);
+  const pageStats = pageStatusCounts(data.items);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -92,25 +103,47 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
 
   return <section className="rounded-3xl border border-slate-800 bg-slate-900 p-4 shadow-xl sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="flex gap-3"><span className="rounded-xl bg-indigo-500/10 p-2.5 text-indigo-300"><Boxes size={19} /></span><div><h3 className="font-semibold text-white">Hàng đang có trong kho</h3><p className="mt-1 text-xs leading-5 text-slate-400">Xem dữ liệu đã nhập, xóa một hàng hoặc xóa nhanh cả lô nhập nhầm.</p></div></div>
+      <div className="flex gap-3"><span className="rounded-xl bg-indigo-500/10 p-2.5 text-indigo-300"><Boxes size={19} /></span><div><h3 className="font-semibold text-white">Theo dõi kho hàng</h3><p className="mt-1 text-xs leading-5 text-slate-400">Lọc theo sản phẩm, trạng thái, lô nhập và xem nhanh dữ liệu từng dòng.</p></div></div>
       <button type="button" onClick={() => void load()} disabled={busy} className="button-secondary inline-flex items-center gap-2 px-3 py-2"><RefreshCw size={14} className={busy ? 'animate-spin' : ''} />Tải lại</button>
     </div>
-    <div className="mt-5 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-      <select className="input h-11 py-2" value={filter.productId} onChange={(event) => setFilter((current) => ({ ...current, productId: event.target.value, page: 1 }))} aria-label="Lọc sản phẩm">
-        <option value="">Tất cả sản phẩm</option>{products.map((product) => <option key={product._id} value={product._id}>{product.name}</option>)}
-      </select>
-      <select className="input h-11 py-2" value={filter.status} onChange={(event) => setFilter((current) => ({ ...current, status: event.target.value, page: 1 }))} aria-label="Lọc trạng thái kho">
-        <option value="">Tất cả trạng thái</option><option value="AVAILABLE">Có sẵn</option><option value="RESERVED">Đang giữ</option><option value="SOLD">Đã bán</option><option value="DISABLED">Đã vô hiệu</option><option value="RETURNED">Đã hoàn</option>
-      </select>
-      <label className="relative md:col-span-2 xl:col-span-2"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-10 font-mono text-xs" value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value, page: 1 }))} placeholder="Tìm theo ID hàng hoặc ID lô" /></label>
+
+    <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <MetricCard label={activeProduct ? 'Có sẵn sản phẩm này' : 'Có sẵn toàn kho'} value={stats.available} tone="emerald" />
+      <MetricCard label="Đang giữ" value={stats.reserved} tone="amber" />
+      <MetricCard label="Đã bán" value={stats.sold} tone="sky" />
+      <MetricCard label="Đang hiển thị" value={data.total} tone="slate" />
     </div>
 
-    <div className="mt-4 max-h-[min(68vh,720px)] divide-y divide-slate-800 overflow-x-hidden overflow-y-auto overscroll-contain rounded-2xl border border-slate-800 bg-slate-950/60">
+    <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/40 p-3">
+      <div className="grid gap-2 md:grid-cols-[minmax(180px,260px)_1fr_auto]">
+        <select className="input h-11 py-2" value={filter.productId} onChange={(event) => setFilter((current) => ({ ...current, productId: event.target.value, page: 1 }))} aria-label="Lọc sản phẩm">
+          <option value="">Tất cả sản phẩm</option>{products.map((product) => <option key={product._id} value={product._id}>{product.name}</option>)}
+        </select>
+        <label className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-10 font-mono text-xs" value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value, page: 1 }))} placeholder="Tìm ID hàng, ID lô hoặc dữ liệu xem trước" /></label>
+        <button type="button" className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2" onClick={() => setFilter({ productId: '', status: '', search: '', page: 1 })}><Filter size={15} />Xóa lọc</button>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {statuses.map((status) => <button key={status.value || 'all'} type="button"
+          onClick={() => setFilter((current) => ({ ...current, status: status.value, page: 1 }))}
+          className={`rounded-xl border px-3 py-2 text-xs font-medium transition ${filter.status === status.value
+            ? 'border-indigo-400 bg-indigo-500/20 text-indigo-100'
+            : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700 hover:text-slate-100'}`}>
+          {status.label}{status.value && <span className="ml-1 text-slate-500">({pageStats[status.value] ?? 0})</span>}
+        </button>)}
+      </div>
+    </div>
+
+    <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
+      <div className="hidden border-b border-slate-800 bg-slate-950/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600 lg:grid lg:grid-cols-[minmax(220px,1.1fr)_minmax(260px,1.3fr)_170px_210px]">
+        <span>Sản phẩm</span><span>Dữ liệu xem trước</span><span>Lô nhập</span><span className="text-right">Thao tác</span>
+      </div>
+      <div className="max-h-[min(68vh,720px)] divide-y divide-slate-800 overflow-x-hidden overflow-y-auto overscroll-contain">
       {busy && <Loading />}
       {!busy && data.items.map((item) => <InventoryRow key={item.id} item={item} product={products.find((product) => product._id === item.productId)}
         pending={actionId === item.id || actionId === `batch:${item.importBatchId}`} onRemove={() => void removeItem(item)}
         onRemoveBatch={item.importBatchId ? () => void removeBatch(item.importBatchId!) : undefined} onReveal={() => void onReveal(item.id)} />)}
       {!busy && data.items.length === 0 && <div className="flex min-h-40 flex-col items-center justify-center gap-3 p-6 text-center text-sm text-slate-500"><Boxes className="text-slate-600" /><p>Chưa có hàng phù hợp trong kho.</p></div>}
+      </div>
     </div>
     <Pagination data={data} onPage={(page) => setFilter((current) => ({ ...current, page }))} />
   </section>;
@@ -118,13 +151,20 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
 
 function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onReveal }: { item: InventoryRecord; product?: ProductRecord; pending: boolean; onRemove(): void; onRemoveBatch?: () => void; onReveal(): void }) {
   const removable = item.status === 'AVAILABLE';
-  return <article className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
-    <div className="min-w-0 flex-1">
-      <div className="flex flex-wrap items-center gap-2"><Status value={item.status} /><span className="text-sm font-medium text-slate-100">{product?.name ?? 'Sản phẩm đã xóa'}</span></div>
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500"><code title={item.id}>ID {shortId(item.id)}</code>{item.importBatchId && <code title={item.importBatchId}>Lô {shortId(item.importBatchId)}</code>}<span>{dateTime(item.createdAt)}</span></div>
+  return <article className="grid gap-3 p-4 transition hover:bg-slate-900/65 lg:grid-cols-[minmax(220px,1.1fr)_minmax(260px,1.3fr)_170px_210px] lg:items-center">
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-center gap-2"><Status value={item.status} /><span className="truncate text-sm font-medium text-slate-100">{product?.name ?? 'Sản phẩm đã xóa'}</span></div>
+      <div className="mt-2 flex items-center gap-2 text-xs text-slate-500"><PackageCheck size={14} /><code title={item.id}>ID {shortId(item.id)}</code></div>
+      <p className="mt-1 text-xs text-slate-600">{dateTime(item.createdAt)}</p>
+    </div>
+    <div className="min-w-0">
       <Preview value={item.maskedPreview} />
     </div>
-    <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex">
+    <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-600">Lô nhập</p>
+      {item.importBatchId ? <code className="mt-1 block truncate text-xs text-slate-400" title={item.importBatchId}>{shortId(item.importBatchId)}</code> : <span className="mt-1 block text-xs text-slate-600">Không có lô</span>}
+    </div>
+    <div className="grid grid-cols-2 gap-2 sm:flex lg:justify-end">
       <button type="button" disabled={pending} onClick={onReveal} className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2"><Eye size={14} />Xem</button>
       {removable && <button type="button" disabled={pending} onClick={onRemove} className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-900/60 px-3 py-2 text-sm font-medium text-rose-300 transition hover:bg-rose-950/30 disabled:opacity-50"><Trash2 size={14} />Xóa</button>}
       {removable && onRemoveBatch && <button type="button" disabled={pending} onClick={onRemoveBatch} className="button-secondary col-span-2 px-3 py-2 text-xs">Xóa cả lô</button>}
@@ -136,7 +176,20 @@ function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onRevea
 function Preview({ value }: { value: Record<string, unknown> }) {
   const entries = Object.entries(value ?? {});
   if (!entries.length) return <p className="mt-2 text-xs text-slate-600">Không có dữ liệu xem trước.</p>;
-  return <div className="mt-2 flex flex-wrap gap-1.5">{entries.slice(0, 4).map(([key, item]) => <span key={key} className="max-w-full truncate rounded-md bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-400">{key}: {String(item ?? '—')}</span>)}{entries.length > 4 && <span className="rounded-md bg-slate-900 px-2 py-1 text-[11px] text-slate-500">+{entries.length - 4}</span>}</div>;
+  return <div className="grid gap-1.5 sm:grid-cols-2">{entries.slice(0, 6).map(([key, item]) => <div key={key} className="min-w-0 rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1.5">
+    <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-600">{key}</p>
+    <p className="truncate font-mono text-[11px] text-slate-300" title={String(item ?? '—')}>{String(item ?? '—')}</p>
+  </div>)}{entries.length > 6 && <span className="rounded-lg bg-slate-900 px-2 py-1.5 text-[11px] text-slate-500">+{entries.length - 6} trường</span>}</div>;
+}
+
+function MetricCard({ label, value, tone }: { label: string; value: number; tone: 'emerald' | 'amber' | 'sky' | 'slate' }) {
+  const styles = {
+    emerald: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20',
+    amber: 'text-amber-300 bg-amber-500/10 border-amber-500/20',
+    sky: 'text-sky-300 bg-sky-500/10 border-sky-500/20',
+    slate: 'text-slate-200 bg-slate-950/70 border-slate-800',
+  }[tone];
+  return <div className={`rounded-2xl border p-4 ${styles}`}><p className="text-xs text-slate-400">{label}</p><p className="mt-2 text-2xl font-semibold tabular-nums">{value.toLocaleString('vi-VN')}</p></div>;
 }
 
 function Status({ value }: { value: InventoryStatus }) {
@@ -155,5 +208,19 @@ function Loading() { return <div className="flex min-h-40 items-center justify-c
 function shortId(value: string) { return value.length > 13 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value; }
 function dateTime(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(date); }
 function normalizePage(value: Partial<InventoryPage>): InventoryPage { return { items: Array.isArray(value.items) ? value.items : [], page: Number(value.page) || 1, limit: Number(value.limit) || pageSize, total: Number(value.total) || 0, totalPages: Number(value.totalPages) || 0 }; }
+function inventoryStats(products: ProductRecord[], productId: string) {
+  const rows = productId ? products.filter((product) => product._id === productId) : products;
+  return rows.reduce((sum, product) => ({
+    available: sum.available + product.availableStock,
+    reserved: sum.reserved + product.reservedStock,
+    sold: sum.sold + product.soldStock,
+  }), { available: 0, reserved: 0, sold: 0 });
+}
+function pageStatusCounts(items: InventoryRecord[]) {
+  return items.reduce<Partial<Record<InventoryStatus, number>>>((sum, item) => {
+    sum[item.status] = (sum[item.status] ?? 0) + 1;
+    return sum;
+  }, {});
+}
 async function readBody<T>(response: Response): Promise<T> { const text = await response.text(); if (!text) return {} as T; try { return JSON.parse(text) as T; } catch { return { message: `API không phản hồi JSON (HTTP ${response.status})` } as T; } }
 function apiMessage(value: unknown, fallback: string) { if (!value || typeof value !== 'object' || !('message' in value)) return fallback; const message = (value as { message?: unknown }).message; return Array.isArray(message) ? message.filter((item): item is string => typeof item === 'string').join('. ') || fallback : typeof message === 'string' ? message : fallback; }
