@@ -423,7 +423,7 @@ export default function AdminPage() {
         cancel={cancelDuplicateImport} overwrite={() => void resolveDuplicateImport(true)}
         addMissingOnly={() => void resolveDuplicateImport(false)} />
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
+        <div className="mx-auto flex max-w-none items-center justify-between gap-4 px-4 py-4 sm:px-6 xl:px-8">
           <button type="button" onClick={() => navigate('dashboard')} className="flex min-w-0 items-center gap-3 text-left">
             <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-indigo-500/15 text-indigo-300"><LayoutDashboard size={21} /></span>
             <span className="min-w-0"><span className="block truncate font-semibold text-slate-50">Digital Store</span><span className="block truncate text-xs text-slate-500">Trung tâm quản trị</span></span>
@@ -431,7 +431,7 @@ export default function AdminPage() {
           <button onClick={logout} className="button-secondary inline-flex shrink-0 items-center gap-2 px-3 py-2"><LogOut size={16} /><span className="hidden sm:inline">Đăng xuất</span></button>
         </div>
       </header>
-      <div className="mx-auto grid max-w-[1500px] gap-6 px-4 py-5 sm:px-6 lg:grid-cols-[240px_minmax(0,1fr)] lg:py-7">
+      <div className="mx-auto grid max-w-none gap-6 px-4 py-5 sm:px-6 xl:px-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:py-7">
         <AdminSidebar section={section} navigate={navigate} />
         <div className="min-w-0">
         {(['dashboard', 'orders', 'deposits'] as AdminSection[]).includes(section) && <OperationsDashboard
@@ -457,7 +457,7 @@ export default function AdminPage() {
             reload={loadProducts} selectProduct={(id) => { setProductId(id); navigate('inventory'); }} setMessage={setMessage} onPageChange={setProductPage} />
         </section>}
 
-        {section === 'inventory' && <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+        {section === 'inventory' && <section className="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="space-y-6">
             <PageHeading eyebrow="Kho hàng" title="Nhập tài khoản nhanh theo từng dòng" description="Chọn sản phẩm, dán dữ liệu theo pattern và xem trước trước khi lưu. Khi nhập thành công, bot tự thông báo hàng mới về." />
             <InventoryManager products={products} authorized={authorized} reloadProducts={loadProducts} onReveal={reveal} setMessage={setMessage} refreshKey={inventoryVersion} />

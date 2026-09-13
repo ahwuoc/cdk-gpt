@@ -136,7 +136,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
     </div>
 
     <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
-      <div className="hidden border-b border-slate-800 bg-slate-950/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600 lg:grid lg:grid-cols-[minmax(220px,1.1fr)_minmax(260px,1.3fr)_170px_210px]">
+      <div className="hidden border-b border-slate-800 bg-slate-950/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600 lg:grid lg:grid-cols-[minmax(220px,1.05fr)_minmax(260px,1.25fr)_150px_260px]">
         <span>Sản phẩm</span><span>Dữ liệu xem trước</span><span>Lô nhập</span><span className="text-right">Thao tác</span>
       </div>
       <div className="max-h-[min(68vh,720px)] divide-y divide-slate-800 overflow-x-hidden overflow-y-auto overscroll-contain">
@@ -153,7 +153,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
 
 function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onReveal }: { item: InventoryRecord; product?: ProductRecord; pending: boolean; onRemove(): void; onRemoveBatch?: () => void; onReveal(): void }) {
   const removable = item.status === 'AVAILABLE';
-  return <article className="grid gap-3 p-4 transition hover:bg-slate-900/65 lg:grid-cols-[minmax(220px,1.1fr)_minmax(260px,1.3fr)_170px_210px] lg:items-center">
+  return <article className="grid gap-3 p-4 transition hover:bg-slate-900/65 lg:grid-cols-[minmax(220px,1.05fr)_minmax(260px,1.25fr)_150px_260px] lg:items-center">
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2"><Status value={item.status} /><span className="truncate text-sm font-medium text-slate-100">{product?.name ?? 'Sản phẩm đã xóa'}</span></div>
       <div className="mt-2 flex items-center gap-2 text-xs text-slate-500"><PackageCheck size={14} /><code title={item.id}>ID {shortId(item.id)}</code></div>
@@ -166,11 +166,11 @@ function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onRevea
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-600">Lô nhập</p>
       {item.importBatchId ? <code className="mt-1 block truncate text-xs text-slate-400" title={item.importBatchId}>{shortId(item.importBatchId)}</code> : <span className="mt-1 block text-xs text-slate-600">Không có lô</span>}
     </div>
-    <div className="grid grid-cols-2 gap-2 sm:flex lg:justify-end">
-      <button type="button" disabled={pending} onClick={onReveal} className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2"><Eye size={14} />Xem</button>
-      {removable && <button type="button" disabled={pending} onClick={onRemove} className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-900/60 px-3 py-2 text-sm font-medium text-rose-300 transition hover:bg-rose-950/30 disabled:opacity-50"><Trash2 size={14} />Xóa</button>}
-      {removable && onRemoveBatch && <button type="button" disabled={pending} onClick={onRemoveBatch} className="button-secondary col-span-2 px-3 py-2 text-xs">Xóa cả lô</button>}
-      {!removable && <span className="col-span-2 self-center text-center text-xs text-slate-500 sm:max-w-28">Hàng đã bán/đang giữ không thể xóa</span>}
+    <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-1">
+      <button type="button" disabled={pending} onClick={onReveal} className="button-secondary inline-flex w-full items-center justify-center gap-2 px-3 py-2"><Eye size={14} />Xem</button>
+      <button type="button" disabled={pending || !removable} onClick={onRemove} title={removable ? 'Xóa riêng dòng kho này' : 'Chỉ xóa được hàng đang có sẵn'} className={`inline-flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-55 ${removable ? 'border-rose-900/60 text-rose-300 hover:bg-rose-950/30' : 'border-slate-800 text-slate-600'}`}><Trash2 size={14} />Xóa</button>
+      {onRemoveBatch && <button type="button" disabled={pending || !removable} onClick={onRemoveBatch} title={removable ? 'Xóa các hàng chưa bán trong cùng lô nhập' : 'Lô có hàng đã bán/đang giữ sẽ được bảo toàn'} className="button-secondary w-full px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-55">Xóa cả lô</button>}
+      {!removable && <span className="text-center text-[11px] leading-4 text-slate-500 sm:col-span-3 lg:col-span-1">Đã bán/đang giữ nên không cho xóa.</span>}
     </div>
   </article>;
 }
