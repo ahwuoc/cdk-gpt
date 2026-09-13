@@ -55,6 +55,7 @@ type AdminSection = 'dashboard' | 'orders' | 'reports' | 'deposits' | 'users' | 
   | 'messages' | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
 type FlashMessageKind = 'success' | 'error' | 'warning' | 'info';
 interface FlashMessageState { id: number; text: string; kind: FlashMessageKind; }
+interface PendingDuplicateImport { rows: Record<string, unknown>[]; preview: ImportReport; }
 const flashDurationMs = 6_000;
 
 export default function AdminPage() {
@@ -84,6 +85,7 @@ export default function AdminPage() {
   const [botBusy, setBotBusy] = useState(false);
   const [flash, setFlash] = useState<FlashMessageState | null>(null);
   const [flashRemainingMs, setFlashRemainingMs] = useState(flashDurationMs);
+  const [pendingDuplicateImport, setPendingDuplicateImport] = useState<PendingDuplicateImport | null>(null);
   const [section, setSection] = useState<AdminSection>('dashboard');
   const selectedProduct = products.find((product) => product._id === productId);
 
@@ -231,35 +233,50 @@ export default function AdminPage() {
     setBusy(true); setMessage('');
     try {
       const rows = parseRows();
-      let overwriteDuplicates = false;
       if (commit) {
         const previewResponse = await authorized('/admin/inventory/import/preview', { method: 'POST',
           headers: { 'content-type': 'application/json' }, body: JSON.stringify({ productId, rows }) });
         const preview = await previewResponse.json() as ImportReport & { message?: string };
         if (!previewResponse.ok) throw new Error(preview.message ?? 'Không thể kiểm tra dữ liệu trùng');
         if (preview.duplicateRows > 0) {
-          const overwriteable = preview.overwriteableRows ?? 0;
-          const protectedRows = Math.max(0, preview.duplicateRows - overwriteable);
-          const confirmed = window.confirm(`Phát hiện ${preview.duplicateRows} dòng trùng. ` +
-            `Hệ thống sẽ ghi đè ${overwriteable} dòng còn “Có sẵn”` +
-            `${protectedRows ? ` và bỏ qua ${protectedRows} dòng đã bán/đang giữ hoặc trùng trong tệp` : ''}. Bạn có muốn tiếp tục?`);
-          if (!confirmed) {
-            setReport(preview); setMessage('Đã hủy nhập kho; chưa có dữ liệu nào bị thay đổi.'); return;
-          }
-          overwriteDuplicates = true;
+          setReport(preview); setPendingDuplicateImport({ rows, preview });
+          setMessage(`Phát hiện ${preview.duplicateRows} dòng trùng. Hãy chọn cách xử lý trước khi nhập kho.`, 'warning');
+          return;
         }
       }
+      await commitInventoryRows(rows, commit, false);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Import failed'); }
+    finally { setBusy(false); }
+  }
+
+  async function commitInventoryRows(rows: Record<string, unknown>[], commit: boolean, overwriteDuplicates: boolean) {
       const response = await authorized(`/admin/inventory/import${commit ? '' : '/preview'}`, { method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ productId, rows, sourceName: 'admin-web.jsonl', overwriteDuplicates }) });
       const body = await response.json(); if (!response.ok) throw new Error(body.message ?? 'Import failed');
+      const skippedDuplicates = Math.max(0, (body.duplicateRows ?? 0) - (body.overwrittenRows ?? 0));
       setReport(body); setMessage(commit
         ? `Đã nhập ${body.importedRows} hàng mới${body.overwrittenRows ? ` và ghi đè ${body.overwrittenRows} hàng trùng` : ''}` +
+          `${skippedDuplicates ? `; bỏ qua ${skippedDuplicates} dòng trùng` : ''}` +
           `${body.restockNotificationQueued ? '; đã xếp hàng thông báo “hàng đã về” cho khách.' : '.'}`
         : 'Đã tạo bản xem trước; chưa lưu dữ liệu.');
       if (commit) { await loadProducts(); setInventoryVersion((version) => version + 1); }
+  }
+
+  async function resolveDuplicateImport(overwriteDuplicates: boolean) {
+    if (!pendingDuplicateImport) return;
+    setBusy(true); setMessage('');
+    try {
+      const { rows } = pendingDuplicateImport;
+      setPendingDuplicateImport(null);
+      await commitInventoryRows(rows, true, overwriteDuplicates);
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Import failed'); }
     finally { setBusy(false); }
+  }
+
+  function cancelDuplicateImport() {
+    setPendingDuplicateImport(null);
+    setMessage('Đã hủy nhập kho; chưa có dữ liệu nào bị thay đổi.', 'info');
   }
 
   async function reveal(targetItemId = itemId) {
@@ -402,6 +419,9 @@ export default function AdminPage() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <FlashMessage message={flash} remainingMs={flashRemainingMs} close={() => setMessage('')} />
+      <DuplicateImportDialog pending={pendingDuplicateImport} busy={busy}
+        cancel={cancelDuplicateImport} overwrite={() => void resolveDuplicateImport(true)}
+        addMissingOnly={() => void resolveDuplicateImport(false)} />
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
           <button type="button" onClick={() => navigate('dashboard')} className="flex min-w-0 items-center gap-3 text-left">
@@ -613,6 +633,37 @@ function FlashMessage({ message, remainingMs, close }: {
         <button type="button" onClick={close} className={`rounded-lg p-1 transition hover:bg-white/10 ${styles.muted}`} aria-label="Đóng thông báo"><X size={17} /></button>
       </div>
       <div className="h-1 bg-black/20"><div className={`h-full transition-[width] duration-100 ease-linear ${styles.progress}`} style={{ width: `${progress}%` }} /></div>
+    </div>
+  </div>;
+}
+
+function DuplicateImportDialog({ pending, busy, cancel, overwrite, addMissingOnly }: {
+  pending: PendingDuplicateImport | null; busy: boolean; cancel(): void; overwrite(): void; addMissingOnly(): void;
+}) {
+  if (!pending) return null;
+  const overwriteable = pending.preview.overwriteableRows ?? 0;
+  const protectedRows = Math.max(0, pending.preview.duplicateRows - overwriteable);
+  const newRows = pending.preview.validRows;
+  return <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/75 px-4 py-6 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="duplicate-import-title">
+    <div className="w-full max-w-lg rounded-2xl border border-amber-400/30 bg-slate-900 p-5 shadow-2xl shadow-black/60">
+      <div className="flex gap-3">
+        <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-300"><TriangleAlert size={22} /></span>
+        <div className="min-w-0">
+          <h2 id="duplicate-import-title" className="text-lg font-semibold text-white">Phát hiện dữ liệu trùng</h2>
+          <p className="mt-1 text-sm leading-6 text-slate-400">Chọn cách xử lý trước khi lưu vào kho. Dữ liệu đã bán hoặc đang giữ sẽ luôn được bảo vệ.</p>
+        </div>
+      </div>
+      <div className="mt-5 grid grid-cols-3 gap-2">
+        <div className="rounded-xl bg-slate-950 p-3"><p className="text-[11px] text-slate-500">Dòng trùng</p><p className="mt-1 text-xl font-semibold text-amber-200">{pending.preview.duplicateRows}</p></div>
+        <div className="rounded-xl bg-slate-950 p-3"><p className="text-[11px] text-slate-500">Có thể ghi đè</p><p className="mt-1 text-xl font-semibold text-indigo-200">{overwriteable}</p></div>
+        <div className="rounded-xl bg-slate-950 p-3"><p className="text-[11px] text-slate-500">Dòng mới</p><p className="mt-1 text-xl font-semibold text-emerald-200">{newRows}</p></div>
+      </div>
+      {protectedRows > 0 && <p className="mt-3 rounded-xl border border-slate-700 bg-slate-950/70 p-3 text-xs leading-5 text-slate-400">{protectedRows} dòng trùng đang bị bảo vệ vì đã bán/đang giữ hoặc trùng trong tệp, hệ thống sẽ bỏ qua.</p>}
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        <button type="button" disabled={busy} onClick={cancel} className="button-secondary">Hủy</button>
+        <button type="button" disabled={busy} onClick={addMissingOnly} className="button-secondary">Chỉ thêm dòng chưa có</button>
+        <button type="button" disabled={busy || overwriteable === 0} onClick={overwrite} className="button-primary">{busy ? 'Đang xử lý…' : 'Ghi đè dòng trùng'}</button>
+      </div>
     </div>
   </div>;
 }
