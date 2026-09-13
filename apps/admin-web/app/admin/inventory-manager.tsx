@@ -49,8 +49,10 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
   const [actionId, setActionId] = useState<string | null>(null);
   const [filter, setFilter] = useState({ productId: '', status: '', search: '', page: 1 });
   const activeProduct = products.find((product) => product._id === filter.productId);
-  const stats = inventoryStats(products, filter.productId);
   const pageStats = pageStatusCounts(data.items);
+  const stats = activeProduct ? {
+    available: activeProduct.availableStock, reserved: activeProduct.reservedStock, sold: activeProduct.soldStock,
+  } : { available: pageStats.AVAILABLE ?? 0, reserved: pageStats.RESERVED ?? 0, sold: pageStats.SOLD ?? 0 };
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -108,10 +110,10 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
     </div>
 
     <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <MetricCard label={activeProduct ? 'Có sẵn sản phẩm này' : 'Có sẵn toàn kho'} value={stats.available} tone="emerald" />
-      <MetricCard label="Đang giữ" value={stats.reserved} tone="amber" />
-      <MetricCard label="Đã bán" value={stats.sold} tone="sky" />
-      <MetricCard label="Đang hiển thị" value={data.total} tone="slate" />
+      <MetricCard label={activeProduct ? 'Có sẵn sản phẩm này' : 'Có sẵn trang này'} value={stats.available} tone="emerald" />
+      <MetricCard label={activeProduct ? 'Đang giữ sản phẩm này' : 'Đang giữ trang này'} value={stats.reserved} tone="amber" />
+      <MetricCard label={activeProduct ? 'Đã bán sản phẩm này' : 'Đã bán trang này'} value={stats.sold} tone="sky" />
+      <MetricCard label="Tổng kết quả lọc" value={data.total} tone="slate" />
     </div>
 
     <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/40 p-3">
@@ -208,14 +210,6 @@ function Loading() { return <div className="flex min-h-40 items-center justify-c
 function shortId(value: string) { return value.length > 13 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value; }
 function dateTime(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(date); }
 function normalizePage(value: Partial<InventoryPage>): InventoryPage { return { items: Array.isArray(value.items) ? value.items : [], page: Number(value.page) || 1, limit: Number(value.limit) || pageSize, total: Number(value.total) || 0, totalPages: Number(value.totalPages) || 0 }; }
-function inventoryStats(products: ProductRecord[], productId: string) {
-  const rows = productId ? products.filter((product) => product._id === productId) : products;
-  return rows.reduce((sum, product) => ({
-    available: sum.available + product.availableStock,
-    reserved: sum.reserved + product.reservedStock,
-    sold: sum.sold + product.soldStock,
-  }), { available: 0, reserved: 0, sold: 0 });
-}
 function pageStatusCounts(items: InventoryRecord[]) {
   return items.reduce<Partial<Record<InventoryStatus, number>>>((sum, item) => {
     sum[item.status] = (sum[item.status] ?? 0) + 1;
