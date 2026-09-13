@@ -17,6 +17,22 @@ export const WalletTransactionType = {
 } as const;
 export const PaymentRequestStatus = { PENDING: 'PENDING', APPROVED: 'APPROVED', REJECTED: 'REJECTED', EXPIRED: 'EXPIRED' } as const;
 export const MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY = 5;
+
+/** Returns the rounded percentage off, or 0 when the product is not on sale. */
+export function productDiscountPercent(price: number, originalPrice?: number | null) {
+  if (!Number.isSafeInteger(price) || price < 0 || !Number.isSafeInteger(originalPrice) ||
+    originalPrice === undefined || originalPrice === null || originalPrice <= price || originalPrice <= 0) return 0;
+  return Math.max(1, Math.min(100, Math.round(((originalPrice - price) / originalPrice) * 100)));
+}
+
+/** Keeps the first pre-sale price across repeated reductions and clears it once the sale price reaches it. */
+export function productOriginalPriceAfterChange(currentPrice: number, currentOriginalPrice: number | undefined,
+  nextPrice: number) {
+  const activeOriginal = currentOriginalPrice && currentOriginalPrice > currentPrice ? currentOriginalPrice : undefined;
+  if (nextPrice < currentPrice) return Math.max(activeOriginal ?? 0, currentPrice);
+  if (activeOriginal && nextPrice < activeOriginal) return activeOriginal;
+  return undefined;
+}
 export const ComplaintCategory = {
   NO_DELIVERY: 'NO_DELIVERY',
   INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',

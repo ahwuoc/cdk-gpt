@@ -5,7 +5,7 @@ import {
   type BotSession, type Category, type InventoryItem, type Order, type Product, type Setting, type User,
 } from '@store/database';
 import { ComplaintCategory, DeliveryStatus, InventoryStatus, MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY, OrderStatus, ProductStatus, UserStatus,
-  type ComplaintCategoryValue } from '@store/shared';
+  productDiscountPercent, type ComplaintCategoryValue } from '@store/shared';
 
 /**
  * Models used by Telegram update handlers.
@@ -591,7 +591,7 @@ async function showProducts(ctx: Context, categoryKey: string, data: ShopBotData
     categoryName = category.name; categoryDescription = category.description?.trim() ?? '';
   }
 
-  const products = await data.products.find(filter).select('name price').sort({ sortOrder: 1, createdAt: -1 }).limit(50).lean();
+  const products = await data.products.find(filter).select('name price originalPrice').sort({ sortOrder: 1, createdAt: -1 }).limit(50).lean();
   const categoryHeading = markdownEscape(categoryName);
   const categoryDetails = descriptionBlock(categoryDescription, 1_000);
   if (!products.length) {
@@ -605,14 +605,18 @@ async function showProducts(ctx: Context, categoryKey: string, data: ShopBotData
     { $group: { _id: '$productId', count: { $sum: 1 } } },
   ]);
   const stockByProduct = new Map(stockRows.map((row) => [row._id.toString(), row.count]));
-  const buttons = products.map((product) => [Markup.button.callback(
-    `🛒 ${product.name.slice(0, 32)} · ${formatMoney(product.price)} · Còn ${stockByProduct.get(product._id.toString()) ?? 0}`, `select:${product._id.toString()}:${categoryKey}`)]);
+  const buttons = products.map((product) => {
+    const discount = productDiscountPercent(product.price, product.originalPrice);
+    return [Markup.button.callback(
+      `🛒 ${product.name.slice(0, 28)} · ${discount ? `🔥-${discount}% · ` : ''}${formatMoney(product.price)} · Còn ${stockByProduct.get(product._id.toString()) ?? 0}`,
+      `select:${product._id.toString()}:${categoryKey}`)];
+  });
   buttons.push([Markup.button.callback('⬅️ Danh mục', 'menu:products'), Markup.button.callback('🔄 Cập nhật', `category:${categoryKey}`)]);
   await ctx.reply(`📂 *${categoryHeading}*${categoryDetails}\n\nChọn sản phẩm để mua:`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
 }
 
 async function showQuantityOptions(ctx: Context, productId: string, categoryKey: string, data: ShopBotDataContext) {
-  const product = await data.products.findOne({ _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).select('name price description').lean();
+  const product = await data.products.findOne({ _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).select('name price originalPrice description').lean();
   if (!product) { await ctx.reply('Không tìm thấy sản phẩm.', inlineMenu()); return; }
   const available = await data.inventoryItems.countDocuments(sellableInventoryFilter(productId));
   if (!available) {
@@ -627,8 +631,8 @@ async function showQuantityOptions(ctx: Context, productId: string, categoryKey:
   const rows = [quickButtons];
   rows.push([Markup.button.callback(`✍️ Nhập số lượng khác (≤${maximumTelegramPurchaseQuantity()})`, `qty:custom:${productId}:${categoryKey}`)]);
   rows.push([Markup.button.callback('⬅️ Danh mục', 'menu:products')]);
-  await ctx.reply(`🛍 *${markdownEscape(product.name)}*${descriptionBlock(product.description, 2_500)}\n\n💰 ${formatMoney(product.price)} / sản phẩm\n📦 Còn ${available} sản phẩm\n\nChọn số lượng muốn mua:`, {
-    parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows),
+  await ctx.reply(`🛍 <b>${htmlEscape(product.name)}</b>${htmlDescriptionBlock(product.description, 2_500)}\n\n${salePriceBlock(product.price, product.originalPrice)}\n📦 Còn ${available} sản phẩm\n\nChọn số lượng muốn mua:`, {
+    parse_mode: 'HTML', ...Markup.inlineKeyboard(rows),
   });
 }
 
@@ -862,6 +866,18 @@ function descriptionBlock(value: string | undefined, limit: number) {
   if (!description) return '';
   const clipped = description.length > limit ? `${description.slice(0, Math.max(0, limit - 1)).trimEnd()}…` : description;
   return `\n\n${markdownEscape(clipped)}`;
+}
+function htmlEscape(value: string) { return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function htmlDescriptionBlock(value: string | undefined, limit: number) {
+  const description = value?.trim();
+  if (!description) return '';
+  const clipped = description.length > limit ? `${description.slice(0, Math.max(0, limit - 1)).trimEnd()}…` : description;
+  return `\n\n${htmlEscape(clipped)}`;
+}
+function salePriceBlock(price: number, originalPrice?: number) {
+  const discount = productDiscountPercent(price, originalPrice);
+  if (!discount || !originalPrice) return `💰 <b>${htmlEscape(formatMoney(price))}</b> / sản phẩm`;
+  return `🏷 Giá gốc: <s>${htmlEscape(formatMoney(originalPrice))}</s>\n🔥 <b>ĐANG SALE -${discount}%</b>\n💰 Giá sale: <b>${htmlEscape(formatMoney(price))}</b> / sản phẩm`;
 }
 function statusIcon(status: string) { return status === DeliveryStatus.DELIVERED ? '✅' : status === DeliveryStatus.FAILED || status === OrderStatus.DELIVERY_FAILED ? '⚠️' : '⏳'; }
 

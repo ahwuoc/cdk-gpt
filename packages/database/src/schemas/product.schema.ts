@@ -9,7 +9,7 @@ export interface ProductFieldDefinition {
   visibleToCustomer: boolean; required: boolean; sortOrder: number;
 }
 export interface Product {
-  name: string; slug: string; description: string; price: number;
+  name: string; slug: string; description: string; price: number; originalPrice?: number;
   categoryId?: Types.ObjectId;
   status: typeof ProductStatus[keyof typeof ProductStatus]; imageUrls: string[]; instructions?: string;
   warrantyPolicy?: string; warrantyDays: number; deliveryTemplate: string; fieldDefinitions: ProductFieldDefinition[];
@@ -31,6 +31,7 @@ export const ProductSchema = new Schema<Product>({
   slug: { type: String, required: true, lowercase: true, trim: true, match: /^[a-z0-9]+(?:-[a-z0-9]+)*$/ },
   description: { type: String, required: true, maxlength: 10_000 },
   price: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+  originalPrice: { type: Number, min: 1, validate: Number.isSafeInteger },
   status: { type: String, enum: Object.values(ProductStatus), default: ProductStatus.DRAFT, required: true },
   categoryId: objectId('Category'),
   imageUrls: [{ type: String, trim: true, maxlength: 2048 }], instructions: { type: String, maxlength: 20_000 },

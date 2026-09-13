@@ -1,13 +1,15 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import { ProductFieldType, type AuditLog, type Category, type InventoryItem, type Product,
   type ProductDocument, type ProductFieldDefinition } from '@store/database';
 import { EncryptionService, createMaskedPreview } from '@store/encryption';
-import { InventoryStatus, ProductStatus, isMongoDuplicateKey, parseInventoryPatternTemplate } from '@store/shared';
+import { InventoryStatus, ProductStatus, isMongoDuplicateKey, parseInventoryPatternTemplate,
+  productDiscountPercent, productOriginalPriceAfterChange } from '@store/shared';
 import type { SaveProductDto } from './product.dto';
 import type { ProductQueryDto } from './product-query.dto';
+import { MessagingService } from '../messaging/messaging.service';
 
 type ProductListItem = Product & { availableStock: number; reservedStock: number; soldStock: number };
 type ProductPage = { items: ProductListItem[]; pagination: { page: number; limit: number; total: number; totalPages: number } };
@@ -23,6 +25,7 @@ export class ProductService {
     @InjectModel('InventoryItem') private readonly inventory: Model<InventoryItem>,
     @InjectModel('AuditLog') private readonly audits: Model<AuditLog>,
     @InjectModel('Category') private readonly categories?: Model<Category>,
+    @Optional() private readonly messaging?: MessagingService,
   ) {}
 
   async list(): Promise<ProductListItem[]>;
@@ -87,6 +90,7 @@ export class ProductService {
     const productId = this.objectId(id, 'product');
     const actor = this.objectId(adminId, 'admin');
     const session = await this.connection.startSession(); let product: ProductDocument | null | undefined;
+    let previousPrice: number | undefined;
     try {
       await session.withTransaction(async () => {
         const existing = await this.products.findOne({ _id: productId, deletedAt: null }).session(session);
@@ -103,12 +107,31 @@ export class ProductService {
         } else {
           this.validateTemplate(effectiveInput);
         }
-        existing.set({ ...effectiveInput, updatedBy: actor }); await existing.save({ session }); product = existing;
+        previousPrice = existing.price;
+        const originalPrice = productOriginalPriceAfterChange(previousPrice, existing.originalPrice, effectiveInput.price);
+        existing.set({ ...effectiveInput, originalPrice, updatedBy: actor });
+        await existing.save({ session }); product = existing;
         await this.audit(actor, 'PRODUCT_UPDATED', existing._id, requestId,
-          { slug: existing.slug, status: existing.status, renamedFields }, session);
+          { slug: existing.slug, status: existing.status, renamedFields, previousPrice, price: existing.price,
+            originalPrice: existing.originalPrice, discountPercent: productDiscountPercent(existing.price, existing.originalPrice) }, session);
       });
       if (!product) throw new Error('Product transaction did not update a product');
-      return product;
+      let priceNotificationQueued: boolean | undefined;
+      if (previousPrice !== undefined && previousPrice !== product.price && product.status === ProductStatus.ACTIVE) {
+        priceNotificationQueued = false;
+        try {
+          if (this.messaging) {
+            await this.messaging.sendBroadcast(adminId,
+              productPriceChangeMessage(product.name, previousPrice, product.price, product.originalPrice),
+              `product-price:${product._id.toString()}:${requestId ?? product.updatedAt.getTime()}`);
+            priceNotificationQueued = true;
+          }
+        } catch (error) {
+          console.error({ event: 'product-price-notification-queue-failed', productId: product._id.toString(),
+            message: error instanceof Error ? error.message : 'unknown error' });
+        }
+      }
+      return { ...product.toObject(), priceNotificationQueued };
     } catch (error) {
       if (isMongoDuplicateKey(error)) {
         if (error.keyPattern?.payloadHash) throw new ConflictException('Key mới làm trùng dữ liệu tồn kho; không thể đổi key này');
@@ -249,6 +272,26 @@ export class ProductService {
     return this.audits.create([{ actorType: 'ADMIN', actorId, action, resourceType: 'Product', resourceId, requestId, metadata }], { session });
   }
 }
+
+function productPriceChangeMessage(name: string, previousPrice: number, price: number, originalPrice?: number) {
+  const discount = productDiscountPercent(price, originalPrice);
+  if (price < previousPrice) {
+    return [
+      `🔥 ${name} đang SALE!`,
+      `Giá cũ: ${formatMoney(originalPrice ?? previousPrice)}`,
+      `Giá mới: ${formatMoney(price)}`,
+      `Giảm ${discount}% — mở mục Sản phẩm trên bot để mua ngay.`,
+    ].join('\n');
+  }
+  return [
+    `📢 ${name} vừa cập nhật giá.`,
+    `Giá trước: ${formatMoney(previousPrice)}`,
+    `Giá mới: ${formatMoney(price)}`,
+    ...(discount ? [`Sản phẩm vẫn đang SALE, giảm ${discount}% so với giá gốc ${formatMoney(originalPrice!)}.`] : []),
+  ].join('\n');
+}
+
+function formatMoney(value: number) { return new Intl.NumberFormat('vi-VN').format(value) + ' đ'; }
 
 function parseInventoryPatternKeys(pattern: string) {
   try { return parseInventoryPatternTemplate(pattern).keys; }

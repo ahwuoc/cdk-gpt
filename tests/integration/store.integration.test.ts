@@ -1193,14 +1193,18 @@ integration('digital store on a MongoDB replica set', () => {
     const updated = await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE },
       adminId.toString(), 'update-product');
     expect(updated.price).toBe(300); expect(updated.status).toBe(ProductStatus.ACTIVE);
+    const discounted = await service.update(created._id.toString(), { ...input, price: 225, status: ProductStatus.ACTIVE },
+      adminId.toString(), 'discount-product');
+    expect(discounted.price).toBe(225); expect(discounted.originalPrice).toBe(300);
     const payload = { login: 'managed@example.invalid' };
     await InventoryItemModel.create({ productId: created._id, encryptedPayload: encryption.encrypt(payload),
       maskedPreview: payload, payloadHash: encryption.normalizedHash(payload), status: InventoryStatus.AVAILABLE,
       createdBy: adminId, deletedAt: null });
     const compatibleFields = [...input.fieldDefinitions,
       { name: 'Ghi chú', key: 'note', type: 'STRING' as const, sensitive: false, visibleToCustomer: true, required: false, sortOrder: 2 }];
-    await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
+    const saleEnded = await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
       fieldDefinitions: compatibleFields }, adminId.toString(), 'compatible-fields');
+    expect(saleEnded.originalPrice).toBeUndefined();
     const renamedFields = compatibleFields.map((field) => field.key === 'login' ? { ...field, key: 'api' } : field);
     const renamed = await service.update(created._id.toString(), { ...input, price: 300, status: ProductStatus.ACTIVE,
       fieldDefinitions: renamedFields, inventoryPattern: 'login----note' }, adminId.toString(), 'rename-login-to-api');
@@ -1219,7 +1223,7 @@ integration('digital store on a MongoDB replica set', () => {
     expect((await validate(archivedInput)).some((error) => error.property === 'status')).toBeTrue();
     await service.archive(created._id.toString(), adminId.toString(), 'archive-product');
     expect(await service.list()).toHaveLength(0);
-    expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(5);
+    expect(await AuditLogModel.countDocuments({ resourceType: 'Product' })).toBe(6);
   });
 
   test('admin can create a text-only product with a free-form inventory key and pattern', async () => {

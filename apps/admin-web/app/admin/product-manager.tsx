@@ -3,6 +3,7 @@
 import { FormEvent, useState } from 'react';
 import { PackagePlus, Pencil, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { requestId } from './request-id';
+import { productDiscountPercent } from '@store/shared';
 import { missingDeliveryTemplateKeys, normalizeProductFieldKey, synchronizedInventoryFormat,
   unknownDeliveryTemplateKeys } from './product-form-utils';
 
@@ -23,7 +24,8 @@ interface ProductInput {
 }
 
 export interface ProductRecord extends ProductInput {
-  _id: string; availableStock: number; reservedStock: number; soldStock: number;
+  _id: string; originalPrice?: number; priceNotificationQueued?: boolean;
+  availableStock: number; reservedStock: number; soldStock: number;
 }
 
 export interface CategoryRecord { _id: string; name: string; slug: string; description?: string; sortOrder: number; }
@@ -55,6 +57,11 @@ export function ProductManager({ products, categories, pagination, authorized, r
   const [saving, setSaving] = useState(false);
   const [hasInventory, setHasInventory] = useState(false);
   const [originalFieldCount, setOriginalFieldCount] = useState(0);
+  const editingProduct = products.find((product) => product._id === editingId);
+  const previewOriginalPrice = editingProduct && draft.price < editingProduct.price
+    ? Math.max(editingProduct.originalPrice ?? 0, editingProduct.price)
+    : editingProduct?.originalPrice && draft.price < editingProduct.originalPrice ? editingProduct.originalPrice : undefined;
+  const previewDiscount = productDiscountPercent(draft.price, previewOriginalPrice);
 
   function reset() { setDraft(emptyProduct); setEditingId(null); setHasInventory(false); setOriginalFieldCount(0); }
 
@@ -84,10 +91,24 @@ export function ProductManager({ products, categories, pagination, authorized, r
         method: id ? 'PUT' : 'POST', headers: { 'content-type': 'application/json', 'x-request-id': requestId() },
         body: JSON.stringify(input),
       });
-      const body = await response.json();
+      const body = await response.json() as ProductRecord & { message?: string | string[] };
       if (!response.ok) throw new Error(productErrorMessage(body));
       await reload(); selectProduct(body._id); reset();
-      setMessage(id ? `Đã cập nhật ${body.name}.` : `Đã tạo sản phẩm ${body.name}. Bạn có thể nhập kho ngay bên dưới.`);
+      const previous = id ? products.find((product) => product._id === id) : undefined;
+      const discount = productDiscountPercent(body.price, body.originalPrice);
+      const priceReduced = previous && body.price < previous.price;
+      const priceIncreased = previous && body.price > previous.price;
+      const saleEnded = previous && productDiscountPercent(previous.price, previous.originalPrice) > 0 && !discount;
+      const notification = body.priceNotificationQueued === true ? ' Đã xếp hàng thông báo cho khách Telegram.'
+        : body.priceNotificationQueued === false ? ' Giá đã lưu nhưng chưa xếp được thông báo Telegram; hãy kiểm tra cấu hình QStash/Redis.' : '';
+      setMessage(id
+        ? priceReduced
+          ? `Đã giảm giá ${body.name} ${discount}%: từ ${formatMoney(body.originalPrice ?? previous.price)} còn ${formatMoney(body.price)}. Sản phẩm đang SALE.${notification}`
+          : priceIncreased
+            ? `Đã tăng giá ${body.name}: từ ${formatMoney(previous.price)} lên ${formatMoney(body.price)}${discount ? `; vẫn đang SALE giảm ${discount}%` : saleEnded ? '; chương trình SALE đã kết thúc' : ''}.${notification}`
+          : saleEnded ? `Đã cập nhật ${body.name}. Chương trình SALE đã kết thúc.`
+            : `Đã cập nhật ${body.name}${discount ? `; đang SALE giảm ${discount}%` : ''}.`
+        : `Đã tạo sản phẩm ${body.name}. Bạn có thể nhập kho ngay bên dưới.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể lưu sản phẩm'); }
     finally { setSaving(false); }
   }
@@ -147,7 +168,9 @@ export function ProductManager({ products, categories, pagination, authorized, r
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Tên sản phẩm"><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} required /></Field>
           <Field label="Slug"><input className="input font-mono" value={draft.slug} onChange={(event) => setDraft({ ...draft, slug: slugify(event.target.value) })} placeholder="tai-khoan-chatgpt" required /></Field>
-          <Field label="Giá bán"><input className="input" type="number" min="0" step="1" value={draft.price} onChange={(event) => setDraft({ ...draft, price: Number(event.target.value) })} required /></Field>
+          <Field label="Giá bán"><input className="input" type="number" min="0" step="1" value={draft.price} onChange={(event) => setDraft({ ...draft, price: Number(event.target.value) })} required />
+            {previewDiscount > 0 && <p className="mt-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">🔥 Sau khi lưu: <span className="line-through opacity-70">{formatMoney(previewOriginalPrice!)}</span> → <b>{formatMoney(draft.price)}</b> · giảm {previewDiscount}%</p>}
+          </Field>
           <Field label="Trạng thái"><select className="input" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as ProductStatus })}><option value="DRAFT">Bản nháp</option><option value="ACTIVE">Đang bán</option><option value="INACTIVE">Tạm ngừng</option></select></Field>
           <Field label="Danh mục"><select className="input" value={draft.categoryId ?? ''} onChange={(event) => setDraft({ ...draft, categoryId: event.target.value || undefined })}><option value="">Chưa phân loại</option>{categories.map((category) => <option key={category._id} value={category._id}>{category.name}</option>)}</select></Field>
         </div>
@@ -196,7 +219,7 @@ export function ProductManager({ products, categories, pagination, authorized, r
     <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
       <div className="mb-4 flex items-center justify-between"><div><h2 className="font-semibold">Danh sách sản phẩm</h2><p className="mt-1 text-xs text-slate-400">{pagination.total} sản phẩm · trang {pagination.page}/{Math.max(pagination.totalPages, 1)}</p></div><button type="button" disabled={saving} onClick={() => void reload()} className="button-secondary flex items-center gap-2 px-3 py-2"><RefreshCw size={15} />Tải lại</button></div>
       <div className="space-y-3">{products.map((product) => <div key={product._id} className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><h3 className="font-medium">{product.name}</h3><Status value={product.status} /></div><p className="mt-1 font-mono text-xs text-slate-500">{product.slug} · ID {product._id}</p></div><p className="font-semibold text-indigo-300">{formatMoney(product.price)}</p></div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><h3 className="font-medium">{product.name}</h3><Status value={product.status} />{productDiscountPercent(product.price, product.originalPrice) > 0 && <span className="rounded-full bg-rose-500/15 px-2 py-1 text-[10px] font-semibold text-rose-300">SALE -{productDiscountPercent(product.price, product.originalPrice)}%</span>}</div><p className="mt-1 font-mono text-xs text-slate-500">{product.slug} · ID {product._id}</p></div><ProductPrice product={product} /></div>
         <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs"><Stock label="Có sẵn" value={product.availableStock} color="text-emerald-400" /><Stock label="Đang giữ" value={product.reservedStock} color="text-amber-400" /><Stock label="Đã bán" value={product.soldStock} color="text-slate-300" /></div>
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4"><button type="button" onClick={() => { selectProduct(product._id); setMessage(`Đã chọn ${product.name} để nhập kho.`); }} className="button-secondary py-2">Nhập kho</button><button type="button" onClick={() => edit(product)} className="button-secondary flex items-center justify-center gap-2 py-2"><Pencil size={14} />Sửa</button><button type="button" disabled={saving} onClick={() => void toggle(product)} className="button-secondary py-2">{product.status === 'ACTIVE' ? 'Tạm ngừng' : 'Bật bán'}</button><button type="button" disabled={saving} onClick={() => void archive(product)} className="rounded-xl border border-rose-900/60 px-3 py-2 text-sm text-rose-400 hover:bg-rose-950/30">Lưu trữ</button></div>
       </div>)}{products.length === 0 && <p className="rounded-xl border border-dashed border-slate-700 p-8 text-center text-sm text-slate-500">Chưa có sản phẩm. Điền biểu mẫu phía trên để tạo sản phẩm đầu tiên.</p>}
@@ -210,6 +233,7 @@ function NumberInput({ value, min, onChange }: { value: number; min?: number; on
 function Check({ label, checked, disabled = false, onChange }: { label: string; checked: boolean; disabled?: boolean; onChange(value: boolean): void }) { return <label className={`flex items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />{label}</label>; }
 function Stock({ label, value, color }: { label: string; value: number; color: string }) { return <div className="rounded-lg bg-slate-900 p-2"><p className="text-slate-500">{label}</p><p className={`mt-1 text-base font-semibold ${color}`}>{value}</p></div>; }
 function Status({ value }: { value: ProductStatus }) { const colors: Record<ProductStatus, string> = { ACTIVE: 'bg-emerald-500/15 text-emerald-400', DRAFT: 'bg-slate-500/15 text-slate-400', INACTIVE: 'bg-amber-500/15 text-amber-400', ARCHIVED: 'bg-rose-500/15 text-rose-400' }; return <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${colors[value]}`}>{value}</span>; }
+function ProductPrice({ product }: { product: ProductRecord }) { const discount = productDiscountPercent(product.price, product.originalPrice); return <div className="text-right">{discount > 0 && <p className="text-xs text-slate-500 line-through">{formatMoney(product.originalPrice!)}</p>}<p className={`font-semibold ${discount ? 'text-rose-300' : 'text-indigo-300'}`}>{formatMoney(product.price)}</p></div>; }
 function slugify(value: string) { return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
 function formatMoney(value: number) { return new Intl.NumberFormat('vi-VN').format(value) + ' đ'; }
 function replacePatternKey(pattern: string, from: string, to: string) {
