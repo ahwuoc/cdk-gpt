@@ -69,7 +69,7 @@ export class MessagingService {
 
   async list(query: AdminMessageQueryDto) {
     const page = query.page ?? 1; const limit = query.limit ?? 30;
-    const filter: FilterQuery<CustomerMessage> = { conversationType: CustomerConversationType.DIRECT };
+    const filter: FilterQuery<CustomerMessage> = { ...directConversationFilter() };
     if (query.telegramId) {
       const user = await this.users.findOne({ telegramId: query.telegramId, deletedAt: null }).select('_id').lean();
       if (!user) return { items: [], page, limit, total: 0, totalPages: 0 };
@@ -100,7 +100,7 @@ export class MessagingService {
       metadata: Array<{ total: number }>;
     };
     const [result] = await this.messages.aggregate<ConversationAggregate>([
-      { $match: { conversationType: CustomerConversationType.DIRECT } },
+      { $match: directConversationFilter() },
       { $sort: { createdAt: -1, _id: -1 } },
       { $group: { _id: '$userId', lastMessage: { $first: '$$ROOT' }, messageCount: { $sum: 1 } } },
       { $lookup: { from: this.users.collection.name, localField: '_id', foreignField: '_id', as: 'user' } },
@@ -174,6 +174,9 @@ function normalizeBody(value: string) {
   const body = value.trim();
   if (!body || body.length > 4_000) throw new BadRequestException('Nội dung phải từ 1 đến 4.000 ký tự');
   return body;
+}
+function directConversationFilter() {
+  return { conversationType: CustomerConversationType.DIRECT, audience: { $ne: CustomerMessageAudience.BROADCAST } };
 }
 function escapeRegex(value: string) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function telegramErrorCode(error: unknown) {
