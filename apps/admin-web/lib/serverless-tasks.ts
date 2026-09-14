@@ -15,7 +15,7 @@ import { StockAlertProcessor, type StockAlertBatch } from '../../bot/src/stock-a
 import { PurchaseAlertProcessor, type PurchaseAlertBatch } from '../../bot/src/purchase-alert.processor';
 import { AdminBroadcastProcessor, type AdminBroadcastBatch } from '../../bot/src/admin-broadcast.processor';
 
-type TelegramClient = { telegram: Telegram };
+type TelegramClient = { telegram: Pick<Telegram, 'sendMessage' | 'sendDocument' | 'deleteMessage'> };
 const PENDING_DELIVERY_RECOVERY_LIMIT = 10;
 const PENDING_DELIVERY_PUBLISH_CONCURRENCY = 5;
 
@@ -76,7 +76,7 @@ export function adminBroadcastTaskFrom(value: unknown): AdminBroadcastBatch | un
 
 export async function processDeliveryTask(orderId: string, retried = 0) {
   const { client, runtime } = await currentTelegramRuntime();
-  const processor = new DeliveryProcessor(client, runtime.adminTelegramIds);
+  const processor = new DeliveryProcessor(client, runtime.adminTelegramIds, runtime.apiUrl);
   const attempt = { id: `qstash-${orderId}`, data: { orderId }, attemptsMade: retried };
   try {
     return await processor.process(attempt as never);

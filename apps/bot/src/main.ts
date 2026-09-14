@@ -18,7 +18,7 @@ await mongoose.connect(config.mongoUri, { autoIndex: false });
 const bot = new BotRuntimeManager(config.botToken, config.apiUrl, botApiSecret, config.shopName,
   config.botConfigPollSeconds, config.adminTelegramIds);
 await bot.start();
-const processor = new DeliveryProcessor(bot, () => bot.getAdminTelegramIds());
+const processor = new DeliveryProcessor(bot, () => bot.getAdminTelegramIds(), config.apiUrl);
 const worker = new Worker<DeliveryJob>('delivery', (job) => processor.process(job), { connection: redisConnectionOptions(config.redisUrl), concurrency: Number(process.env.DELIVERY_CONCURRENCY ?? 5),
   lockDuration: 60_000, stalledInterval: 30_000, maxStalledCount: 1 });
 worker.on('failed', (job, error) => {
