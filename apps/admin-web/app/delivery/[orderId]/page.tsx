@@ -36,7 +36,7 @@ export default async function DeliveryPage({ params, searchParams }: {
                 <h2 className="flex items-center gap-2 font-semibold text-white"><KeyRound size={18} className="text-indigo-300" />Thông tin tài khoản</h2>
                 <CopyButton text={data.formatted} />
               </div>
-              <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-black/35 p-4 font-mono text-sm leading-7 text-amber-100">{data.formatted}</pre>
+              <pre className="max-h-[55vh] overflow-auto whitespace-pre rounded-xl bg-black/35 p-4 font-mono text-sm leading-7 text-amber-100">{data.formatted}</pre>
             </div>
 
             {data.instructions && <InfoBlock title="Hướng dẫn sử dụng" body={data.instructions} />}

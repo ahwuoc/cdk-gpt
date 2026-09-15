@@ -137,6 +137,20 @@ export function formatInventoryPatternPayload(payload: Record<string, unknown>, 
   return output;
 }
 
+/** Formats only fields that are explicitly allowed for the customer. When
+ * every pattern field is visible, the configured literals are preserved.
+ * Hidden fields are omitted and the remaining values stay compact on one line. */
+export function formatCustomerInventoryPayload(payload: Record<string, unknown>, pattern: string,
+  visibleKeys: readonly string[]) {
+  const definition = parseInventoryPatternTemplate(pattern);
+  const allowed = new Set(visibleKeys);
+  if (definition.keys.every((key) => allowed.has(key))) return formatInventoryPatternPayload(payload, definition);
+  return definition.keys.filter((key) => allowed.has(key)).map((key) => {
+    const value = payload[key];
+    return value === undefined || value === null ? '' : String(value);
+  }).join('----');
+}
+
 function parseCustomInventoryPattern(pattern: string): InventoryPatternDefinition {
   const matcher = /\{\{\s*([^{}]+?)\s*\}\}/gu;
   const keys: string[] = [];

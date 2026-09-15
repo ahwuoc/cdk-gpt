@@ -33,10 +33,10 @@ export interface ProductPagination { page: number; limit: number; total: number;
 
 const emptyProduct: ProductInput = {
   name: '', slug: '', description: '', price: 0, status: 'DRAFT', imageUrls: [], categoryId: undefined, instructions: '',
-  warrantyPolicy: '', warrantyDays: 0, deliveryTemplate: 'Tài khoản: {{login}}\nMật khẩu: {{password}}',
+  warrantyPolicy: '', warrantyDays: 0, deliveryTemplate: '{{login}}----{{password}}',
   fieldDefinitions: [
-    { name: 'Tài khoản', key: 'login', type: 'STRING', sensitive: false, visibleToCustomer: true, required: true, sortOrder: 1 },
-    { name: 'Mật khẩu', key: 'password', type: 'STRING', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 2 },
+    { name: 'login', key: 'login', type: 'STRING', sensitive: false, visibleToCustomer: true, required: true, sortOrder: 1 },
+    { name: 'password', key: 'password', type: 'STRING', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 2 },
   ],
   inventoryPattern: '{{login}}----{{password}}',
   purchaseLimitPerUser: 0, lowStockThreshold: 5, sortOrder: 0,
@@ -74,7 +74,10 @@ export function ProductManager({ products, categories, pagination, authorized, r
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const fieldDefinitions = draft.fieldDefinitions.map((field) => ({ ...field, key: field.key.trim(), type: 'STRING' as const }));
+    const fieldDefinitions = draft.fieldDefinitions.map((field) => {
+      const key = field.key.trim();
+      return { ...field, name: key, key, type: 'STRING' as const };
+    });
     const normalized = { ...draft, fieldDefinitions };
     const needsTemplateSync = unknownDeliveryTemplateKeys(fieldDefinitions, draft.deliveryTemplate).length > 0
       || missingDeliveryTemplateKeys(fieldDefinitions, draft.deliveryTemplate).length > 0;
@@ -134,7 +137,8 @@ export function ProductManager({ products, categories, pagination, authorized, r
   function updateField(index: number, patch: Partial<ProductField>) {
     setDraft((current) => {
       const previous = current.fieldDefinitions[index];
-      const fieldDefinitions = current.fieldDefinitions.map((field, position) => position === index ? { ...field, ...patch } : field);
+      const normalizedPatch = patch.key === undefined ? patch : { ...patch, name: patch.key };
+      const fieldDefinitions = current.fieldDefinitions.map((field, position) => position === index ? { ...field, ...normalizedPatch } : field);
       if (!previous || !patch.key || patch.key === previous.key) return { ...current, fieldDefinitions };
       return {
         ...current,
@@ -148,7 +152,7 @@ export function ProductManager({ products, categories, pagination, authorized, r
   function addField() {
     if (draft.fieldDefinitions.length >= 100) { setMessage('Mỗi sản phẩm hỗ trợ tối đa 100 trường dữ liệu.'); return; }
     setDraft((current) => ({ ...current, fieldDefinitions: [...current.fieldDefinitions, {
-      name: 'Trường mới', key: `field${current.fieldDefinitions.length + 1}`, type: 'STRING' as const,
+      name: `field${current.fieldDefinitions.length + 1}`, key: `field${current.fieldDefinitions.length + 1}`, type: 'STRING' as const,
       sensitive: true, visibleToCustomer: true, required: !hasInventory, sortOrder: current.fieldDefinitions.length + 1,
     }] }));
   }
@@ -194,17 +198,16 @@ export function ProductManager({ products, categories, pagination, authorized, r
         </FormSection>
 
         <FormSection icon={<Settings2 size={18} />} title="Cấu trúc dữ liệu kho" subtitle="Định nghĩa các cột khi nhập hàng, ví dụ email, password, 2fa, link-payment.">
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-slate-200">Các trường dữ liệu</p><p className="text-xs text-slate-500">Mọi trường đều là text. Bạn có thể tự đặt tên/key; pattern và mẫu giao hàng sẽ đồng bộ theo key.</p></div><button type="button" onClick={addField} className="button-secondary flex shrink-0 items-center gap-2 px-3 py-2"><Plus size={15} />Thêm trường</button></div>
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-sm font-medium text-slate-200">Các key dữ liệu</p><p className="text-xs text-slate-500">Chỉ cần nhập key bạn muốn dùng. Key cũng chính là tên hiển thị; mọi trường đều được lưu dạng text.</p></div><button type="button" onClick={addField} className="button-secondary flex shrink-0 items-center gap-2 px-3 py-2"><Plus size={15} />Thêm trường</button></div>
           {hasInventory && <div className="mb-3 rounded-xl border border-indigo-500/25 bg-indigo-500/10 p-3 text-xs leading-5 text-indigo-100"><b>Bạn vẫn đổi được key cũ.</b> Khi lưu, hệ thống sẽ đổi key trong toàn bộ hàng đã nhập và mã hóa lại an toàn. “Nhạy cảm” và “Gửi cho khách” của trường cũ vẫn được khóa để tránh làm lộ hoặc mất dữ liệu.</div>}
           <div className="space-y-3">{draft.fieldDefinitions.map((field, index) => {
             const existingField = hasInventory && index < originalFieldCount;
             const newFieldOnExistingStock = hasInventory && !existingField;
             const keyError = productFieldKeyError(field.key);
-            return <div key={`${field.key}-${index}`} className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 md:grid-cols-[1fr_1fr_auto]">
-              <label><span className="mb-1 block text-[11px] font-medium text-slate-500">Tên hiển thị</span><input className="input" value={field.name} onChange={(event) => updateField(index, { name: event.target.value })} placeholder="API key" required /></label>
-              <label><span className="mb-1 block text-[11px] font-medium text-slate-500">Key dữ liệu (text tự do)</span><input className="input font-mono" value={field.key} onChange={(event) => updateField(index, { key: normalizeProductFieldKey(event.target.value) })} placeholder="2fa, tài khoản phụ, api-key…" maxLength={64} spellCheck={false} aria-invalid={Boolean(keyError)} required />{keyError ? <span className="mt-1 block text-[10px] text-rose-400">{keyError}</span> : <span className="mt-1 block text-[10px] text-slate-600">Tối đa 64 ký tự; không dùng dấu chấm, $, {'{ }'} hoặc ký tự xuống dòng.</span>}</label>
+            return <div key={`${field.key}-${index}`} className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <label><span className="mb-1 block text-[11px] font-medium text-slate-500">Key dữ liệu (text tự do)</span><input className="input font-mono" value={field.key} onChange={(event) => updateField(index, { key: normalizeProductFieldKey(event.target.value) })} placeholder="email, password, 2fa, link-payment…" maxLength={64} spellCheck={false} aria-invalid={Boolean(keyError)} required />{keyError ? <span className="mt-1 block text-[10px] text-rose-400">{keyError}</span> : <span className="mt-1 block text-[10px] text-slate-600">Key này cũng là tên hiển thị. Tối đa 64 ký tự; không dùng dấu chấm, $, {'{ }'} hoặc xuống dòng.</span>}</label>
               <button type="button" disabled={draft.fieldDefinitions.length === 1 || existingField} onClick={() => setDraft({ ...draft, fieldDefinitions: draft.fieldDefinitions.filter((_, position) => position !== index) })} className="mt-5 rounded-xl border border-rose-900/60 px-3 text-rose-400 disabled:cursor-not-allowed disabled:opacity-30"><Trash2 size={16} /></button>
-              <div className="flex flex-wrap gap-4 text-xs text-slate-400 md:col-span-4">
+              <div className="flex flex-wrap gap-4 text-xs text-slate-400 md:col-span-2">
                 <Check label="Bắt buộc" checked={field.required} disabled={newFieldOnExistingStock} onChange={(checked) => updateField(index, { required: checked })} />
                 <Check label="Nhạy cảm" checked={field.sensitive} disabled={existingField} onChange={(checked) => updateField(index, { sensitive: checked })} />
                 <Check label="Gửi cho khách" checked={field.visibleToCustomer} disabled={existingField} onChange={(checked) => updateField(index, { visibleToCustomer: checked })} />
@@ -220,7 +223,7 @@ export function ProductManager({ products, categories, pagination, authorized, r
           <input className="input font-mono" value={draft.inventoryPattern} onChange={(event) => setDraft({ ...draft, inventoryPattern: event.target.value })} placeholder="{{email}}----{{password}}----{{2fa}}" required />
           <p className="mt-2 text-xs leading-5 text-slate-500">Có thể tùy biến chữ và dấu ngăn cách. Ví dụ <code>{'Email={{email}} | Pass={{password}} / 2FA={{2fa}}'}</code>. Phần trong <code>{'{{ }}'}</code> là key để hệ thống nhận đúng cột.</p>
         </Field>
-        <Field label="Template giao hàng"><textarea className="input min-h-28 font-mono text-xs" value={draft.deliveryTemplate} onChange={(event) => setDraft({ ...draft, deliveryTemplate: event.target.value })} required /><p className="mt-2 text-xs text-slate-500">Ví dụ: <code>Tài khoản: {'{{login}}'} · Mật khẩu: {'{{password}}'}</code></p></Field>
+        <Field label="Định dạng giao hàng"><textarea className="input min-h-24 font-mono text-xs" value={draft.deliveryTemplate} onChange={(event) => setDraft({ ...draft, deliveryTemplate: event.target.value })} required /><p className="mt-2 text-xs text-slate-500">Mặc định hiển thị gọn trên một dòng, ví dụ <code>{'{{email}}----{{password}}----{{2fa}}'}</code>.</p></Field>
         </FormSection>
         </div>
 
@@ -311,6 +314,9 @@ function replaceTemplateKey(template: string, from: string, to: string) { return
 function validateProductInput(input: ProductInput) {
   const invalid = input.fieldDefinitions.find((field) => productFieldKeyError(field.key));
   if (invalid) throw new Error(productFieldKeyError(invalid.key) ?? 'Key dữ liệu không hợp lệ.');
+  const keys = input.fieldDefinitions.map((field) => field.key.trim());
+  const duplicateKey = keys.find((key, index) => keys.indexOf(key) !== index);
+  if (duplicateKey) throw new Error(`Key dữ liệu “${duplicateKey}” đang bị trùng. Mỗi key chỉ được dùng một lần.`);
   const unknownTemplateKey = unknownDeliveryTemplateKeys(input.fieldDefinitions, input.deliveryTemplate)[0];
   if (unknownTemplateKey) throw new Error(`Template giao hàng vẫn còn key “${unknownTemplateKey}” không tồn tại. Bấm “Đồng bộ pattern & template” để sửa.`);
 }
@@ -332,7 +338,7 @@ function productInput(product: ProductRecord): ProductInput {
     name: product.name, slug: product.slug, description: product.description, price: product.price, status: product.status, categoryId: product.categoryId,
     imageUrls: product.imageUrls ?? [], instructions: product.instructions ?? '', warrantyPolicy: product.warrantyPolicy ?? '',
     warrantyDays: product.warrantyDays, deliveryTemplate: product.deliveryTemplate,
-    fieldDefinitions: product.fieldDefinitions.map((field) => ({ ...field, type: 'STRING' })),
+    fieldDefinitions: product.fieldDefinitions.map((field) => ({ ...field, name: field.key, type: 'STRING' })),
     inventoryPattern: product.inventoryPattern ?? synchronizedInventoryFormat(product.fieldDefinitions).inventoryPattern,
     purchaseLimitPerUser: product.purchaseLimitPerUser,
     lowStockThreshold: product.lowStockThreshold, sortOrder: product.sortOrder,

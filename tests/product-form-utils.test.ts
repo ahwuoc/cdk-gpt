@@ -11,7 +11,7 @@ test('inventory format sync replaces stale placeholders and includes every custo
 
   expect(synchronizedInventoryFormat(fields)).toEqual({
     inventoryPattern: '{{email}}----{{password}}----{{Mã 2FA}}',
-    deliveryTemplate: 'email: {{email}}\nMật khẩu: {{password}}\n2FA: {{Mã 2FA}}',
+    deliveryTemplate: '{{email}}----{{password}}----{{Mã 2FA}}',
   });
   expect(missingDeliveryTemplateKeys(fields, 'Email: {{email}}')).toEqual(['password', 'Mã 2FA']);
 });

@@ -1,5 +1,4 @@
 export interface InventoryFormatField {
-  name: string;
   key: string;
   visibleToCustomer: boolean;
   sortOrder: number;
@@ -15,7 +14,7 @@ export function synchronizedInventoryFormat(fields: InventoryFormatField[]) {
   return {
     inventoryPattern: ordered.map((field) => `{{${field.key.trim()}}}`).join('----'),
     deliveryTemplate: visible.length
-      ? visible.map((field) => `${field.name.trim() || field.key}: {{${field.key}}}`).join('\n')
+      ? visible.map((field) => `{{${field.key.trim()}}}`).join('----')
       : 'Dữ liệu: {{payload}}',
   };
 }

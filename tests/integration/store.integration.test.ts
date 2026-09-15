@@ -74,7 +74,7 @@ async function fixture(stock = 1, balance = 1000, purchaseLimit = 0) {
   const adminId = new Types.ObjectId();
   const product = await ProductModel.create({ name: `Product ${new Types.ObjectId()}`, slug: `product-${new Types.ObjectId()}`,
     description: 'Integration fixture', price: 100, status: ProductStatus.ACTIVE, imageUrls: [], warrantyDays: 7,
-    deliveryTemplate: 'Login: {{login}} Password: {{password}}', fieldDefinitions: [
+    inventoryPattern: '{{login}}----{{password}}', deliveryTemplate: '{{login}}----{{password}}', fieldDefinitions: [
       { name: 'Login', key: 'login', type: 'EMAIL', sensitive: false, visibleToCustomer: true, required: true, sortOrder: 1 },
       { name: 'Password', key: 'password', type: 'STRING', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 2 },
     ], purchaseLimitPerUser: purchaseLimit, lowStockThreshold: 1, sortOrder: 0, createdBy: adminId, updatedBy: adminId, deletedAt: null });
@@ -317,23 +317,38 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await PaymentRequestModel.countDocuments({ providerReference: '579740339', status: PaymentRequestStatus.APPROVED })).toBe(1);
     expect(queuedPurchaseAlerts).toHaveLength(1);
     expect(queuedPurchaseAlerts[0]).toMatchObject({ productId: product._id.toString(), buyerId: user._id.toString(), quantity: 2 });
-    expect(new Set(queued).size).toBe(2);
+    expect(new Set(queued).size).toBe(1);
     const retried = await service.createBankCheckout(user._id.toString(), product._id.toString(), 2, 100, 'quick-checkout-request');
     expect(retried.id).toBe(checkout.id);
     const order = await OrderModel.findOne({ userId: user._id }).sort({ createdAt: 1 }).lean();
     expect(order).toBeTruthy();
-    let copyText = '';
+    let deliveryMessage = '';
+    let deliveryFile = '';
+    let deliverySends = 0;
     const deletedPrompts: Array<[string | number, number]> = [];
     const delivery = new DeliveryProcessor({ telegram: {
-      sendMessage: async (_chatId, _message, extra) => {
-        copyText = ((extra as { reply_markup?: { inline_keyboard?: Array<Array<{ copy_text?: { text?: string } }>> } })
-          .reply_markup?.inline_keyboard?.[0]?.[0]?.copy_text?.text ?? '');
+      sendMessage: async (_chatId, message) => {
+        deliverySends++;
+        deliveryMessage = message;
         return { message_id: 9876 };
       },
+      sendDocument: async (_chatId, document) => {
+        deliveryFile = String((document as { source?: Buffer }).source ?? '');
+        return { message_id: 9877 };
+      },
       deleteMessage: async (chatId, messageId) => { deletedPrompts.push([chatId, messageId]); },
-    } }, []);
+    } }, [], 'https://shop.example');
     await delivery.process({ id: 'copy-button-delivery', data: { orderId: order!._id.toString() } } as never);
-    expect(copyText).toContain('Login:');
+    const groupedOrders = await OrderModel.find({ userId: user._id }).sort({ createdAt: 1 }).lean();
+    expect(deliverySends).toBe(1);
+    expect(deliveryMessage).toContain(`${product.name} × 2`);
+    expect(deliveryFile).toContain('fixture0-');
+    expect(deliveryFile).toContain('----secret-0');
+    expect(deliveryFile).toContain('fixture1-');
+    expect(deliveryFile).toContain('----secret-1');
+    expect(groupedOrders.every((item) => item.status === 'DELIVERED')).toBeTrue();
+    await delivery.process({ id: 'duplicate-group-delivery', data: { orderId: groupedOrders[1]!._id.toString() } } as never);
+    expect(deliverySends).toBe(1);
     expect(deletedPrompts).toEqual([[user.telegramId, 4321]]);
   });
 
@@ -743,7 +758,7 @@ integration('digital store on a MongoDB replica set', () => {
     expect(queued).toHaveLength(0);
     queueAvailable = true;
     await service.processCakeCallback([transaction]);
-    expect(queued).toHaveLength(2);
+    expect(queued).toHaveLength(1);
     const payment = await PaymentRequestModel.findById(checkout.id).lean();
     expect((payment?.metadata.quickCheckout as { status?: string }).status).toBe('FULFILLED');
   });

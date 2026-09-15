@@ -424,7 +424,17 @@ export class PurchaseService {
   }
 
   private async enqueueBatch(orders: Array<{ _id: Types.ObjectId }>) {
-    for (const order of orders) {
+    if (!orders.length) return;
+    const stored = await this.orderModel.find({ _id: { $in: orders.map((order) => order._id) } })
+      .select('_id userId productId metadata.paymentRequestId').sort({ createdAt: 1, _id: 1 }).lean();
+    const first = stored[0];
+    const paymentRequestId = first?.metadata?.paymentRequestId;
+    const sameQuickCheckout = first !== undefined && typeof paymentRequestId === 'string'
+      && Types.ObjectId.isValid(paymentRequestId) && stored.length === orders.length
+      && stored.every((order) => order.userId.equals(first.userId) && order.productId.equals(first.productId)
+        && order.metadata?.paymentRequestId === paymentRequestId);
+    const queueOrders = sameQuickCheckout ? [first] : orders;
+    for (const order of queueOrders) {
       try { await this.deliveryQueue.enqueue(order._id.toString()); }
       catch (error) {
         // The committed PENDING_DELIVERY order is the durable outbox. Scheduled
