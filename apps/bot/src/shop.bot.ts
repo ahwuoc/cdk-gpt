@@ -170,12 +170,13 @@ export function createShopBot(
   bot.action('menu:orders', async (ctx) => { await ctx.answerCbQuery(); await showOrders(ctx, data); });
   bot.command('report', async (ctx) => {
     const orderCode = ctx.message.text.trim().split(/\s+/)[1];
-    if (!orderCode) { await showOrders(ctx, data, true); return; }
+    if (!orderCode) { await showReportMenu(ctx); return; }
     const order = await ownedOrderByCode(ctx, orderCode, data);
     if (!order) { await ctx.reply('❌ Không tìm thấy mã đơn thuộc tài khoản của bạn.', inlineMenu()); return; }
     await showComplaintReasons(ctx, order._id.toString(), data);
   });
-  bot.action('menu:reports', async (ctx) => { await ctx.answerCbQuery(); await showOrders(ctx, data, true); });
+  bot.action('menu:reports', async (ctx) => { await ctx.answerCbQuery(); await showReportMenu(ctx); });
+  bot.action('report:recent', async (ctx) => { await ctx.answerCbQuery(); await showOrders(ctx, data, true); });
   bot.action('report:lookup', async (ctx) => {
     await ctx.answerCbQuery();
     if (!ctx.from || !ctx.chat) return;
@@ -645,7 +646,8 @@ async function showBalance(ctx: Context, data: ShopBotDataContext) {
 async function showOrders(ctx: Context, data: ShopBotDataContext, reporting = false) {
   if (!ctx.from) return;
   const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
-  const orders = await data.orders.find({ userId: user._id }).sort({ createdAt: -1 }).limit(10).lean();
+  const limit = reporting ? 5 : 10;
+  const orders = await data.orders.find({ userId: user._id }).sort({ createdAt: -1 }).limit(limit).lean();
   if (!orders.length) { await ctx.reply('📦 Bạn chưa có đơn hàng nào.', inlineMenu()); return; }
   const products = await data.products.find({ _id: { $in: orders.map((order) => order.productId) } }).select('name').lean();
   const names = new Map(products.map((product) => [product._id.toString(), product.name]));
@@ -654,9 +656,19 @@ async function showOrders(ctx: Context, data: ShopBotDataContext, reporting = fa
     `🚨 Báo lỗi ${order.orderCode}`, `report:${order._id.toString()}`)]);
   buttons.push([Markup.button.callback('🔎 Khiếu nại đơn cũ bằng mã đơn', 'report:lookup')]);
   buttons.push([Markup.button.callback('🏠 Menu chính', 'menu:home')]);
-  const heading = reporting ? '🚨 *Chọn đơn cần khiếu nại*' : '📦 *10 đơn gần nhất*';
+  const heading = reporting ? '🚨 *5 đơn mới nhất*' : '📦 *10 đơn gần nhất*';
   await ctx.reply(`${heading}\n\n${lines.join('\n')}\n\nBấm nút tương ứng nếu đơn hàng gặp vấn đề.`, {
     parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons),
+  });
+}
+
+async function showReportMenu(ctx: Context) {
+  await ctx.reply('🚨 *Báo lỗi / Khiếu nại đơn*\n\nChọn cách tìm đơn hàng cần hỗ trợ:', {
+    parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+      [Markup.button.callback('🧾 Chọn trong 5 đơn mới nhất', 'report:recent')],
+      [Markup.button.callback('🔎 Nhập mã đơn', 'report:lookup')],
+      [Markup.button.callback('🏠 Menu chính', 'menu:home')],
+    ]),
   });
 }
 
@@ -671,7 +683,7 @@ async function showComplaintReasons(ctx: Context, orderId: string, data: ShopBot
       [Markup.button.callback('📦 Sản phẩm không đúng mô tả', callback(ComplaintCategory.PRODUCT_MISMATCH))],
       [Markup.button.callback('🛡 Yêu cầu bảo hành', callback(ComplaintCategory.WARRANTY))],
       [Markup.button.callback('📝 Vấn đề khác', callback(ComplaintCategory.OTHER))],
-      [Markup.button.callback('⬅️ Danh sách đơn', 'menu:orders')],
+      [Markup.button.callback('⬅️ Tùy chọn khiếu nại', 'menu:reports')],
     ]),
   });
 }
