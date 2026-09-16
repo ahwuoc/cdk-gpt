@@ -1316,6 +1316,34 @@ integration('digital store on a MongoDB replica set', () => {
       requestId: 'formatted-reveal' })).toBe(1);
   });
 
+  test('admin can find sold inventory by product name and see its historical buyer', async () => {
+    const { product, user } = await fixture(1);
+    await UserModel.updateOne({ _id: user._id }, { $set: { username: 'sale_buyer', displayName: 'Sale Buyer' } });
+    const order = await purchaseService().purchase({ userId: user._id.toString(), productId: product._id.toString(),
+      expectedUnitPrice: 100, idempotencyKey: 'inventory-sale-history' });
+    const soldAt = new Date('2026-09-15T06:30:00.000Z');
+    // Simulate a historical row which was marked sold before buyer/order
+    // references were copied onto the inventory document.
+    await InventoryItemModel.updateOne({ _id: order.inventoryItemId }, { $set: {
+      status: InventoryStatus.SOLD, soldAt,
+    }, $unset: { soldToUserId: 1, soldOrderId: 1 } });
+    await ProductModel.updateOne({ _id: product._id }, { $set: { price: 900 } });
+
+    const service = new InventoryAdminService(InventoryItemModel, AuditLogModel, mongoose.connection,
+      ImportBatchModel, ProductModel);
+    const page = await service.list({ page: 1, limit: 20, search: product.name, status: InventoryStatus.SOLD });
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      productName: product.name,
+      status: InventoryStatus.SOLD,
+      sale: {
+        soldAt,
+        order: { id: order._id.toString(), orderCode: order.orderCode, unitPrice: 100, totalAmount: 100 },
+        buyer: { id: user._id.toString(), telegramId: user.telegramId, username: 'sale_buyer', displayName: 'Sale Buyer' },
+      },
+    });
+  });
+
   test('admin can remove only available inventory and bulk removal preserves reserved and sold rows', async () => {
     const { product, adminId } = await fixture(0);
     const imported = await new InventoryImportService(ProductModel, InventoryItemModel, ImportBatchModel).commit(product._id.toString(), [

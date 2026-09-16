@@ -3,18 +3,24 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import { EncryptionService } from '@store/encryption';
-import { AuditLog, ImportBatch, InventoryItem, Product } from '@store/database';
+import { AuditLog, ImportBatch, InventoryItem, Order, Product, User } from '@store/database';
 import { formatInventoryPatternPayload, InventoryStatus, parseInventoryPatternTemplate } from '@store/shared';
 import type { InventoryListQueryDto } from './inventory.dto';
 
 type InventoryListItem = {
   id: string;
   productId: string;
+  productName?: string;
   status: InventoryItem['status'];
   maskedPreview: Record<string, unknown>;
   importBatchId?: string;
   createdAt: Date;
   updatedAt: Date;
+  sale?: {
+    soldAt?: Date;
+    order?: { id: string; orderCode: string; unitPrice: number; totalAmount: number; paymentMethod: string; createdAt: Date };
+    buyer?: { id: string; telegramId: string; username?: string; displayName?: string };
+  };
 };
 
 type InventoryPage = {
@@ -70,24 +76,81 @@ export class InventoryAdminService {
         const id = new Types.ObjectId(search);
         matches.push({ _id: id }, { importBatchId: id });
       }
+      // The inventory page is where admins naturally search by the product's
+      // display name. Inventory rows only store productId, so resolve matching
+      // product ids before querying inventory instead of requiring a dropdown.
+      if (this.products) {
+        const matchingProducts = await this.products.find({
+          name: { $regex: safePattern, $options: 'i' },
+        }).select('_id').lean();
+        if (matchingProducts.length) {
+          matches.push({ productId: { $in: matchingProducts.map((product) => product._id) } });
+        }
+      }
       filter.$or = matches;
     }
 
     const [items, total] = await Promise.all([
-      this.items.find(filter).select('productId status maskedPreview importBatchId createdAt updatedAt')
+      this.items.find(filter).select('productId status maskedPreview importBatchId soldToUserId soldOrderId soldAt createdAt updatedAt')
         .sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.items.countDocuments(filter),
     ]);
+    const orderIds = items.flatMap((item) => item.soldOrderId ? [item.soldOrderId] : []);
+    const soldInventoryIds = items.flatMap((item) => item.status === InventoryStatus.SOLD ? [item._id] : []);
+    // Some historical SOLD rows predate soldOrderId/soldToUserId. Orders have
+    // always retained inventoryItemId, so use it as a backwards-compatible link.
+    const orders = orderIds.length || soldInventoryIds.length ? await this.items.db.model<Order>('Order').find({
+      $or: [
+        ...(orderIds.length ? [{ _id: { $in: orderIds } }] : []),
+        ...(soldInventoryIds.length ? [{ inventoryItemId: { $in: soldInventoryIds } }] : []),
+      ],
+    }).select('orderCode userId inventoryItemId unitPrice totalAmount paymentMethod createdAt').lean() : [];
+    const orderById = new Map(orders.map((order) => [order._id.toString(), order]));
+    const orderByInventoryId = new Map(orders.map((order) => [order.inventoryItemId.toString(), order]));
+    const productIds = [...new Set(items.map((item) => item.productId.toString()))]
+      .map((id) => new Types.ObjectId(id));
+    const products = this.products && productIds.length
+      ? await this.products.find({ _id: { $in: productIds } }).select('name').lean()
+      : [];
+    const productById = new Map(products.map((product) => [product._id.toString(), product.name]));
+    const userIds = new Set<string>();
+    for (const item of items) {
+      if (item.soldToUserId) userIds.add(item.soldToUserId.toString());
+      const order = (item.soldOrderId ? orderById.get(item.soldOrderId.toString()) : undefined)
+        ?? (item.status === InventoryStatus.SOLD ? orderByInventoryId.get(item._id.toString()) : undefined);
+      if (order?.userId) userIds.add(order.userId.toString());
+    }
+    const users = userIds.size ? await this.items.db.model<User>('User').find({
+      _id: { $in: [...userIds].map((id) => new Types.ObjectId(id)) },
+    }).select('telegramId username displayName').lean() : [];
+    const userById = new Map(users.map((user) => [user._id.toString(), user]));
     return {
-      items: items.map((item) => ({
-        id: item._id.toString(),
-        productId: item.productId.toString(),
-        status: item.status,
-        maskedPreview: item.maskedPreview ?? {},
-        ...(item.importBatchId ? { importBatchId: item.importBatchId.toString() } : {}),
-        createdAt: item.createdAt,
-        updatedAt: item.updatedAt,
-      })),
+      items: items.map((item) => {
+        const order = (item.soldOrderId ? orderById.get(item.soldOrderId.toString()) : undefined)
+          ?? (item.status === InventoryStatus.SOLD ? orderByInventoryId.get(item._id.toString()) : undefined);
+        const buyerId = item.soldToUserId?.toString() ?? order?.userId.toString();
+        const buyer = buyerId ? userById.get(buyerId) : undefined;
+        const sale = item.soldAt || order || buyer ? {
+          ...(item.soldAt ? { soldAt: item.soldAt } : {}),
+          ...(order ? { order: { id: order._id.toString(), orderCode: order.orderCode,
+            unitPrice: order.unitPrice, totalAmount: order.totalAmount, paymentMethod: order.paymentMethod,
+            createdAt: order.createdAt } } : {}),
+          ...(buyer ? { buyer: { id: buyer._id.toString(), telegramId: buyer.telegramId,
+            ...(buyer.username ? { username: buyer.username } : {}),
+            ...(buyer.displayName ? { displayName: buyer.displayName } : {}) } } : {}),
+        } : undefined;
+        return {
+          id: item._id.toString(),
+          productId: item.productId.toString(),
+          ...(productById.get(item.productId.toString()) ? { productName: productById.get(item.productId.toString()) } : {}),
+          status: item.status,
+          maskedPreview: item.maskedPreview ?? {},
+          ...(item.importBatchId ? { importBatchId: item.importBatchId.toString() } : {}),
+          ...(sale ? { sale } : {}),
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        };
+      }),
       page,
       limit,
       total,

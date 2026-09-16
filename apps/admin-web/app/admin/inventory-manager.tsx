@@ -10,11 +10,17 @@ type InventoryStatus = 'AVAILABLE' | 'RESERVED' | 'SOLD' | 'DISABLED' | 'RETURNE
 interface InventoryRecord {
   id: string;
   productId: string;
+  productName?: string;
   status: InventoryStatus;
   maskedPreview: Record<string, unknown>;
   importBatchId?: string | null;
   createdAt: string;
   updatedAt?: string;
+  sale?: {
+    soldAt?: string;
+    order?: { id: string; orderCode: string; unitPrice: number; totalAmount: number; paymentMethod: string; createdAt: string };
+    buyer?: { id: string; telegramId: string; username?: string; displayName?: string };
+  };
 }
 
 interface InventoryPage {
@@ -121,7 +127,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
         <select className="input h-11 py-2" value={filter.productId} onChange={(event) => setFilter((current) => ({ ...current, productId: event.target.value, page: 1 }))} aria-label="Lọc sản phẩm">
           <option value="">Tất cả sản phẩm</option>{products.map((product) => <option key={product._id} value={product._id}>{product.name}</option>)}
         </select>
-        <label className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-10 font-mono text-xs" value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value, page: 1 }))} placeholder="Tìm ID hàng, ID lô hoặc dữ liệu xem trước" /></label>
+        <label className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-10 font-mono text-xs" value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value, page: 1 }))} placeholder="Tìm tên sản phẩm, ID hàng/lô hoặc dữ liệu" /></label>
         <button type="button" className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2" onClick={() => setFilter({ productId: '', status: '', search: '', page: 1 })}><Filter size={15} />Xóa lọc</button>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -136,8 +142,8 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
     </div>
 
     <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
-      <div className="hidden border-b border-slate-800 bg-slate-950/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600 lg:grid lg:grid-cols-[minmax(220px,1.05fr)_minmax(260px,1.25fr)_150px_260px]">
-        <span>Sản phẩm</span><span>Dữ liệu xem trước</span><span>Lô nhập</span><span className="text-right">Thao tác</span>
+      <div className="hidden border-b border-slate-800 bg-slate-950/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600 lg:grid lg:grid-cols-[minmax(200px,0.9fr)_minmax(230px,1fr)_minmax(220px,0.95fr)_130px_170px]">
+        <span>Sản phẩm</span><span>Dữ liệu xem trước</span><span>Bán cho / giá bán</span><span>Lô nhập</span><span className="text-right">Thao tác</span>
       </div>
       <div className="max-h-[min(68vh,720px)] divide-y divide-slate-800 overflow-x-hidden overflow-y-auto overscroll-contain">
       {busy && <Loading />}
@@ -153,15 +159,17 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
 
 function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onReveal }: { item: InventoryRecord; product?: ProductRecord; pending: boolean; onRemove(): void; onRemoveBatch?: () => void; onReveal(): void }) {
   const removable = item.status === 'AVAILABLE';
-  return <article className="grid gap-3 p-4 transition hover:bg-slate-900/65 lg:grid-cols-[minmax(220px,1.05fr)_minmax(260px,1.25fr)_150px_260px] lg:items-center">
+  const productName = item.productName ?? product?.name ?? 'Sản phẩm đã xóa';
+  return <article className="grid gap-3 p-4 transition hover:bg-slate-900/65 lg:grid-cols-[minmax(200px,0.9fr)_minmax(230px,1fr)_minmax(220px,0.95fr)_130px_170px] lg:items-center">
     <div className="min-w-0">
-      <div className="flex flex-wrap items-center gap-2"><Status value={item.status} /><span className="truncate text-sm font-medium text-slate-100">{product?.name ?? 'Sản phẩm đã xóa'}</span></div>
+      <div className="flex flex-wrap items-center gap-2"><Status value={item.status} /><span className="truncate text-sm font-medium text-slate-100">{productName}</span></div>
       <div className="mt-2 flex items-center gap-2 text-xs text-slate-500"><PackageCheck size={14} /><code title={item.id}>ID {shortId(item.id)}</code></div>
       <p className="mt-1 text-xs text-slate-600">{dateTime(item.createdAt)}</p>
     </div>
     <div className="min-w-0">
       <Preview value={item.maskedPreview} />
     </div>
+    <SaleInfo item={item} />
     <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2">
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-600">Lô nhập</p>
       {item.importBatchId ? <code className="mt-1 block truncate text-xs text-slate-400" title={item.importBatchId}>{shortId(item.importBatchId)}</code> : <span className="mt-1 block text-xs text-slate-600">Không có lô</span>}
@@ -173,6 +181,24 @@ function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onRevea
       {!removable && <span className="text-center text-[11px] leading-4 text-slate-500 sm:col-span-3 lg:col-span-1">Đã bán/đang giữ nên không cho xóa.</span>}
     </div>
   </article>;
+}
+
+function SaleInfo({ item }: { item: InventoryRecord }) {
+  const { order, buyer, soldAt } = item.sale ?? {};
+  if (!order && !buyer && !soldAt) return <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs text-slate-600">
+    {item.status === 'SOLD' ? 'Chưa có thông tin giao dịch cũ' : 'Chưa bán'}
+  </div>;
+  const buyerIdentity = buyer?.username ? `@${buyer.username}` : buyer?.telegramId ? `ID ${buyer.telegramId}` : 'Không rõ người mua';
+  return <div className="min-w-0 rounded-xl border border-sky-500/20 bg-sky-500/5 px-3 py-2">
+    <p className="text-xs font-semibold text-emerald-300">{order ? `Đã bán ${money(order.unitPrice)}` : 'Đã bán'}</p>
+    {buyer && <div className="mt-1 min-w-0 text-xs text-slate-300">
+      <p className="truncate font-medium text-sky-200" title={buyerIdentity}>{buyerIdentity}</p>
+      {buyer.displayName && <p className="mt-0.5 truncate text-[11px] text-slate-400" title={buyer.displayName}>{buyer.displayName}</p>}
+      {buyer.username && <p className="mt-0.5 truncate font-mono text-[11px] text-slate-500">ID {buyer.telegramId}</p>}
+    </div>}
+    {order && <code className="mt-1.5 block truncate text-[11px] text-indigo-300" title={order.orderCode}>{order.orderCode}</code>}
+    {soldAt && <p className="mt-1 text-[10px] text-slate-600">{dateTime(soldAt)}</p>}
+  </div>;
 }
 
 function Preview({ value }: { value: Record<string, unknown> }) {
@@ -209,6 +235,7 @@ function Pagination({ data, onPage }: { data: InventoryPage; onPage(page: number
 function Loading() { return <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-slate-400"><LoaderCircle size={18} className="animate-spin" />Đang tải kho…</div>; }
 function shortId(value: string) { return value.length > 13 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value; }
 function dateTime(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(date); }
+function money(value: number) { return Number.isFinite(value) ? `${Math.trunc(value).toLocaleString('vi-VN')} đ` : '—'; }
 function normalizePage(value: Partial<InventoryPage>): InventoryPage { return { items: Array.isArray(value.items) ? value.items : [], page: Number(value.page) || 1, limit: Number(value.limit) || pageSize, total: Number(value.total) || 0, totalPages: Number(value.totalPages) || 0 }; }
 function pageStatusCounts(items: InventoryRecord[]) {
   return items.reduce<Partial<Record<InventoryStatus, number>>>((sum, item) => {
