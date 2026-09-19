@@ -16,7 +16,9 @@ export const WalletTransactionType = {
   ADMIN_DEBIT: 'ADMIN_DEBIT', REFERRAL_COMMISSION: 'REFERRAL_COMMISSION', ADJUSTMENT: 'ADJUSTMENT',
 } as const;
 export const PaymentRequestStatus = { PENDING: 'PENDING', APPROVED: 'APPROVED', REJECTED: 'REJECTED', EXPIRED: 'EXPIRED' } as const;
-export const MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY = 5;
+// Keep the inline keyboard compact (1-5), while allowing legitimate bulk
+// purchases through the custom quantity input. The API enforces this too.
+export const MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY = 100;
 
 /** Returns the rounded percentage off, or 0 when the product is not on sale. */
 export function productDiscountPercent(price: number, originalPrice?: number | null) {

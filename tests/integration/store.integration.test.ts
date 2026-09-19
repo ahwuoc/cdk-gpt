@@ -571,8 +571,8 @@ integration('digital store on a MongoDB replica set', () => {
     expect((payment?.metadata.quickCheckout as { status?: string }).status).toBe('FAILED');
   });
 
-  test('many unpaid customers cannot lock scarce stock and direct QR quantity is capped', async () => {
-    const { product } = await fixture(2, 0);
+  test('many unpaid customers cannot lock stock, bulk checkout exceeds five, and direct QR quantity is capped', async () => {
+    const { product } = await fixture(10, 0);
     const bankConfig = {
       getBankConfigForRuntime: async () => ({ token: 'test-bank-token', bankId: 'CAKE', accountNo: '1234567890', template: 'compact2', accountName: 'TEST USER' }),
     } as unknown as BotConfigService;
@@ -584,12 +584,17 @@ integration('digital store on a MongoDB replica set', () => {
 
     await Promise.all(attackers.map((user, index) => service.createBankCheckout(user._id.toString(),
       product._id.toString(), 2, 100, `anti-hoarding-${index}`)));
-    await expect(service.createBankCheckout(attackers[0]!._id.toString(), product._id.toString(),
-      6, 100, 'anti-hoarding-too-many')).rejects.toThrow('tối đa 5');
+    const bulkBuyer = await UserModel.create({ telegramId: '900000090', status: UserStatus.ACTIVE, walletBalance: 0,
+      referralCode: 'BULKBUYER', purchaseCount: 0, deletedAt: null });
+    const bulk = await service.createBankCheckout(bulkBuyer._id.toString(), product._id.toString(),
+      10, 100, 'bulk-checkout-over-five');
+    expect(bulk).toMatchObject({ quantity: 10, amount: 1_000 });
+    await expect(service.createBankCheckout(new Types.ObjectId().toString(), product._id.toString(),
+      101, 100, 'anti-hoarding-too-many')).rejects.toThrow('tối đa 100');
 
-    expect(await PaymentRequestModel.countDocuments({ status: PaymentRequestStatus.PENDING })).toBe(8);
+    expect(await PaymentRequestModel.countDocuments({ status: PaymentRequestStatus.PENDING })).toBe(9);
     expect(await InventoryItemModel.countDocuments({ productId: product._id,
-      status: InventoryStatus.AVAILABLE })).toBe(2);
+      status: InventoryStatus.AVAILABLE })).toBe(10);
     expect(await InventoryItemModel.countDocuments({ productId: product._id,
       reservedPaymentRequestId: { $exists: true } })).toBe(0);
   });
