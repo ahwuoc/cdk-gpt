@@ -1174,6 +1174,32 @@ integration('digital store on a MongoDB replica set', () => {
     expect(await AuditLogModel.countDocuments({ action: 'TELEGRAM_BOT_TOKEN_UPDATED' })).toBe(1);
   });
 
+  test('admin can save many bank accounts while exactly one remains active', async () => {
+    const adminId = new Types.ObjectId();
+    const service = new BotConfigService(SettingModel, AuditLogModel, async () => ({
+      id: 123456789, username: 'fixture_bot', first_name: 'Fixture',
+    }), RuntimeLeaseModel);
+    const base = { template: 'compact2', accountName: 'NGUYEN VAN A', amount: 0, description: 'NAP' };
+    const cake = await service.updateBankConfig({ ...base, label: 'Cake chính', provider: 'CAKE_V2',
+      tokenApiBank: 'cake-history-secret', bankId: 'CAKE', accountNo: '11112222' }, adminId.toString());
+    const cakeId = cake.activeBankId;
+    const bidv = await service.updateBankConfig({ ...base, label: 'BIDV dự phòng', provider: 'BIDV_V4',
+      tokenApiBank: 'bidv-history-secret', bankId: 'BIDV', accountNo: '33334444' }, adminId.toString());
+    const bidvId = bidv.banks.find((bank) => bank.provider === 'BIDV_V4')!.id;
+
+    expect(bidv.banks).toHaveLength(2);
+    expect(bidv.banks.filter((bank) => bank.active)).toHaveLength(1);
+    expect(bidv.activeBankId).toBe(cakeId);
+
+    const activated = await service.activateBankConfig(bidvId, adminId.toString());
+    expect(activated.activeBankId).toBe(bidvId);
+    expect(activated.banks.filter((bank) => bank.active)).toEqual([
+      expect.objectContaining({ id: bidvId, provider: 'BIDV_V4' }),
+    ]);
+    expect(JSON.stringify(await SettingModel.findOne({ key: 'bank.api_config' }).lean()))
+      .not.toContain('bidv-history-secret');
+  });
+
   test('admin runtime configuration hot-reloads and never exposes the QStash token', async () => {
     const adminId = new Types.ObjectId();
     const rawQstashToken = 'qstash-runtime-secret-that-must-not-be-returned';

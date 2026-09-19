@@ -2,8 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Bot, Boxes, CheckCircle2, CircleDollarSign, Eye, FileUp, Info, KeyRound, LayoutDashboard,
-  ListChecks, LogOut, MessagesSquare, MessageSquareWarning, Package, QrCode, RefreshCw, ServerCog, ShoppingCart,
-  Tags, TriangleAlert, Users, WalletCards, X } from 'lucide-react';
+  ListChecks, LogOut, MessagesSquare, MessageSquareWarning, Package, Pencil, Plus, Power, QrCode, RefreshCw, ServerCog,
+  ShoppingCart, Tags, Trash2, TriangleAlert, Users, WalletCards, X } from 'lucide-react';
 import { inventoryPatternExample, parseInventoryPatternLine, parseInventoryPatternTemplate } from '@store/shared';
 import { CategoryManager } from './category-manager';
 import { ComplaintManager } from './complaint-manager';
@@ -24,9 +24,27 @@ interface ImportReport {
   errors?: Array<{ line: number; reason: string }>; skipped?: Array<{ line: number; reason: string }>;
   restockNotificationQueued?: boolean;
 }
+type BankProvider = 'CAKE_V2' | 'BIDV_V4';
 interface BankConfig {
-  configured: boolean; source?: string; maskedToken?: string; bankId: string; accountNo: string; template: string;
-  accountName: string; amount: number; description: string; qrUrl?: string; updatedAt?: string;
+  /** Stable database id for multi-bank configs. Legacy deployments may omit it. */
+  id?: string;
+  label?: string;
+  provider?: BankProvider | string;
+  active?: boolean;
+  enabled?: boolean;
+  tokenConfigured?: boolean;
+  tokenLastFour?: string;
+  configured?: boolean;
+  source?: string;
+  maskedToken?: string;
+  bankId: string;
+  accountNo: string;
+  template: string;
+  accountName: string;
+  amount: number;
+  description: string;
+  qrUrl?: string;
+  updatedAt?: string;
 }
 interface BankOption { name: string; code: string; bin: string; shortName: string; }
 interface BankQueryTest {
@@ -49,7 +67,11 @@ interface RevealedInventory {
 interface BotConfig {
   configured: boolean; source?: string; botId?: number; botUsername?: string; maskedToken?: string;
   encryptionKeyVersion?: number; updatedAt?: string; reloadWithinSeconds?: number; welcomeMessage?: string;
-  bank?: BankConfig; runtime?: RuntimeConfig;
+  bank?: BankConfig;
+  /** New API shape. `bank` remains for backwards compatibility with one-bank installs. */
+  banks?: BankConfig[];
+  activeBankId?: string;
+  runtime?: RuntimeConfig;
 }
 type AdminSection = 'dashboard' | 'orders' | 'reports' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
   | 'messages' | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
@@ -73,11 +95,17 @@ export default function AdminPage() {
   const [itemId, setItemId] = useState(''); const [payload, setPayload] = useState<RevealedInventory | null>(null);
   const [botConfig, setBotConfig] = useState<BotConfig | null>(null); const [botToken, setBotToken] = useState('');
   const [welcomeMessage, setWelcomeMessage] = useState('');
+  const [bankConfigs, setBankConfigs] = useState<BankConfig[]>([]);
+  const [activeBankId, setActiveBankId] = useState('');
+  const [bankEditId, setBankEditId] = useState('');
+  const [bankLabel, setBankLabel] = useState('');
+  const [bankProvider, setBankProvider] = useState<BankProvider>('CAKE_V2');
   const [bankToken, setBankToken] = useState(''); const [bankId, setBankId] = useState('');
   const [bankAccountNo, setBankAccountNo] = useState(''); const [bankTemplate, setBankTemplate] = useState('compact2');
   const [bankAccountName, setBankAccountName] = useState(''); const [bankAmount, setBankAmount] = useState(0);
   const [bankDescription, setBankDescription] = useState(''); const [bankOptions, setBankOptions] = useState<BankOption[]>([]);
   const [bankQueryTest, setBankQueryTest] = useState<BankQueryTest | null>(null);
+  const [bankQueryTargetId, setBankQueryTargetId] = useState('');
   const [bankTesting, setBankTesting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>({ shopName: 'Digital Store', adminTelegramIds: '',
     apiUrl: '', telegramWebhookUrl: '', qstashUrl: 'https://qstash.upstash.io', taskBaseUrl: '' });
@@ -299,6 +327,36 @@ export default function AdminPage() {
     } catch { /* QR settings remain usable with a manually entered BANK_ID. */ }
   }, [authorized]);
 
+  function editBank(config?: BankConfig) {
+    setBankEditId(config?.source === 'environment' ? '' : config?.id ?? '');
+    setBankLabel(config?.label ?? '');
+    setBankProvider(config?.provider === 'BIDV_V4' || config?.provider === 'BIDV_V2' ? 'BIDV_V4' : 'CAKE_V2');
+    setBankToken('');
+    setBankId(config?.bankId ?? '');
+    setBankAccountNo(config?.accountNo ?? '');
+    setBankTemplate(config?.template ?? 'compact2');
+    setBankAccountName(config?.accountName ?? '');
+    setBankAmount(config?.amount ?? 0);
+    setBankDescription(config?.description ?? '');
+    setBankQueryTest(null);
+    setBankQueryTargetId('');
+  }
+
+  function applyBankResponse(body: Partial<BotConfig> & { bank?: BankConfig; banks?: BankConfig[]; activeBankId?: string; savedBankId?: string }, preferredId?: string) {
+    const configs = normalizeBankConfigs(body);
+    setBankConfigs(configs);
+    const nextActive = body.activeBankId?.trim() || configs.find((config) => config.active)?.id ||
+      (body.bank?.active ? body.bank.id : undefined) || '';
+    setActiveBankId(nextActive);
+    setBotConfig((current) => current ? { ...current, ...body, banks: configs, activeBankId: nextActive,
+      bank: body.bank ?? configs.find((config) => config.id === nextActive) ?? current.bank } : {
+      configured: false, ...body, banks: configs, activeBankId: nextActive,
+    });
+    const selected = configs.find((config) => bankConfigKey(config) === (preferredId || body.savedBankId)) ??
+      configs.find((config) => bankConfigKey(config) === nextActive) ?? configs[0];
+    if (selected) editBank(selected);
+  }
+
   const loadBotConfig = useCallback(async () => {
     setBotBusy(true); setMessage('');
     try {
@@ -306,9 +364,13 @@ export default function AdminPage() {
       const body = (await readApiBody(response)) as BotConfig; if (!response.ok) throw new Error(apiErrorMessage(body, 'Không thể tải cấu hình bot'));
       setBotConfig(body);
       setWelcomeMessage(body.welcomeMessage ?? '');
-      setBankToken(''); setBankId(body.bank?.bankId ?? ''); setBankAccountNo(body.bank?.accountNo ?? '');
-      setBankTemplate(body.bank?.template ?? 'compact2'); setBankAccountName(body.bank?.accountName ?? '');
-      setBankAmount(body.bank?.amount ?? 0); setBankDescription(body.bank?.description ?? '');
+      const configs = normalizeBankConfigs(body);
+      setBankConfigs(configs);
+      const nextActive = body.activeBankId?.trim() || configs.find((config) => config.active)?.id ||
+        (body.bank?.active ? body.bank.id : undefined) || '';
+      setActiveBankId(nextActive);
+      const selectedBank = configs.find((config) => bankConfigKey(config) === nextActive) ?? configs[0];
+      editBank(selectedBank);
       if (body.runtime) setRuntimeConfig(runtimeWithPublicDefaults(body.runtime));
       setQstashToken('');
       await loadBankOptions();
@@ -360,31 +422,81 @@ export default function AdminPage() {
     event.preventDefault(); setBotBusy(true); setMessage('');
     try {
       if (!bankId.trim() || !bankAccountNo.trim() || !bankAccountName.trim()) throw new Error('Hãy nhập đủ mã ngân hàng, số tài khoản và tên tài khoản.');
+      const payload = {
+        ...(bankEditId ? { id: bankEditId } : {}),
+        label: bankLabel.trim() || undefined,
+        provider: bankProvider,
+        tokenApiBank: bankToken.trim(), bankId: bankId.trim(), accountNo: bankAccountNo.trim(),
+        template: bankTemplate, accountName: bankAccountName.trim(), amount: bankAmount, description: bankDescription.trim(),
+        // The first saved bank is activated by the API. Additional banks stay
+        // disabled until the administrator explicitly selects one below.
+        active: !activeBankId || bankEditId === activeBankId,
+      };
       const response = await authorized('/admin/bot-config/bank', { method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-request-id': requestId() },
-        body: JSON.stringify({ tokenApiBank: bankToken.trim(), bankId: bankId.trim(), accountNo: bankAccountNo.trim(),
-          template: bankTemplate, accountName: bankAccountName.trim(), amount: bankAmount, description: bankDescription.trim() }), });
-      const body = (await readApiBody(response)) as { bank?: BankConfig; reloadWithinSeconds?: number; message?: string };
-      if (!response.ok || !body.bank) throw new Error(apiErrorMessage(body, 'Không thể lưu cấu hình ngân hàng'));
-      setBotConfig((current) => current ? { ...current, bank: body.bank } : { configured: false, bank: body.bank });
-      setBankToken(''); setMessage('Đã lưu cấu hình VietQR. Token ngân hàng được mã hóa và không hiển thị lại.', 'success');
+        body: JSON.stringify(payload), });
+      const body = (await readApiBody(response)) as { bank?: BankConfig; banks?: BankConfig[]; activeBankId?: string; savedBankId?: string; reloadWithinSeconds?: number; message?: string };
+      if (!response.ok || (!body.bank && !body.banks)) throw new Error(apiErrorMessage(body, 'Không thể lưu cấu hình ngân hàng'));
+      applyBankResponse(body, body.savedBankId);
+      setMessage(`${bankEditId ? 'Đã cập nhật' : 'Đã thêm'} cấu hình ngân hàng. Token được mã hóa và không hiển thị lại.`, 'success');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Không thể lưu cấu hình ngân hàng', 'error');
     }
     finally { setBotBusy(false); }
   }
 
-  async function testBankQuery() {
+  async function activateBank(config: BankConfig) {
+    if (!config.id) {
+      editBank(config);
+      setMessage('Cấu hình cũ chưa có ID. Hãy lưu lại trước khi bật ngân hàng này.', 'warning');
+      return;
+    }
+    setBotBusy(true); setMessage('');
+    try {
+      const response = await authorized(`/admin/bot-config/banks/${encodeURIComponent(config.id)}/active`, { method: 'PATCH',
+        headers: { 'content-type': 'application/json', 'x-request-id': requestId() }, body: JSON.stringify({ active: true }) });
+      const body = (await readApiBody(response)) as { bank?: BankConfig; banks?: BankConfig[]; activeBankId?: string; message?: string };
+      if (!response.ok) throw new Error(apiErrorMessage(body, 'Không thể bật ngân hàng này'));
+      applyBankResponse(body, config.id);
+      setMessage(`Đã chuyển sang ${config.label || config.bankId}. Chỉ ngân hàng này nhận đơn mới.`, 'success');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Không thể bật ngân hàng này', 'error');
+    } finally { setBotBusy(false); }
+  }
+
+  async function deleteBank(config: BankConfig) {
+    if (!config.id) {
+      setMessage('Cấu hình cũ chưa có ID nên không thể xóa trực tiếp. Hãy lưu lại để hệ thống cấp ID.', 'warning');
+      return;
+    }
+    if (typeof window !== 'undefined' && !window.confirm(`Xóa cấu hình ${config.label || config.bankId} · ${config.accountNo.slice(-4)}?`)) return;
+    setBotBusy(true); setMessage('');
+    try {
+      const response = await authorized(`/admin/bot-config/banks/${encodeURIComponent(config.id)}`, { method: 'DELETE',
+        headers: { 'x-request-id': requestId() } });
+      const body = (await readApiBody(response)) as { bank?: BankConfig; banks?: BankConfig[]; activeBankId?: string; message?: string };
+      if (!response.ok) throw new Error(apiErrorMessage(body, 'Không thể xóa cấu hình ngân hàng'));
+      applyBankResponse(body);
+      setMessage('Đã xóa cấu hình ngân hàng.', 'success');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Không thể xóa cấu hình ngân hàng', 'error');
+    } finally { setBotBusy(false); }
+  }
+
+  async function testBankQuery(config?: BankConfig) {
     setBankTesting(true); setBankQueryTest(null); setMessage('');
     try {
+      const targetId = config?.id ?? bankEditId;
+      setBankQueryTargetId(targetId);
       const response = await authorized('/admin/payments/bank/test', { method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-request-id': requestId() }, body: '{}' });
+        headers: { 'content-type': 'application/json', 'x-request-id': requestId() },
+        body: JSON.stringify(targetId ? { bankConfigId: targetId } : {}) });
       const body = (await readApiBody(response)) as BankQueryTest & { message?: string };
-      if (!response.ok || !body.ok) throw new Error(apiErrorMessage(body, 'Không truy vấn được API Cake'));
+      if (!response.ok || !body.ok) throw new Error(apiErrorMessage(body, 'Không truy vấn được API ngân hàng'));
       setBankQueryTest(body);
-      setMessage(`API Cake hoạt động: nhận ${body.totalTransactions} giao dịch trong ${body.latencyMs} ms.`, 'success');
+      setMessage(`API ${body.provider || 'ngân hàng'} hoạt động: nhận ${body.totalTransactions} giao dịch trong ${body.latencyMs} ms.`, 'success');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Không truy vấn được API Cake', 'error');
+      setMessage(error instanceof Error ? error.message : 'Không truy vấn được API ngân hàng', 'error');
     } finally { setBankTesting(false); }
   }
 
@@ -410,8 +522,10 @@ export default function AdminPage() {
 
   const bankQrUrl = buildBankQrUrl({ bankId, accountNo: bankAccountNo, template: bankTemplate,
     accountName: bankAccountName, amount: bankAmount, description: bankDescription });
-  const cakeCallbackUrl = runtimeConfig.apiUrl.trim()
-    ? `${runtimeConfig.apiUrl.trim().replace(/\/+$/, '')}/api/webhooks/bank/cake` : '';
+  const editedBank = bankConfigs.find((config) => bankConfigKey(config) === bankEditId) ??
+    (!bankEditId ? bankConfigs.find((config) => config.source === 'environment') : undefined);
+  const bankCallbackUrl = runtimeConfig.apiUrl.trim() && editedBank?.id
+    ? `${runtimeConfig.apiUrl.trim().replace(/\/+$/, '')}/api/webhooks/bank/${encodeURIComponent(editedBank.id)}` : '';
 
   if (!tokens) return <><FlashMessage message={flash} remainingMs={flashRemainingMs} close={() => setMessage('')} />
     <Login email={email} password={password} busy={busy} setEmail={setEmail} setPassword={setPassword} submit={login} /></>;
@@ -522,15 +636,47 @@ export default function AdminPage() {
         </section>}
 
         {section === 'payments' && <section className="space-y-6">
-          <PageHeading eyebrow="Thanh toán" title="Nạp tiền & VietQR" description="Quản lý tài khoản nhận tiền, Cake callback và xem trước mã QR của shop." />
-          <Panel icon={<QrCode />} title="Nạp tiền & VietQR" subtitle="Nhập token API ngân hàng và thông tin tài khoản để tạo Quick Link QR.">
+          <PageHeading eyebrow="Thanh toán" title="Nạp tiền & VietQR"
+            description="Lưu nhiều tài khoản ngân hàng, nhưng chỉ một tài khoản được bật để nhận mã QR mới. BIDV V4 callback vẫn nhận giao dịch của các mã QR đang chờ." />
+          <Panel icon={<ListChecks />} title="Danh sách BIDV" subtitle="Bật một tài khoản để dùng cho đơn mới. Khi bật tài khoản khác, tài khoản hiện tại sẽ tự tắt.">
+            {bankConfigs.length === 0
+              ? <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-5 text-sm text-slate-400">Chưa có cấu hình nào. Hãy thêm tài khoản bên dưới.</div>
+              : <div className="space-y-3">{bankConfigs.map((config) => {
+                const configKey = bankConfigKey(config);
+                const isActive = config.active || configKey === activeBankId;
+                return <div key={configKey} className={`rounded-xl border p-4 ${isActive ? 'border-indigo-400/50 bg-indigo-500/10' : 'border-slate-800 bg-slate-950/60'}`}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2"><h3 className="font-medium text-slate-100">{config.label || `${config.bankId} · ${config.accountNo.slice(-4)}`}</h3>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${isActive ? 'bg-emerald-400/15 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}>{isActive ? 'Đang bật' : 'Đang tắt'}</span>
+                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-slate-300">{bankProviderLabel(config.provider)}</span></div>
+                      <p className="mt-1 text-xs text-slate-400">{config.accountNo} · {config.accountName || 'Chưa có tên tài khoản'}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">Secret: {config.maskedToken || 'chưa cấu hình'} · QR {config.template}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {!isActive && config.id && config.source !== 'environment' && <button type="button" disabled={botBusy} onClick={() => void activateBank(config)} className="button-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs"><Power size={14} />Bật</button>}
+                      <button type="button" disabled={botBusy} onClick={() => editBank(config)} className="button-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs"><Pencil size={14} />Sửa</button>
+                      <button type="button" disabled={botBusy || !config.id} onClick={() => void testBankQuery(config)} className="button-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs"><Activity size={14} />Test API</button>
+                      <button type="button" disabled={botBusy || isActive || !config.id || config.source === 'environment'} onClick={() => void deleteBank(config)} className="button-secondary inline-flex items-center gap-1.5 px-3 py-2 text-xs text-rose-300"><Trash2 size={14} />Xóa</button>
+                    </div>
+                  </div>
+                  {isActive && <p className="mt-3 text-[11px] text-emerald-200/80">Tài khoản này được dùng cho mã nạp tiền mới.</p>}
+                </div>;
+              })}</div>}
+          </Panel>
+          <Panel icon={bankEditId ? <Pencil /> : <Plus />} title={bankEditId ? 'Cập nhật cấu hình ngân hàng' : 'Thêm cấu hình ngân hàng'}
+            subtitle="SECRET KEY được mã hóa trên server và không hiển thị lại sau khi lưu.">
             <form onSubmit={saveBankConfig} className="space-y-4">
-              <div><label className="label">TOKEN_API_BANK</label><input className="input font-mono" type="password" autoComplete="off" value={bankToken}
-                onChange={(event) => setBankToken(event.target.value)} placeholder="Để trống nếu giữ token hiện tại" /></div>
-              {cakeCallbackUrl && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
-                <p className="text-xs font-medium text-emerald-200">Webhook Callback Cake</p>
-                <code className="mt-2 block break-all text-xs text-slate-300">{cakeCallbackUrl}</code>
-                <p className="mt-2 text-[11px] leading-5 text-slate-500">Cấu hình Method POST, Content-Type application/json và header <code>signature</code> bằng đúng TOKEN_API_BANK. Callback được chống cộng tiền trùng theo transactionID.</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div><label className="label">Tên hiển thị</label><input className="input" value={bankLabel} onChange={(event) => setBankLabel(event.target.value)} placeholder="BIDV chính" maxLength={100} /></div>
+                <div><label className="label">Loại API</label><select className="input" value={bankProvider} onChange={(event) => setBankProvider(event.target.value as BankProvider)}><option value="CAKE_V2">Cake V2</option><option value="BIDV_V4">BIDV V4</option></select></div>
+                <div className="sm:col-span-2"><label className="label">SECRET KEY / TOKEN_API_BANK</label><input className="input font-mono" type="password" autoComplete="off" value={bankToken}
+                  onChange={(event) => setBankToken(event.target.value)} placeholder={editedBank?.maskedToken ? `Để trống để giữ ${editedBank.maskedToken}` : 'Nhập SECRET KEY API ngân hàng'} /></div>
+              </div>
+              {bankCallbackUrl && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+                <p className="text-xs font-medium text-emerald-200">Webhook Callback {bankProviderLabel(bankProvider)}</p>
+                <code className="mt-2 block break-all text-xs text-slate-300">{bankCallbackUrl}</code>
+                <p className="mt-2 text-[11px] leading-5 text-slate-500">POST JSON, Content-Type <code>application/json</code>, header <code>signature</code> bằng SECRET KEY. Giao dịch được chống cộng tiền trùng theo transactionID.</p>
               </div>}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div><label className="label">Mã ngân hàng (BANK_ID)</label><select className="input" value={bankId} onChange={(event) => setBankId(event.target.value)} required><option value="">Chọn ngân hàng</option>{bankOptions.map((bank) => <option key={`${bank.code}-${bank.bin}`} value={bank.code}>{bank.shortName} ({bank.code} · {bank.bin})</option>)}{bankId && !bankOptions.some((bank) => bank.code === bankId) && <option value={bankId}>{bankId} (đã nhập)</option>}</select><p className="mt-1 text-[11px] text-slate-500">Danh sách lấy từ API VietQR; có thể dùng code hoặc BIN.</p></div>
@@ -538,34 +684,22 @@ export default function AdminPage() {
                 <div><label className="label">Mẫu QR</label><select className="input" value={bankTemplate} onChange={(event) => setBankTemplate(event.target.value)}><option value="compact2">compact2</option><option value="compact">compact</option><option value="qr_only">qr_only</option><option value="print">print</option><option value="loax">loax</option></select></div>
                 <div><label className="label">Tên tài khoản</label><input className="input" value={bankAccountName} onChange={(event) => setBankAccountName(event.target.value)} placeholder="NGUYEN VAN A" required /></div>
                 <div><label className="label">Số tiền mặc định</label><input className="input" type="number" min="0" step="1" value={bankAmount} onChange={(event) => setBankAmount(Number(event.target.value))} /></div>
-                <div><label className="label">Nội dung mặc định</label><input className="input" value={bankDescription} onChange={(event) => setBankDescription(event.target.value)} placeholder="NAP TG123456" /></div>
+                <div><label className="label">Nội dung mặc định</label><input className="input" value={bankDescription} onChange={(event) => setBankDescription(event.target.value)} placeholder="NAP" maxLength={50} /></div>
               </div>
-              {bankQrUrl && <div className="rounded-xl border border-slate-800 bg-slate-950 p-3"><p className="text-xs text-slate-400">Quick Link hiện tại — mở Cake Bank hoặc ứng dụng ngân hàng để quét QR.</p><a className="mt-2 block break-all text-xs text-indigo-300 underline" href={bankQrUrl} target="_blank" rel="noreferrer">{bankQrUrl}</a></div>}
-              <div className="grid gap-3 sm:grid-cols-2">
-                <button type="submit" disabled={botBusy || bankTesting} className="button-primary w-full">{botBusy ? 'Đang lưu…' : 'Lưu cấu hình ngân hàng'}</button>
-                <button type="button" disabled={botBusy || bankTesting} onClick={testBankQuery}
-                  className="button-secondary flex w-full items-center justify-center gap-2">
-                  <Activity size={16} />{bankTesting ? 'Đang query Cake…' : 'Test query API Cake'}
-                </button>
+              {bankQrUrl && <div className="rounded-xl border border-slate-800 bg-slate-950 p-3"><p className="text-xs text-slate-400">Quick Link VietQR xem trước</p><a className="mt-2 block break-all text-xs text-indigo-300 underline" href={bankQrUrl} target="_blank" rel="noreferrer">{bankQrUrl}</a></div>}
+              <div className="grid gap-3 sm:grid-cols-3">
+                <button type="submit" disabled={botBusy || bankTesting} className="button-primary flex w-full items-center justify-center gap-2"><Plus size={16} />{botBusy ? 'Đang lưu…' : bankEditId ? 'Lưu thay đổi' : 'Thêm ngân hàng'}</button>
+                <button type="button" disabled={botBusy || bankTesting} onClick={() => editBank()} className="button-secondary w-full">Nhập mới</button>
+                <button type="button" disabled={botBusy || bankTesting || !bankEditId} onClick={() => void testBankQuery()}
+                  className="button-secondary flex w-full items-center justify-center gap-2"><Activity size={16} />{bankTesting ? 'Đang query…' : `Test ${bankProviderLabel(bankProvider)}`}</button>
               </div>
-              <p className="text-[11px] leading-5 text-slate-500">Nút test dùng TOKEN_API_BANK đang lưu trên server, chỉ đọc tối đa 10 giao dịch mới nhất và không cộng tiền.</p>
+              <p className="text-[11px] leading-5 text-slate-500">Nút test chỉ đọc tối đa 10 giao dịch mới nhất, không cộng tiền vào ví. Nếu sửa ngân hàng đang tắt, ngân hàng đó vẫn giữ trạng thái tắt.</p>
               {bankQueryTest && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-medium text-emerald-200">API Cake hoạt động</span>
-                  <span className="text-slate-400">{bankQueryTest.latencyMs} ms · {bankQueryTest.incomingTransactions}/{bankQueryTest.totalTransactions} giao dịch vào</span>
-                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs"><span className="font-medium text-emerald-200">API {bankQueryTest.provider} hoạt động</span><span className="text-slate-400">{bankQueryTest.latencyMs} ms · {bankQueryTest.incomingTransactions}/{bankQueryTest.totalTransactions} giao dịch vào</span></div>
                 <code className="mt-2 block text-[11px] text-slate-500">{bankQueryTest.endpoint}</code>
-                <div className="mt-3 max-h-80 space-y-2 overflow-auto">
-                  {bankQueryTest.transactions.length === 0
-                    ? <p className="text-xs text-amber-200">API trả về thành công nhưng chưa có giao dịch.</p>
-                    : bankQueryTest.transactions.map((transaction) => <div key={transaction.transactionID}
-                      className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-xs">
-                      <div className="flex flex-wrap justify-between gap-2"><code className="text-indigo-300">#{transaction.transactionID}</code>
-                        <span className={transaction.type === 'IN' ? 'text-emerald-300' : 'text-amber-300'}>{transaction.type} · {transaction.amount.toLocaleString('vi-VN')} đ</span></div>
-                      <p className="mt-1 break-words text-slate-300">{transaction.description}</p>
-                      {transaction.transactionDate && <p className="mt-1 text-slate-500">{transaction.transactionDate}</p>}
-                    </div>)}
-                </div>
+                <div className="mt-3 max-h-80 space-y-2 overflow-auto">{bankQueryTest.transactions.length === 0
+                  ? <p className="text-xs text-amber-200">API trả về thành công nhưng chưa có giao dịch.</p>
+                  : bankQueryTest.transactions.map((transaction) => <div key={transaction.transactionID} className="rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-xs"><div className="flex flex-wrap justify-between gap-2"><code className="text-indigo-300">#{transaction.transactionID}</code><span className={transaction.type === 'IN' ? 'text-emerald-300' : 'text-amber-300'}>{transaction.type} · {transaction.amount.toLocaleString('vi-VN')} đ</span></div><p className="mt-1 break-words text-slate-300">{transaction.description}</p>{transaction.transactionDate && <p className="mt-1 text-slate-500">{transaction.transactionDate}</p>}</div>)}</div>
               </div>}
             </form>
           </Panel>
@@ -738,6 +872,26 @@ function normalizeBotToken(value: string) {
 function buildBankQrUrl(config: { bankId: string; accountNo: string; template: string; amount: number; description: string; accountName: string }) {
   if (!config.bankId.trim() || !config.accountNo.trim() || !config.accountName.trim()) return '';
   return `https://img.vietqr.io/image/${encodeURIComponent(config.bankId.trim())}-${encodeURIComponent(config.accountNo.trim())}-${encodeURIComponent(config.template)}.png?amount=${Math.max(0, config.amount)}&addInfo=${encodeURIComponent(config.description.trim())}&accountName=${encodeURIComponent(config.accountName.trim())}`;
+}
+
+function bankConfigKey(config: BankConfig) {
+  return config.id || `${config.provider || 'CAKE_V2'}:${config.bankId}:${config.accountNo}`;
+}
+
+function normalizeBankConfigs(body: Pick<BotConfig, 'bank' | 'banks'>) {
+  const source = body.banks?.length ? body.banks : body.bank ? [body.bank] : [];
+  const seen = new Set<string>();
+  return source.reduce<BankConfig[]>((configs, config) => {
+    const key = bankConfigKey(config);
+    if (seen.has(key)) return configs;
+    seen.add(key);
+    configs.push({ ...config, id: config.id || key, provider: config.provider === 'BIDV_V2' ? 'BIDV_V4' : config.provider || 'CAKE_V2' });
+    return configs;
+  }, []);
+}
+
+function bankProviderLabel(provider?: string) {
+  return provider === 'BIDV_V4' || provider === 'BIDV_V2' ? 'BIDV V4' : 'Cake V2';
 }
 
 function inventoryPatternFor(product: ProductRecord) {

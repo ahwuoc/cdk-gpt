@@ -7,6 +7,7 @@ import { assertSharedSecret, sharedSecretMatches } from '../auth/shared-secret';
 import { BotConfigService } from '../bot-config/bot-config.service';
 import { ApprovePaymentRequestDto, CakeCallbackDto, CheckBotDepositDto, CreateBotCheckoutDto,
   CreateBotDepositDto, CreatePaymentRequestDto, PaymentWebhookDto, SaveBotCheckoutPromptDto } from './payment.dto';
+import { TestBankHistoryDto } from '../bot-config/bot-config.dto';
 import { PaymentService } from './payment.service';
 
 @Controller()
@@ -19,7 +20,7 @@ export class PaymentController {
     return this.payments.approve(id, req.admin.sub, body.idempotencyKey);
   }
   @Post('admin/payments/bank/test') @RequirePermissions('payments.approve')
-  testCakeHistory() { return this.payments.testCakeHistoryConnection(); }
+  testCakeHistory(@Body() body?: TestBankHistoryDto) { return this.payments.testCakeHistoryConnection(body?.bankConfigId); }
 
   @Post('webhooks/payments') @SetMetadata(PUBLIC_ROUTE, true)
   webhook(@Body() body: PaymentWebhookDto, @Headers('x-webhook-secret') secret?: string) {
@@ -28,9 +29,19 @@ export class PaymentController {
   }
   @Post('webhooks/bank/cake') @SetMetadata(PUBLIC_ROUTE, true)
   async cakeCallback(@Body() body: CakeCallbackDto, @Headers('signature') signature?: string) {
-    const expected = await this.bankConfig.getBankApiTokenForRuntime();
+    const matched = this.bankConfig.findBankConfigByToken
+      ? await this.bankConfig.findBankConfigByToken(signature) : undefined;
+    const expected = matched?.token ?? await this.bankConfig.getBankApiTokenForRuntime();
     if (!sharedSecretMatches(signature?.trim(), expected)) throw new UnauthorizedException('Invalid Cake callback signature');
-    return this.payments.processCakeCallback(body.transactions);
+    return matched?.id ? this.payments.processCakeCallback(body.transactions, matched.id)
+      : this.payments.processCakeCallback(body.transactions);
+  }
+  @Post('webhooks/bank/:bankConfigId') @SetMetadata(PUBLIC_ROUTE, true)
+  async bankCallback(@Param('bankConfigId') bankConfigId: string, @Body() body: CakeCallbackDto,
+    @Headers('signature') signature?: string) {
+    const bank = await this.bankConfig.getBankConfigForRuntime(bankConfigId);
+    if (!sharedSecretMatches(signature?.trim(), bank?.token)) throw new UnauthorizedException('Invalid bank callback signature');
+    return this.payments.processCakeCallback(body.transactions, bankConfigId);
   }
   @Post('bot/deposits') @SetMetadata(PUBLIC_ROUTE, true)
   createBotDeposit(@Body() body: CreateBotDepositDto, @Headers('x-bot-secret') secret?: string) {

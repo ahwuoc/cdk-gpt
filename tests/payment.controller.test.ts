@@ -12,7 +12,7 @@ const payload: CakeCallbackDto = {
 
 describe('Cake payment callback', () => {
   test('rejects a missing or incorrect signature before processing transactions', async () => {
-    const processCakeCallback = mock(async () => ({ status: true }));
+    const processCakeCallback = mock(async () => ({ status: true, msg: 'OK', examined: 1, incoming: 1, approved: 1 }));
     const controller = new PaymentController({ processCakeCallback } as unknown as PaymentService, {
       getBankApiTokenForRuntime: async () => 'cake-api-token',
     } as unknown as BotConfigService);
@@ -34,15 +34,32 @@ describe('Cake payment callback', () => {
     expect(processCakeCallback).toHaveBeenCalledWith(payload.transactions);
   });
 
-  test('admin bank test delegates to the read-only Cake history diagnostic', async () => {
+  test('admin bank test delegates to the selected bank history diagnostic', async () => {
     const result = { ok: true, provider: 'CAKE', endpoint: 'https://example.test/<token ẩn>',
       latencyMs: 10, totalTransactions: 2, incomingTransactions: 1, transactions: [] };
     const testCakeHistoryConnection = mock(async () => result);
     const controller = new PaymentController({ testCakeHistoryConnection } as unknown as PaymentService,
       {} as BotConfigService);
 
-    await expect(controller.testCakeHistory()).resolves.toEqual(result);
+    await expect(controller.testCakeHistory({ bankConfigId: 'bank-cake' })).resolves.toEqual(result);
     expect(testCakeHistoryConnection).toHaveBeenCalledTimes(1);
+    expect(testCakeHistoryConnection).toHaveBeenCalledWith('bank-cake');
+  });
+
+  test('a config-specific BIDV callback validates its own signature and accepts the batch', async () => {
+    const bidvPayload: CakeCallbackDto = { status: 'success', message: 'Thành công', merchant: 'G7D1DA', transactions: [{ transactionID: 'FT233ABC', amount: 100_000,
+      description: 'NAPABCDEF0123456789', type: 'IN' }] };
+    const result = { status: true, msg: 'OK', examined: 1, incoming: 1, approved: 1 };
+    const processCakeCallback = mock(async () => result);
+    const getBankConfigForRuntime = mock(async (id: string) => id === 'bank-bidv'
+      ? { id, token: 'bidv-secret', provider: 'BIDV_V4' } : undefined);
+    const controller = new PaymentController({ processCakeCallback } as unknown as PaymentService,
+      { getBankConfigForRuntime } as unknown as BotConfigService);
+
+    await expect(controller.bankCallback('bank-bidv', bidvPayload, 'wrong')).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(controller.bankCallback('bank-bidv', bidvPayload, 'bidv-secret')).resolves.toEqual(result);
+    expect(processCakeCallback).toHaveBeenCalledTimes(1);
+    expect(processCakeCallback).toHaveBeenCalledWith(bidvPayload.transactions, 'bank-bidv');
   });
 
   test('authenticated bot checkout forwards product, quantity and current price', async () => {

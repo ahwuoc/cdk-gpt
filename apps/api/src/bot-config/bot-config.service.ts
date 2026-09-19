@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Inject, Injectable, Optional } 
 import { InjectModel } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
 import type { Model } from 'mongoose';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { Telegram } from 'telegraf';
 import { EncryptionService } from '@store/encryption';
 import { isServerlessRuntime } from '@store/config';
@@ -13,12 +13,16 @@ import { deriveTelegramWebhookSecret, isTelegramWebhookSecretSeed } from './tele
 
 export interface VerifiedTelegramBot { id: number; username?: string; first_name: string; }
 export interface RuntimeBankConfig {
+  id: string;
+  label: string;
+  provider: BankHistoryProvider;
   token: string;
   bankId: string;
   accountNo: string;
   template: string;
   accountName: string;
 }
+export type BankHistoryProvider = 'CAKE_V2' | 'BIDV_V4';
 export type BotTokenVerifier = (token: string) => Promise<VerifiedTelegramBot>;
 export const BOT_TOKEN_VERIFIER = Symbol('BOT_TOKEN_VERIFIER');
 
@@ -45,6 +49,19 @@ interface StoredBankConfig {
   accountName: string;
   amount: number;
   description: string;
+}
+
+interface StoredBankAccount extends StoredBankConfig {
+  id: string;
+  label: string;
+  provider: BankHistoryProvider | 'BIDV_V2';
+  archivedAt?: string;
+}
+
+interface StoredBankCollection {
+  version: 2;
+  activeBankId: string;
+  banks: StoredBankAccount[];
 }
 
 interface StoredOperationalConfig {
@@ -77,6 +94,9 @@ export interface RuntimeBotToken {
 }
 
 const BOT_TOKEN_UPDATE_LEASE_MS = 75_000;
+const BANK_CONFIG_UPDATE_LEASE_MS = 15_000;
+const LEGACY_BANK_CONFIG_ID = 'legacy';
+const ENVIRONMENT_BANK_CONFIG_ID = 'environment';
 
 @Injectable()
 export class BotConfigService {
@@ -97,17 +117,19 @@ export class BotConfigService {
     ]);
     const welcomeMessage = typeof welcomeSetting?.value === 'string' ? welcomeSetting.value : defaultWelcomeMessage();
     const runtime = publicOperationalConfig(runtimeSetting?.value, runtimeSetting?.updatedAt);
+    const bankState = publicBankConfigState(bankSetting?.value, bankSetting?.updatedAt);
     if (!setting) {
       const environmentToken = process.env.BOT_TOKEN;
       return { configured: Boolean(environmentToken), source: environmentToken ? 'environment' : 'none',
         maskedToken: environmentToken ? `••••••••${environmentToken.slice(-4)}` : undefined,
-        welcomeMessage, bank: publicBankConfig(bankSetting?.value, bankSetting?.updatedAt), runtime,
+        welcomeMessage, bank: bankState.bank, banks: bankState.banks, activeBankId: bankState.activeBankId, runtime,
         reloadWithinSeconds: botConfigPollSeconds() };
     }
     const value = setting.value as StoredBotToken;
     return { configured: true, source: 'database', botId: value.botId, botUsername: value.botUsername,
       maskedToken: `••••••••${value.lastFour}`, encryptionKeyVersion: value.encryptionKeyVersion,
-      updatedAt: setting.updatedAt, welcomeMessage, bank: publicBankConfig(bankSetting?.value, bankSetting?.updatedAt), runtime,
+      updatedAt: setting.updatedAt, welcomeMessage, bank: bankState.bank, banks: bankState.banks,
+      activeBankId: bankState.activeBankId, runtime,
       reloadWithinSeconds: botConfigPollSeconds() };
   }
 
@@ -121,25 +143,50 @@ export class BotConfigService {
     }));
   }
 
-  /** Shared secret used by the Cake callback `signature` header. */
-  async getBankApiTokenForRuntime(): Promise<string | undefined> {
-    const setting = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
-    const stored = isStoredBankConfig(setting?.value) ? setting.value : undefined;
-    if (stored?.encryptedToken) return this.encryption.decrypt<string>(stored.encryptedToken);
-    return process.env.TOKEN_API_BANK?.trim() || undefined;
+  /** Shared secret used by a bank callback. With no id this resolves the one active account. */
+  async getBankApiTokenForRuntime(id?: string): Promise<string | undefined> {
+    return (await this.getBankConfigForRuntime(id))?.token;
   }
 
-  async getBankConfigForRuntime(): Promise<RuntimeBankConfig | undefined> {
+  /** Resolve the active account, or the exact account pinned to an older pending payment. */
+  async getBankConfigForRuntime(id?: string): Promise<RuntimeBankConfig | undefined> {
     const setting = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
-    const stored = isStoredBankConfig(setting?.value) ? setting.value : undefined;
-    const fallback = {
-      bankId: process.env.BANK_ID ?? '', accountNo: process.env.BANK_ACCOUNT_NO ?? '',
-      template: process.env.BANK_QR_TEMPLATE ?? 'compact2', accountName: process.env.BANK_ACCOUNT_NAME ?? '',
-    };
-    const config = stored ?? fallback;
-    const token = stored?.encryptedToken ? this.encryption.decrypt<string>(stored.encryptedToken) : process.env.TOKEN_API_BANK?.trim();
-    if (!token || !config.bankId || !config.accountNo || !config.accountName) return undefined;
-    return { token, bankId: config.bankId, accountNo: config.accountNo, template: config.template, accountName: config.accountName };
+    const collection = storedBankCollection(setting?.value);
+    if (collection) {
+      const selectedId = id || collection.activeBankId;
+      const selected = collection.banks.find((bank) => bank.id === selectedId);
+      return selected ? this.runtimeBankConfig(selected) : undefined;
+    }
+    const environment = environmentBankConfig();
+    if (!environment || (id && id !== ENVIRONMENT_BANK_CONFIG_ID)) return undefined;
+    return environment;
+  }
+
+  /** Retained/archived accounts are included so callbacks and polls for old QR codes keep working. */
+  async getBankConfigsForRuntime(): Promise<RuntimeBankConfig[]> {
+    const setting = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
+    const collection = storedBankCollection(setting?.value);
+    if (!collection) return environmentBankConfig() ? [environmentBankConfig()!] : [];
+    const configs = await Promise.all(collection.banks.map((bank) => this.runtimeBankConfig(bank)));
+    return configs.filter((bank): bank is RuntimeBankConfig => Boolean(bank));
+  }
+
+  /** Legacy callback URL has no config id, so safely identify its account by the signature. */
+  async findBankConfigByToken(candidate?: string): Promise<RuntimeBankConfig | undefined> {
+    if (!candidate?.trim()) return undefined;
+    for (const bank of await this.getBankConfigsForRuntime()) {
+      if (secretsEqual(candidate.trim(), bank.token)) return bank;
+    }
+    return undefined;
+  }
+
+  private runtimeBankConfig(stored: StoredBankAccount): RuntimeBankConfig | undefined {
+    const legacyEnvironmentToken = stored.id === LEGACY_BANK_CONFIG_ID ? process.env.TOKEN_API_BANK?.trim() : undefined;
+    const token = stored.encryptedToken ? this.encryption.decrypt<string>(stored.encryptedToken) : legacyEnvironmentToken;
+    if (!token || !stored.bankId || !stored.accountNo || !stored.accountName) return undefined;
+    return { id: stored.id, label: stored.label,
+      provider: stored.provider === 'BIDV_V2' ? 'BIDV_V4' : stored.provider, token,
+      bankId: stored.bankId, accountNo: stored.accountNo, template: stored.template, accountName: stored.accountName };
   }
 
   /** Used by the Vercel webhook handler; never return this value to an admin UI. */
@@ -166,24 +213,96 @@ export class BotConfigService {
   }
 
   async updateBankConfig(input: UpdateBankConfigDto, adminId: string, requestId?: string) {
+    return this.withBankConfigUpdateLock(() => this.updateBankConfigUnlocked(input, adminId, requestId));
+  }
+
+  private async updateBankConfigUnlocked(input: UpdateBankConfigDto, adminId: string, requestId?: string) {
     const adminObjectId = new Types.ObjectId(adminId);
     const current = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
-    const previous = isStoredBankConfig(current?.value) ? current.value : undefined;
+    const collection = storedBankCollection(current?.value) ?? emptyBankCollection();
+    const legacyStyleUpdate = !input.id && input.provider === undefined && input.label === undefined &&
+      input.active === undefined && input.enabled === undefined;
+    const existingId = legacyStyleUpdate ? collection.activeBankId : input.id;
+    const existingIndex = existingId ? collection.banks.findIndex((bank) => bank.id === existingId) : -1;
+    if (input.id && existingIndex < 0) throw new BadRequestException('Không tìm thấy cấu hình ngân hàng');
+    const previous = existingIndex >= 0 ? collection.banks[existingIndex] : undefined;
+    const id = previous?.id ?? new Types.ObjectId().toString();
     const token = input.tokenApiBank?.trim();
-    const value: StoredBankConfig = {
-      ...(token ? { encryptedToken: this.encryption.encrypt(token), encryptionKeyVersion: this.encryption.currentVersion, lastFour: token.slice(-4) } : previous?.encryptedToken ? {
-        encryptedToken: previous.encryptedToken, encryptionKeyVersion: previous.encryptionKeyVersion, lastFour: previous.lastFour,
-      } : {}),
+    if (!token && !previous?.encryptedToken) throw new BadRequestException('SECRET_KEY API ngân hàng là bắt buộc');
+    const value: StoredBankAccount = {
+      id,
+      label: input.label?.trim() || previous?.label || `${input.bankId.trim()} · ${input.accountNo.trim().slice(-4)}`,
+      provider: input.provider ?? previous?.provider ?? 'CAKE_V2',
+      ...(token ? { encryptedToken: this.encryption.encrypt(token), encryptionKeyVersion: this.encryption.currentVersion,
+        lastFour: token.slice(-4) } : {
+        encryptedToken: previous!.encryptedToken, encryptionKeyVersion: previous!.encryptionKeyVersion,
+        lastFour: previous!.lastFour,
+      }),
       bankId: input.bankId.trim(), accountNo: input.accountNo.trim(), template: input.template,
       accountName: input.accountName.trim(), amount: input.amount, description: input.description.trim(),
     };
+    const banks = [...collection.banks];
+    if (existingIndex >= 0) banks[existingIndex] = value;
+    else banks.push(value);
+    const requestedActive = input.active ?? input.enabled;
+    const activeBankId = requestedActive === true || !collection.activeBankId || banks.length === 1
+      ? id : collection.activeBankId;
+    const savedValue: StoredBankCollection = { version: 2, activeBankId, banks };
     const setting = await this.settings.findOneAndUpdate({ key: 'bank.api_config' }, { $set: {
-      value, description: 'Encrypted Cake callback signature token and VietQR settings', public: false, updatedBy: adminObjectId,
+      value: savedValue, description: 'Encrypted multi-bank API history and VietQR settings', public: false,
+      updatedBy: adminObjectId,
     } }, { upsert: true, new: true, setDefaultsOnInsert: true });
-    await this.audits.create({ actorType: 'ADMIN', actorId: adminObjectId, action: 'BANK_API_CONFIG_UPDATED',
+    await this.audits.create({ actorType: 'ADMIN', actorId: adminObjectId,
+      action: previous ? 'BANK_API_CONFIG_UPDATED' : 'BANK_API_CONFIG_CREATED',
       resourceType: 'Setting', resourceId: setting._id, requestId,
-      metadata: { bankId: value.bankId, accountNoLastFour: value.accountNo.slice(-4), template: value.template } });
-    return { bank: publicBankConfig(value, setting.updatedAt), reloadWithinSeconds: botConfigPollSeconds() };
+      metadata: { bankConfigId: id, provider: value.provider, active: activeBankId === id,
+        bankId: value.bankId, accountNoLastFour: value.accountNo.slice(-4), template: value.template } });
+    return { ...publicBankConfigState(savedValue, setting.updatedAt), savedBankId: id,
+      reloadWithinSeconds: botConfigPollSeconds() };
+  }
+
+  async activateBankConfig(id: string, adminId: string, requestId?: string) {
+    return this.withBankConfigUpdateLock(async () => {
+      const adminObjectId = new Types.ObjectId(adminId);
+      const current = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
+      const collection = storedBankCollection(current?.value);
+      const bank = collection?.banks.find((entry) => entry.id === id && !entry.archivedAt);
+      if (!collection || !bank) throw new BadRequestException('Không tìm thấy cấu hình ngân hàng');
+      const value: StoredBankCollection = { ...collection, activeBankId: bank.id };
+      const setting = await this.settings.findOneAndUpdate({ key: 'bank.api_config' }, { $set: {
+        value, description: 'Encrypted multi-bank API history and VietQR settings', public: false,
+        updatedBy: adminObjectId,
+      } }, { new: true });
+      if (!setting) throw new BadRequestException('Không thể bật ngân hàng');
+      await this.audits.create({ actorType: 'ADMIN', actorId: adminObjectId, action: 'BANK_API_CONFIG_ACTIVATED',
+        resourceType: 'Setting', resourceId: setting._id, requestId,
+        metadata: { bankConfigId: bank.id, provider: bank.provider, bankId: bank.bankId } });
+      return { ...publicBankConfigState(value, setting.updatedAt), reloadWithinSeconds: botConfigPollSeconds() };
+    });
+  }
+
+  /** Archive instead of hard-delete so a pending QR can still query its original provider. */
+  async archiveBankConfig(id: string, adminId: string, requestId?: string) {
+    return this.withBankConfigUpdateLock(async () => {
+      const adminObjectId = new Types.ObjectId(adminId);
+      const current = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
+      const collection = storedBankCollection(current?.value);
+      if (!collection) throw new BadRequestException('Không tìm thấy cấu hình ngân hàng');
+      if (collection.activeBankId === id) throw new ConflictException('Hãy bật ngân hàng khác trước khi xóa');
+      const index = collection.banks.findIndex((bank) => bank.id === id && !bank.archivedAt);
+      if (index < 0) throw new BadRequestException('Không tìm thấy cấu hình ngân hàng');
+      const banks = [...collection.banks];
+      banks[index] = { ...banks[index]!, archivedAt: new Date().toISOString() };
+      const value: StoredBankCollection = { ...collection, banks };
+      const setting = await this.settings.findOneAndUpdate({ key: 'bank.api_config' }, { $set: {
+        value, description: 'Encrypted multi-bank API history and VietQR settings', public: false,
+        updatedBy: adminObjectId,
+      } }, { new: true });
+      if (!setting) throw new BadRequestException('Không thể xóa ngân hàng');
+      await this.audits.create({ actorType: 'ADMIN', actorId: adminObjectId, action: 'BANK_API_CONFIG_ARCHIVED',
+        resourceType: 'Setting', resourceId: setting._id, requestId, metadata: { bankConfigId: id } });
+      return { ...publicBankConfigState(value, setting.updatedAt), reloadWithinSeconds: botConfigPollSeconds() };
+    });
   }
 
   /** Resolve hot-editable values from MongoDB, with environment variables as bootstrap fallback. */
@@ -396,6 +515,27 @@ export class BotConfigService {
       await this.leases.updateOne({ _id: 'telegram-bot-token-update', token }, { $set: { expiresAt: new Date() } }).catch(() => undefined);
     }
   }
+
+  private async withBankConfigUpdateLock<T>(work: () => Promise<T>) {
+    if (!this.leases) return work();
+    const token = randomUUID();
+    const now = new Date();
+    try {
+      const lease = await this.leases.findOneAndUpdate({ _id: 'bank-config-update', expiresAt: { $lte: now } }, {
+        $set: { token, expiresAt: new Date(now.getTime() + BANK_CONFIG_UPDATE_LEASE_MS) },
+      }, { upsert: true, new: true, setDefaultsOnInsert: true });
+      if (!lease || lease.token !== token) throw new ConflictException('Một thay đổi ngân hàng khác đang được xử lý');
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      if (isMongoDuplicateKey(error)) throw new ConflictException('Một thay đổi ngân hàng khác đang được xử lý');
+      throw error;
+    }
+    try {
+      return await work();
+    } finally {
+      await this.leases.updateOne({ _id: 'bank-config-update', token }, { $set: { expiresAt: new Date() } }).catch(() => undefined);
+    }
+  }
 }
 
 export const botTokenVerifierProvider = {
@@ -428,6 +568,49 @@ function isStoredBotToken(value: unknown): value is StoredBotToken {
 
 function isStoredBankConfig(value: unknown): value is StoredBankConfig {
   return Boolean(value && typeof value === 'object' && 'bankId' in value && 'accountNo' in value);
+}
+
+function isStoredBankCollection(value: unknown): value is StoredBankCollection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<StoredBankCollection>;
+  return candidate.version === 2 && typeof candidate.activeBankId === 'string' && Array.isArray(candidate.banks);
+}
+
+function isStoredBankAccount(value: unknown): value is StoredBankAccount {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const bank = value as Partial<StoredBankAccount>;
+  return typeof bank.id === 'string' && Boolean(bank.id) && typeof bank.label === 'string' &&
+    (bank.provider === 'CAKE_V2' || bank.provider === 'BIDV_V4' || bank.provider === 'BIDV_V2') &&
+    typeof bank.bankId === 'string' && typeof bank.accountNo === 'string' && typeof bank.template === 'string' &&
+    typeof bank.accountName === 'string' && typeof bank.amount === 'number' && typeof bank.description === 'string';
+}
+
+function emptyBankCollection(): StoredBankCollection {
+  return { version: 2, activeBankId: '', banks: [] };
+}
+
+/** Read both the old singleton and the v2 collection without a destructive migration. */
+function storedBankCollection(value: unknown): StoredBankCollection | undefined {
+  if (isStoredBankCollection(value)) {
+    const banks = value.banks.filter(isStoredBankAccount).map((bank) => ({
+      ...bank, provider: bank.provider === 'BIDV_V2' ? 'BIDV_V4' as const : bank.provider,
+    }));
+    const requested = banks.find((bank) => bank.id === value.activeBankId && !bank.archivedAt);
+    const activeBankId = requested?.id ?? banks.find((bank) => !bank.archivedAt)?.id ?? '';
+    return { version: 2, activeBankId, banks };
+  }
+  if (!isStoredBankConfig(value)) return undefined;
+  const bank: StoredBankAccount = {
+    ...value,
+    id: LEGACY_BANK_CONFIG_ID,
+    label: `${value.bankId} · ${value.accountNo.slice(-4)}`,
+    provider: 'CAKE_V2',
+    amount: Number.isSafeInteger(value.amount) ? value.amount : 0,
+    description: typeof value.description === 'string' ? value.description : '',
+    template: value.template || 'compact2',
+    accountName: value.accountName || '',
+  };
+  return { version: 2, activeBankId: bank.id, banks: [bank] };
 }
 
 function isStoredOperationalConfig(value: unknown): value is StoredOperationalConfig {
@@ -476,23 +659,74 @@ function normalizeSecretValue(value: string | undefined, variableName: string) {
 
 function stripTrailingSlash(value: string) { return value.replace(/\/+$/, ''); }
 
-function publicBankConfig(value: unknown, updatedAt?: Date) {
-  const stored = isStoredBankConfig(value) ? value : undefined;
+function publicBankConfigState(value: unknown, updatedAt?: Date) {
+  const collection = storedBankCollection(value);
+  if (collection) {
+    const banks = collection.banks.filter((bank) => !bank.archivedAt)
+      .map((bank) => publicStoredBank(bank, bank.id === collection.activeBankId, updatedAt));
+    return { bank: banks.find((bank) => bank.active), banks, activeBankId: collection.activeBankId };
+  }
   const environmentToken = process.env.TOKEN_API_BANK?.trim();
-  const configuredToken = stored?.encryptedToken || environmentToken;
-  const config = stored ?? {
-    bankId: process.env.BANK_ID ?? '', accountNo: process.env.BANK_ACCOUNT_NO ?? '',
-    template: process.env.BANK_QR_TEMPLATE ?? 'compact2', accountName: process.env.BANK_ACCOUNT_NAME ?? '',
-    amount: Number(process.env.BANK_QR_AMOUNT ?? 0), description: process.env.BANK_QR_DESCRIPTION ?? '',
+  const bankId = process.env.BANK_ID?.trim() ?? '';
+  const accountNo = process.env.BANK_ACCOUNT_NO?.trim() ?? '';
+  const template = process.env.BANK_QR_TEMPLATE?.trim() || 'compact2';
+  const accountName = process.env.BANK_ACCOUNT_NAME?.trim() ?? '';
+  const amount = Number(process.env.BANK_QR_AMOUNT ?? 0);
+  const description = process.env.BANK_QR_DESCRIPTION ?? '';
+  if (!environmentToken && !bankId && !accountNo) return { bank: undefined, banks: [], activeBankId: '' };
+  const provider = environmentBankProvider();
+  const qrUrl = bankId && accountNo ? vietQrPreview(bankId, accountNo, template, amount, description, accountName) : undefined;
+  const bank = {
+    id: ENVIRONMENT_BANK_CONFIG_ID, label: `${bankId || 'Ngân hàng'} · ${accountNo.slice(-4)}`,
+    provider, active: true, enabled: true, configured: Boolean(environmentToken && bankId && accountNo && accountName),
+    tokenConfigured: Boolean(environmentToken), tokenLastFour: environmentToken?.slice(-4), source: 'environment',
+    maskedToken: environmentToken ? `••••••••${environmentToken.slice(-4)}` : undefined,
+    bankId, accountNo, template, accountName, amount: Number.isSafeInteger(amount) && amount >= 0 ? amount : 0,
+    description, qrUrl, updatedAt,
   };
-  const qrUrl = config.bankId && config.accountNo
-    ? `https://img.vietqr.io/image/${encodeURIComponent(config.bankId)}-${encodeURIComponent(config.accountNo)}-${encodeURIComponent(config.template)}.png?amount=${config.amount}&addInfo=${encodeURIComponent(config.description)}&accountName=${encodeURIComponent(config.accountName)}`
+  return { bank, banks: [bank], activeBankId: bank.id };
+}
+
+function publicStoredBank(bank: StoredBankAccount, active: boolean, updatedAt?: Date) {
+  const legacyEnvironmentToken = bank.id === LEGACY_BANK_CONFIG_ID ? process.env.TOKEN_API_BANK?.trim() : undefined;
+  const tokenConfigured = Boolean(bank.encryptedToken || legacyEnvironmentToken);
+  const tokenLastFour = bank.lastFour ?? legacyEnvironmentToken?.slice(-4);
+  const qrUrl = bank.bankId && bank.accountNo
+    ? vietQrPreview(bank.bankId, bank.accountNo, bank.template, bank.amount, bank.description, bank.accountName)
     : undefined;
   return {
-    configured: Boolean(configuredToken && config.bankId && config.accountNo),
-    source: stored?.encryptedToken ? 'database' : environmentToken ? 'environment' : 'none',
-    maskedToken: stored?.lastFour || environmentToken ? `••••••••${stored?.lastFour ?? environmentToken?.slice(-4)}` : undefined,
-    bankId: config.bankId, accountNo: config.accountNo, template: config.template,
-    accountName: config.accountName, amount: config.amount, description: config.description, qrUrl, updatedAt,
+    id: bank.id, label: bank.label, provider: bank.provider, active, enabled: active,
+    configured: Boolean(tokenConfigured && bank.bankId && bank.accountNo && bank.accountName),
+    tokenConfigured, tokenLastFour, source: bank.encryptedToken ? 'database' : legacyEnvironmentToken ? 'environment' : 'none',
+    maskedToken: tokenLastFour ? `••••••••${tokenLastFour}` : undefined,
+    bankId: bank.bankId, accountNo: bank.accountNo, template: bank.template,
+    accountName: bank.accountName, amount: bank.amount, description: bank.description, qrUrl, updatedAt,
   };
+}
+
+function vietQrPreview(bankId: string, accountNo: string, template: string, amount: number,
+  description: string, accountName: string) {
+  return `https://img.vietqr.io/image/${encodeURIComponent(bankId)}-${encodeURIComponent(accountNo)}-${encodeURIComponent(template)}.png?amount=${amount}&addInfo=${encodeURIComponent(description)}&accountName=${encodeURIComponent(accountName)}`;
+}
+
+function environmentBankProvider(): BankHistoryProvider {
+  return ['BIDV_V4', 'BIDV_V2'].includes(process.env.BANK_HISTORY_PROVIDER?.trim().toUpperCase() ?? '')
+    ? 'BIDV_V4' : 'CAKE_V2';
+}
+
+function environmentBankConfig(): RuntimeBankConfig | undefined {
+  const token = process.env.TOKEN_API_BANK?.trim();
+  const bankId = process.env.BANK_ID?.trim();
+  const accountNo = process.env.BANK_ACCOUNT_NO?.trim();
+  const accountName = process.env.BANK_ACCOUNT_NAME?.trim();
+  if (!token || !bankId || !accountNo || !accountName) return undefined;
+  return { id: ENVIRONMENT_BANK_CONFIG_ID, label: `${bankId} · ${accountNo.slice(-4)}`,
+    provider: environmentBankProvider(), token, bankId, accountNo,
+    template: process.env.BANK_QR_TEMPLATE?.trim() || 'compact2', accountName };
+}
+
+function secretsEqual(candidate: string, expected: string) {
+  const left = Buffer.from(candidate);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
 }

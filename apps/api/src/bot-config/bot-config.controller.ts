@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Put, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Put, Req } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import type { AdminClaims } from '../auth/auth.service';
 import { RequirePermissions } from '../auth/permissions.guard';
@@ -27,6 +27,16 @@ export class BotConfigController {
   updateBank(@Body() body: UpdateBankConfigDto, @Req() request: FastifyRequest & { admin: AdminClaims },
     @Headers('x-request-id') requestId?: string) {
     return this.config.updateBankConfig(body, request.admin.sub, requestId);
+  }
+  @Patch('banks/:id/active')
+  activateBank(@Param('id') id: string, @Req() request: FastifyRequest & { admin: AdminClaims },
+    @Headers('x-request-id') requestId?: string) {
+    return this.config.activateBankConfig(id, request.admin.sub, requestId);
+  }
+  @Delete('banks/:id')
+  archiveBank(@Param('id') id: string, @Req() request: FastifyRequest & { admin: AdminClaims },
+    @Headers('x-request-id') requestId?: string) {
+    return this.config.archiveBankConfig(id, request.admin.sub, requestId);
   }
   @Put('runtime')
   updateRuntime(@Body() body: UpdateRuntimeConfigDto, @Req() request: FastifyRequest & { admin: AdminClaims },

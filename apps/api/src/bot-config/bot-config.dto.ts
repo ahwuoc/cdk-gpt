@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 
 export function normalizeTelegramBotToken(value: unknown): unknown {
   if (typeof value !== 'string') return value;
@@ -28,6 +28,27 @@ export class UpdateWelcomeMessageDto {
 }
 
 export class UpdateBankConfigDto {
+  /** Stable identifier used by the multi-bank configuration UI. Omit it to
+   * update the legacy/current active account through PUT /bank. */
+  @IsOptional() @IsString() @Length(1, 80) @Matches(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/)
+  id?: string;
+
+  @IsOptional() @IsString() @Length(1, 100)
+  label?: string;
+
+  /** Provider adapter. CAKE_V2 is the backwards-compatible default. */
+  @IsOptional() @IsString() @IsIn(['CAKE_V2', 'BIDV_V4'])
+  provider?: 'CAKE_V2' | 'BIDV_V4';
+
+  /** When omitted, a newly-created account follows the current active state.
+   * Existing accounts retain their state unless explicitly changed. */
+  @IsOptional() @IsBoolean()
+  active?: boolean;
+
+  /** Alias accepted by clients that call the toggle `enabled`. */
+  @IsOptional() @IsBoolean()
+  enabled?: boolean;
+
   @IsOptional() @IsString() @Length(0, 200)
   tokenApiBank?: string;
 
@@ -48,6 +69,11 @@ export class UpdateBankConfigDto {
 
   @IsString() @Length(0, 50) @Matches(/^[\p{L}\p{N} _-]*$/u)
   description!: string;
+}
+
+export class TestBankHistoryDto {
+  @IsOptional() @IsString() @Length(1, 80) @Matches(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/)
+  bankConfigId?: string;
 }
 
 /** Values that are safe to rotate from the admin console without rebuilding. */

@@ -7,16 +7,21 @@ import { ActorType, PaymentRequest, type PaymentRequestDocument, type RuntimeLea
 import { MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY, PaymentRequestStatus, WalletTransactionType } from '@store/shared';
 import { isMongoDuplicateKey } from '@store/shared';
 import { loadConfig } from '@store/config';
-import { BotConfigService, type RuntimeBankConfig } from '../bot-config/bot-config.service';
+import { BotConfigService, type BankHistoryProvider, type RuntimeBankConfig } from '../bot-config/bot-config.service';
 import { PurchaseService } from '../purchase/purchase.service';
 import { WalletService } from '../wallet/wallet.service';
 
 const BANK_PROVIDER = 'BANK_API';
-const CAKE_HISTORY_ORIGIN = 'https://thueapibank.vn';
+const BANK_HISTORY_ORIGIN = 'https://thueapibank.vn';
 const CAKE_HISTORY_CHECK_COOLDOWN_MS = 10_000;
 const CAKE_HISTORY_TIMEOUT_MS = 8_000;
 const CAKE_HISTORY_MAX_TRANSACTIONS = 500;
 export const CAKE_HISTORY_FETCHER = Symbol('CAKE_HISTORY_FETCHER');
+const BANK_HISTORY_PATH: Record<BankHistoryProvider, string> = {
+  CAKE_V2: 'historyapicakev2',
+  // BIDV V4 keeps the provider's documented historyapibidvv2 path.
+  BIDV_V4: 'historyapibidvv2',
+};
 export interface BankTransaction {
   transactionID: string | number;
   amount: number | string;
@@ -77,7 +82,7 @@ export class PaymentService {
   }
 
   async createBankDeposit(userId: string, amount: number, idempotencyKey: string) {
-    const bank = await this.requireBankConfig();
+    const activeBank = await this.requireBankConfig();
     if (!Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid user');
     if (!Number.isSafeInteger(amount) || amount <= 0) throw new BadRequestException('Invalid deposit amount');
     const objectUserId = new Types.ObjectId(userId);
@@ -87,12 +92,14 @@ export class PaymentService {
     const request = await this.requests.findOneAndUpdate({ idempotencyKey }, { $setOnInsert: {
       requestCode, userId: objectUserId, amount, provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
       proofUrls: [], idempotencyKey,
-      metadata: { source: 'telegram-bank-topup', transferContent, expiresAt: expiresAt.toISOString() }, deletedAt: null,
+      metadata: { source: 'telegram-bank-topup', transferContent, bankConfigId: activeBank.id,
+        expiresAt: expiresAt.toISOString() }, deletedAt: null,
     } }, { upsert: true, new: true, setDefaultsOnInsert: true });
     if (!request) throw new Error('Bank deposit could not be created');
     if (!request.userId.equals(objectUserId) || request.amount !== amount || request.provider !== BANK_PROVIDER) {
       throw new BadRequestException('Deposit idempotency key was already used for another request');
     }
+    const bank = await this.resolveBankConfigForRequest(request, activeBank);
     const content = transferContentFrom(request) ?? transferContent;
     return {
       id: request._id.toString(), requestCode: request.requestCode, amount: request.amount, status: request.status,
@@ -103,7 +110,7 @@ export class PaymentService {
   }
 
   async createBankCheckout(userId: string, productId: string, quantity: number, expectedUnitPrice: number, idempotencyKey: string) {
-    const bank = await this.requireBankConfig();
+    const activeBank = await this.requireBankConfig();
     if (!this.purchases) throw new BadRequestException('Thanh toán nhanh chưa sẵn sàng');
     if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(productId)) throw new BadRequestException('Thông tin thanh toán không hợp lệ');
     if (!Number.isSafeInteger(expectedUnitPrice) || expectedUnitPrice < 0) {
@@ -112,6 +119,7 @@ export class PaymentService {
     const prior = await this.requests.findOne({ idempotencyKey, deletedAt: null });
     if (prior) {
       const priorCheckout = this.assertSameBankCheckout(prior, userId, productId, quantity, expectedUnitPrice);
+      const bank = await this.resolveBankConfigForRequest(prior, activeBank);
       return bankCheckoutResponse(prior, priorCheckout, bank);
     }
     if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY) {
@@ -149,6 +157,7 @@ export class PaymentService {
         request = (await this.requests.create([{ _id: requestId, requestCode, userId: objectUserId,
           amount: quote.totalAmount, provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
           proofUrls: [], idempotencyKey, metadata: { source: 'telegram-bank-quick-checkout', transferContent,
+            bankConfigId: activeBank.id,
             expiresAt: expiresAt.toISOString(), quickCheckout: checkout }, deletedAt: null }], { session }))[0] ?? null;
       }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' }, readPreference: 'primary' });
     } catch (error) {
@@ -157,6 +166,7 @@ export class PaymentService {
     } finally { await session.endSession(); }
     if (!request) throw new Error('Bank checkout could not be created');
     const stored = this.assertSameBankCheckout(request, userId, productId, quantity, expectedUnitPrice);
+    const bank = await this.resolveBankConfigForRequest(request, activeBank);
     return bankCheckoutResponse(request, stored, bank, expiresAt.toISOString());
   }
 
@@ -244,17 +254,20 @@ export class PaymentService {
       cancelled: wasUserCancelled(request), checkout: publicQuickCheckout(quickCheckoutFrom(request)), historyCheck };
   }
 
-  /** Admin-only, read-only probe for diagnosing the saved Cake history token. */
-  async testCakeHistoryConnection() {
-    const token = await this.bankConfig?.getBankApiTokenForRuntime();
+  /** Admin-only, read-only probe for diagnosing one saved bank history token. */
+  async testCakeHistoryConnection(bankConfigId?: string) {
+    const bank = await this.bankConfig?.getBankConfigForRuntime?.(bankConfigId);
+    const token = bank?.token ?? await this.bankConfig?.getBankApiTokenForRuntime?.(bankConfigId);
+    const providerType = bank?.provider ?? 'CAKE_V2';
     if (!token) throw new BadRequestException('Chưa cấu hình TOKEN_API_BANK');
     const startedAt = Date.now();
     try {
-      const transactions = await fetchCakeHistoryTransactions(token, this.cakeHistoryFetch ?? globalThis.fetch);
+      const transactions = await fetchBankHistoryTransactions(providerType, token, this.cakeHistoryFetch ?? globalThis.fetch);
+      const provider = providerType === 'BIDV_V4' ? 'BIDV V4' : 'CAKE';
       return {
         ok: true,
-        provider: 'CAKE',
-        endpoint: `${CAKE_HISTORY_ORIGIN}/historyapicakev2/<token ẩn>`,
+        provider,
+        endpoint: `${BANK_HISTORY_ORIGIN}/${BANK_HISTORY_PATH[providerType]}/<token ẩn>`,
         latencyMs: Date.now() - startedAt,
         totalTransactions: transactions.length,
         incomingTransactions: transactions.filter((transaction) => transaction.type === 'IN').length,
@@ -268,7 +281,7 @@ export class PaymentService {
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'phản hồi không hợp lệ';
-      throw new BadRequestException(`Không truy vấn được API lịch sử Cake: ${reason}`);
+      throw new BadRequestException(`Không truy vấn được API lịch sử ${providerType === 'BIDV_V4' ? 'BIDV V4' : 'Cake'}: ${reason}`);
     }
   }
 
@@ -282,15 +295,15 @@ export class PaymentService {
     const transferCode = transferContentFrom(request) ?? request.requestCode;
     const lease = await this.acquireCakeHistoryCheckLease(request.userId.toString());
     if (!lease.acquired) return { status: 'COOLDOWN', retryAfterSeconds: lease.retryAfterSeconds };
-    const token = await this.bankConfig?.getBankApiTokenForRuntime();
-    if (!token) return { status: 'UNAVAILABLE' };
+    const bank = await this.findBankConfigForRequest(request);
+    if (!bank) return { status: 'UNAVAILABLE' };
     try {
-      const transactions = await fetchCakeHistoryTransactions(token, this.cakeHistoryFetch ?? globalThis.fetch);
+      const transactions = await fetchBankHistoryTransactions(bank.provider ?? 'CAKE_V2', bank.token, this.cakeHistoryFetch ?? globalThis.fetch);
       const matching = transactions.filter((transaction) =>
         String(transaction.type ?? 'IN').toUpperCase() === 'IN' &&
         extractTransferCodes(String(transaction.description ?? '')).includes(transferCode.toUpperCase()));
       if (!matching.length) return { status: 'NOT_FOUND' };
-      await this.processCakeCallback(matching);
+      await this.processCakeCallback(matching, bank.id);
       return { status: 'MATCHED' };
     } catch {
       // A manual poll is only a fallback. Keep returning the current request
@@ -334,15 +347,15 @@ export class PaymentService {
 
   /**
    * Cake delivers at least once and retries non-2xx responses. Matching and
-   * wallet credit remain transactionally idempotent on transactionID.
+   * wallet credit remain transactionally idempotent on the bank-scoped transactionID.
    */
-  async processCakeCallback(transactions: BankTransaction[]) {
+  async processCakeCallback(transactions: BankTransaction[], bankConfigId?: string) {
     await this.expireBankTopups();
     let approved = 0; let incoming = 0;
     for (const transaction of transactions) {
       if (String(transaction.type ?? 'IN').toUpperCase() !== 'IN') continue;
       incoming++;
-      if (await this.processBankTransaction(transaction)) approved++;
+      if (await this.processBankTransaction(transaction, bankConfigId)) approved++;
     }
     return { status: true, msg: 'OK', examined: transactions.length, incoming, approved };
   }
@@ -369,8 +382,9 @@ export class PaymentService {
     return this.approveAs(request._id.toString(), { actorType: ActorType.WEBHOOK, idempotencyKey: webhookKey });
   }
 
-  private async processBankTransaction(transaction: BankTransaction) {
-    const reference = String(transaction.transactionID ?? '').trim();
+  private async processBankTransaction(transaction: BankTransaction, bankConfigId?: string) {
+    const rawReference = String(transaction.transactionID ?? '').trim();
+    const reference = scopedBankReference(rawReference, bankConfigId);
     const amount = Number(transaction.amount);
     const description = transaction.description ?? '';
     if (!reference || !Number.isSafeInteger(amount) || amount <= 0 || !description) return false;
@@ -382,20 +396,21 @@ export class PaymentService {
       deletedAt: null }).sort({ createdAt: 1 }).lean();
     if (!request) return false;
     if (request.amount !== amount) return this.reconcileMismatchedBankTransfer(request._id.toString(), reference, transaction, amount);
-    if (request.status === PaymentRequestStatus.APPROVED && request.providerReference !== reference) {
+    if (request.status === PaymentRequestStatus.APPROVED && request.providerReference !== reference &&
+      request.providerReference !== rawReference) {
       return this.creditSupplementalBankTransfer(request, reference, transaction, amount);
     }
-    return this.approveBankRequest(request._id.toString(), reference, transaction);
+    return this.approveBankRequest(request._id.toString(), reference, transaction, rawReference);
   }
 
   private async creditSupplementalBankTransfer(request: PaymentRequest & { _id: Types.ObjectId }, providerReference: string,
-    transaction: BankTransaction, amount: number, session?: ClientSession) {
+    transaction: BankTransaction, amount: number, session?: ClientSession, bankConfigId?: string) {
     await this.wallet.creditReceivedFunds({ userId: request.userId, amount,
       type: WalletTransactionType.DEPOSIT, reason: `Additional bank transfer for ${request.requestCode}`,
       referenceType: WalletReferenceType.PAYMENT_REQUEST, referenceId: request._id,
       idempotencyKey: `deposit:bank:${providerReference}`, actorType: ActorType.WEBHOOK,
-      metadata: { provider: BANK_PROVIDER, transactionId: providerReference, supplemental: true,
-        transactionDate: transaction.transactionDate } }, session);
+      metadata: { provider: BANK_PROVIDER, transactionId: String(transaction.transactionID), bankConfigId,
+        supplemental: true, transactionDate: transaction.transactionDate } }, session);
     return true;
   }
 
@@ -407,7 +422,9 @@ export class PaymentService {
         const existing = await this.requests.findById(requestId).session(session);
         if (!existing || existing.provider !== BANK_PROVIDER) return;
         if (existing.status === PaymentRequestStatus.APPROVED) {
-          await this.creditSupplementalBankTransfer(existing, providerReference, transaction, receivedAmount, session);
+          if (existing.providerReference === providerReference || existing.providerReference === String(transaction.transactionID)) return;
+          await this.creditSupplementalBankTransfer(existing, providerReference, transaction, receivedAmount, session,
+            bankConfigIdFrom(existing));
           reconciled = true;
           return;
         }
@@ -415,7 +432,7 @@ export class PaymentService {
         if (await this.requests.exists({ provider: BANK_PROVIDER, providerReference }).session(session)) return;
         const checkout = quickCheckoutFrom(existing);
         const metadata: Record<string, unknown> = { ...existing.metadata,
-          bankTransaction: { id: providerReference, date: transaction.transactionDate },
+          bankTransaction: { id: String(transaction.transactionID), bankConfigId: bankConfigIdFrom(existing), date: transaction.transactionDate },
           amountMismatch: { expected: existing.amount, received: receivedAmount } };
         if (checkout) metadata.quickCheckout = mismatchedAmountQuickCheckout(checkout, receivedAmount);
         const request = await this.requests.findOneAndUpdate({ _id: existing._id,
@@ -427,7 +444,7 @@ export class PaymentService {
           type: WalletTransactionType.DEPOSIT, reason: `Bank deposit ${request.requestCode} (amount adjusted)`,
           referenceType: WalletReferenceType.PAYMENT_REQUEST, referenceId: request._id,
           idempotencyKey: `deposit:bank:${providerReference}`, actorType: ActorType.WEBHOOK,
-          metadata: { provider: BANK_PROVIDER, transactionId: providerReference,
+          metadata: { provider: BANK_PROVIDER, transactionId: String(transaction.transactionID), bankConfigId: bankConfigIdFrom(request),
             expectedAmount: request.amount, receivedAmount } }, session);
         request.walletTransactionId = walletTransaction._id;
         await request.save({ session });
@@ -455,7 +472,7 @@ export class PaymentService {
         const checkout = quickCheckoutFrom(existing);
         if (checkout?.reservationMode !== 'SOFT') return;
         if (existing.status === PaymentRequestStatus.APPROVED) {
-          reconciled = existing.providerReference === providerReference;
+          reconciled = existing.providerReference === providerReference || existing.providerReference === String(transaction.transactionID);
           return;
         }
         if (existing.status !== PaymentRequestStatus.PENDING && existing.status !== PaymentRequestStatus.EXPIRED) return;
@@ -464,7 +481,7 @@ export class PaymentService {
           fulfillmentError: checkoutErrorMessage(failure) };
         delete failed.processingAt;
         const metadata: Record<string, unknown> = { ...existing.metadata, quickCheckout: failed,
-          bankTransaction: { id: providerReference, date: transaction.transactionDate }, fulfillmentFallback: true };
+          bankTransaction: { id: String(transaction.transactionID), bankConfigId: bankConfigIdFrom(existing), date: transaction.transactionDate }, fulfillmentFallback: true };
         const request = await this.requests.findOneAndUpdate({ _id: existing._id,
           status: { $in: [PaymentRequestStatus.PENDING, PaymentRequestStatus.EXPIRED] },
           providerReference: { $exists: false } }, { $set: { status: PaymentRequestStatus.APPROVED,
@@ -475,7 +492,7 @@ export class PaymentService {
           reason: `Bank deposit ${request.requestCode} (checkout fallback)`,
           referenceType: WalletReferenceType.PAYMENT_REQUEST, referenceId: request._id,
           idempotencyKey: `deposit:bank:${providerReference}`, actorType: ActorType.WEBHOOK,
-          metadata: { provider: BANK_PROVIDER, transactionId: providerReference,
+          metadata: { provider: BANK_PROVIDER, transactionId: String(transaction.transactionID), bankConfigId: bankConfigIdFrom(request),
             checkoutFallback: true } }, session);
         request.walletTransactionId = walletTransaction._id;
         await request.save({ session });
@@ -489,7 +506,7 @@ export class PaymentService {
     } finally { await session.endSession(); }
   }
 
-  private async approveBankRequest(requestId: string, providerReference: string, transaction: BankTransaction) {
+  private async approveBankRequest(requestId: string, providerReference: string, transaction: BankTransaction, rawReference?: string) {
     const session = await this.connection.startSession(); let approved = false; let resumeFulfillment = false;
     let createdOrders: Array<{ _id: Types.ObjectId; orderCode: string }> = [];
     try {
@@ -498,8 +515,9 @@ export class PaymentService {
         const existing = await this.requests.findById(requestId).session(session);
         if (!existing || existing.provider !== BANK_PROVIDER) return;
         if (existing.status === PaymentRequestStatus.APPROVED) {
-          if (existing.providerReference !== providerReference) {
-            await this.creditSupplementalBankTransfer(existing, providerReference, transaction, existing.amount, session);
+          if (existing.providerReference !== providerReference && existing.providerReference !== rawReference) {
+            await this.creditSupplementalBankTransfer(existing, providerReference, transaction, existing.amount, session,
+              bankConfigIdFrom(existing));
             approved = true;
             resumeFulfillment = false;
             return;
@@ -516,7 +534,7 @@ export class PaymentService {
         const expiresAt = expirationFrom(existing);
         const latePayment = existing.status === PaymentRequestStatus.EXPIRED || Boolean(expiresAt && Date.parse(expiresAt) <= Date.now());
         const metadata: Record<string, unknown> = { ...existing.metadata,
-          bankTransaction: { id: providerReference, date: transaction.transactionDate }, latePayment };
+          bankTransaction: { id: String(transaction.transactionID), bankConfigId: bankConfigIdFrom(existing), date: transaction.transactionDate }, latePayment };
         let checkoutCanFulfill = Boolean(checkout && !latePayment);
         if (wasUserCancelled(existing) && checkout) metadata.quickCheckout = cancelledQuickCheckout(checkout);
         else if (latePayment && checkout) metadata.quickCheckout = lateQuickCheckout(checkout);
@@ -557,7 +575,7 @@ export class PaymentService {
           type: WalletTransactionType.DEPOSIT, reason: `Bank deposit ${request.requestCode}`,
           referenceType: WalletReferenceType.PAYMENT_REQUEST, referenceId: request._id,
           idempotencyKey: `deposit:bank:${providerReference}`, actorType: ActorType.WEBHOOK,
-          metadata: { provider: BANK_PROVIDER, transactionId: providerReference } }, session);
+          metadata: { provider: BANK_PROVIDER, transactionId: String(transaction.transactionID), bankConfigId: bankConfigIdFrom(request) } }, session);
         if (checkout && checkoutCanFulfill) {
           if (!this.purchases) throw new Error('Quick checkout purchase service is unavailable');
           createdOrders = await this.purchases.purchaseBatchInSession({
@@ -592,10 +610,22 @@ export class PaymentService {
     } finally { await session.endSession(); }
   }
 
-  private async requireBankConfig() {
-    const bank = await this.bankConfig?.getBankConfigForRuntime();
+  private async requireBankConfig(id?: string) {
+    const bank = await this.bankConfig?.getBankConfigForRuntime(id);
     if (!bank) throw new BadRequestException('Nạp tiền chưa được cấu hình ngân hàng');
     return bank;
+  }
+
+  /** Legacy payment requests predate bankConfigId; keep them tied to the migrated singleton. */
+  private async resolveBankConfigForRequest(request: { metadata?: Record<string, unknown> }, fallback: RuntimeBankConfig) {
+    return (await this.findBankConfigForRequest(request)) ?? fallback;
+  }
+
+  private async findBankConfigForRequest(request: { metadata?: Record<string, unknown> }) {
+    const pinnedId = bankConfigIdFrom(request);
+    if (pinnedId) return this.bankConfig?.getBankConfigForRuntime(pinnedId);
+    const legacy = await this.bankConfig?.getBankConfigForRuntime?.('legacy');
+    return legacy ?? this.bankConfig?.getBankConfigForRuntime?.();
   }
 
   private requestCode() { return `PAY-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`; }
@@ -723,6 +753,11 @@ function transferContentFrom(request: { metadata?: Record<string, unknown> }) {
   return typeof value === 'string' && value ? value : undefined;
 }
 
+function bankConfigIdFrom(request: { metadata?: Record<string, unknown> }) {
+  const value = request.metadata?.bankConfigId;
+  return typeof value === 'string' && value ? value : undefined;
+}
+
 function expirationFrom(request: { metadata?: Record<string, unknown> }) {
   const value = request.metadata?.expiresAt;
   return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : undefined;
@@ -798,21 +833,31 @@ function extractTransferCodes(description: string) {
   return [...new Set([...matches].map((match) => match[1]).filter((value): value is string => Boolean(value)))];
 }
 
+function scopedBankReference(reference: string, bankConfigId?: string) {
+  return bankConfigId ? `bank:${bankConfigId}:${reference}` : reference;
+}
+
 export type CakeHistoryFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-/** Fetch and strictly normalize Cake history without ever exposing the token to a client. */
-export async function fetchCakeHistoryTransactions(token: string, fetcher: CakeHistoryFetch = globalThis.fetch) {
+/** Fetch and strictly normalize one provider's history without exposing its token to a client. */
+export async function fetchBankHistoryTransactions(provider: BankHistoryProvider, token: string,
+  fetcher: CakeHistoryFetch = globalThis.fetch) {
   const normalizedToken = token.trim();
-  if (!normalizedToken || normalizedToken.length > 500) throw new Error('Cake history token is invalid');
-  const response = await fetcher(`${CAKE_HISTORY_ORIGIN}/historyapicakev2/${encodeURIComponent(normalizedToken)}`, {
+  if (!normalizedToken || normalizedToken.length > 500) throw new Error('Bank history token is invalid');
+  const response = await fetcher(`${BANK_HISTORY_ORIGIN}/${BANK_HISTORY_PATH[provider]}/${encodeURIComponent(normalizedToken)}`, {
     method: 'GET', headers: { accept: 'application/json' }, signal: AbortSignal.timeout(CAKE_HISTORY_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Cake history request failed (HTTP ${response.status})`);
+  if (!response.ok) throw new Error(`Bank history request failed (HTTP ${response.status})`);
   const payload: unknown = await response.json();
   if (!isPlainObject(payload) || String(payload.status ?? '').toLowerCase() !== 'success' ||
-    !Array.isArray(payload.transactions)) throw new Error('Cake history response is invalid');
+    !Array.isArray(payload.transactions)) throw new Error('Bank history response is invalid');
   return payload.transactions.slice(0, CAKE_HISTORY_MAX_TRANSACTIONS)
     .map(normalizeCakeHistoryTransaction).filter((transaction): transaction is BankTransaction => Boolean(transaction));
+}
+
+/** Backwards-compatible helper for existing Cake callers and tests. */
+export function fetchCakeHistoryTransactions(token: string, fetcher: CakeHistoryFetch = globalThis.fetch) {
+  return fetchBankHistoryTransactions('CAKE_V2', token, fetcher);
 }
 
 function normalizeCakeHistoryTransaction(value: unknown): BankTransaction | undefined {
@@ -822,7 +867,7 @@ function normalizeCakeHistoryTransaction(value: unknown): BankTransaction | unde
   const description = typeof value.description === 'string' ? value.description.trim() : '';
   const type = String(value.type ?? 'IN').trim().toUpperCase();
   const transactionDate = typeof value.transactionDate === 'string' ? value.transactionDate.trim() : undefined;
-  if (!/^\d{1,100}$/.test(transactionID) || !Number.isSafeInteger(amount) || amount <= 0 ||
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(transactionID) || !Number.isSafeInteger(amount) || amount <= 0 ||
     !description || description.length > 1000 || !['IN', 'OUT'].includes(type) ||
     (transactionDate?.length ?? 0) > 100) return undefined;
   return { transactionID, amount, description, type, ...(transactionDate ? { transactionDate } : {}) };

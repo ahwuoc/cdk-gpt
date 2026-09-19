@@ -52,7 +52,7 @@ export class SaveBotCheckoutPromptDto extends CheckBotDepositDto {
 
 export class CakeCallbackTransactionDto {
   @Transform(({ value }) => String(value ?? '').trim())
-  @IsString() @Matches(/^\d{1,100}$/, { message: 'transactionID phải là chuỗi số' })
+  @IsString() @Matches(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/, { message: 'transactionID không hợp lệ' })
   transactionID!: string;
 
   @Type(() => Number) @IsInt() @Min(1) @Max(9_999_999_999_999)
@@ -70,6 +70,18 @@ export class CakeCallbackTransactionDto {
 }
 
 export class CakeCallbackDto {
+  @IsOptional() @IsString() @IsIn(['success', 'SUCCESS'])
+  status?: string;
+
+  @IsOptional() @IsString() @Length(0, 200)
+  message?: string;
+
+  @IsOptional() @IsString() @Length(0, 200)
+  msg?: string;
+
+  @IsOptional() @IsString() @Length(0, 100)
+  merchant?: string;
+
   @ArrayMinSize(1) @ArrayMaxSize(100)
   @ValidateNested({ each: true }) @Type(() => CakeCallbackTransactionDto)
   transactions!: CakeCallbackTransactionDto[];
