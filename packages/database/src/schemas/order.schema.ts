@@ -7,6 +7,7 @@ export const PaymentMethod = { WALLET: 'WALLET', MANUAL: 'MANUAL', BANK_TRANSFER
 export interface Order {
   orderCode: string; userId: Types.ObjectId; productId: Types.ObjectId; inventoryItemId: Types.ObjectId;
   quantity: number; unitPrice: number; totalAmount: number; status: typeof OrderStatus[keyof typeof OrderStatus];
+  grossAmount?: number; discountAmount?: number; couponCode?: string; couponId?: Types.ObjectId;
   paymentMethod: typeof PaymentMethod[keyof typeof PaymentMethod]; walletTransactionId?: Types.ObjectId;
   deliveryStatus: typeof DeliveryStatus[keyof typeof DeliveryStatus]; deliveredAt?: Date; failureReason?: string;
   idempotencyKey?: string; metadata: Record<string, unknown>; createdAt: Date; updatedAt: Date;
@@ -18,6 +19,9 @@ export const OrderSchema = new Schema<Order>({
   quantity: { type: Number, required: true, min: 1, max: 1, validate: Number.isSafeInteger },
   unitPrice: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
   totalAmount: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+  grossAmount: { type: Number, min: 0, validate: Number.isSafeInteger },
+  discountAmount: { type: Number, min: 0, validate: Number.isSafeInteger },
+  couponCode: { type: String, maxlength: 40 }, couponId: objectId('Coupon'),
   status: { type: String, required: true, enum: Object.values(OrderStatus), default: OrderStatus.PENDING_DELIVERY },
   paymentMethod: { type: String, required: true, enum: Object.values(PaymentMethod), default: PaymentMethod.WALLET },
   walletTransactionId: objectId('WalletTransaction'),

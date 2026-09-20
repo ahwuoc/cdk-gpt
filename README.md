@@ -143,6 +143,30 @@ Admin web nhận JSON array hoặc JSONL. API thực hiện:
 
 Không gửi plaintext vào log, BullMQ job, notification hay audit log.
 
+## Phiếu giảm giá và phân tích kinh doanh
+
+Admin có mục **Voucher giảm giá** để tạo, sửa và bật/tắt mã. Hỗ trợ giảm theo phần trăm hoặc số tiền cố định, đơn tối thiểu, trần tiền giảm, thời gian áp dụng theo giờ Việt Nam, giới hạn tổng lượt dùng/mỗi khách và danh sách sản phẩm được áp dụng. Mã không phân biệt chữ hoa/thường; mỗi đơn chỉ dùng một mã. Quyền quản lý là `products.manage`, thao tác được ghi audit.
+
+Trong bot, chọn sản phẩm và số lượng sẽ mở **báo giá**, chưa trừ tiền. Khách nhập/bỏ mã, xem tổng sau giảm rồi xác nhận mua bằng ví hoặc tạo QR. Coupon dùng trên giá bán hiện tại (kể cả giá sale), số tiền giảm được làm tròn xuống và không vượt tổng đơn. QR phải có số tiền lớn hơn 0; đơn được giảm về 0 dùng luồng ví, không phát sinh bút toán ví giá trị 0.
+
+Lượt dùng coupon được ghi cùng transaction giữ hàng/tạo đơn/trừ ví, tính một lượt cho cả lần mua nhiều sản phẩm. Báo giá và QR chưa thanh toán không giữ lượt dùng. Nếu mã hết hạn, bị tắt/hết lượt hoặc mức giảm thay đổi trước callback QR, tiền đã chuyển được bảo toàn trong ví; hệ thống không tự thu phần chênh lệch. Retry cùng đơn không dùng mã/trừ tiền lần nữa. Hoàn/hủy đơn không tự khôi phục lượt coupon; số tiền hoàn chỉ là số thực đã trừ.
+
+Mục **Phân tích** có khoảng ngày (tối đa 366 ngày), doanh thu theo ngày, giá trị mua trung bình, top khách chi tiêu và top sản phẩm. Xếp hạng dựa trên tiền của đơn đã giao, không phải số dư hay tiền nạp ví. Đơn hủy/hoàn/chưa giao không tính doanh thu. Một lần mua nhiều hàng được gộp theo mã nhóm giao dịch; dữ liệu cũ không có mã nhóm tính từng đơn. Doanh thu theo ngày giao ở `Asia/Ho_Chi_Minh`; đơn cũ thiếu ngày giao dùng ngày tạo. Tiền nạp ví được hiển thị riêng.
+
+Báo cáo mặc định từ đầu tháng đến hôm nay, có lựa chọn tháng trước và 7/30/90 ngày. Tỷ lệ mua lặp lại = khách có ít nhất hai lượt mua / khách đã mua trong kỳ. Tỷ lệ khách hoạt động có mua dùng tập khách có tương tác được ghi nhận hoặc đơn đã giao; không phải tỷ lệ trên toàn bộ khách đăng ký và hiển thị “—” khi kỳ chưa có dữ liệu tương tác. Trang **Tổng quan** cũng có bảng top 20 chi tiêu với bộ lọc ngày và liên kết lịch sử đơn theo khách.
+
+Thống kê hành vi gồm khách hoạt động, khách mới/quay lại/mua lặp, lượt khách xem sản phẩm/bắt đầu thanh toán, tỷ lệ mua sau hành vi và QR hết hạn chưa thanh toán. Bot chỉ ghi loại sự kiện, khách, sản phẩm, mã update và thời gian máy chủ; không ghi nội dung tin nhắn, mật khẩu hoặc hội thoại hỗ trợ. Dữ liệu hành vi bắt đầu từ khi triển khai tính năng; không dựng lịch sử lượt xem từ đơn hàng cũ. Tỷ lệ chuyển đổi dùng khách có đơn giao sau hành vi trong cùng kỳ, không phải mô hình quy kết quảng cáo.
+
+Trước khi triển khai, chạy `bun run migration:up` bằng cấu hình đúng của môi trường đích để thêm indexes `009-coupon-indexes` và `010-customer-analytics-indexes`. Lệnh này chưa được chạy trên production trong quá trình phát triển.
+
+Kiểm tra bằng dữ liệu tạm, không gửi Telegram/ngân hàng thật:
+
+```bash
+bun test tests/shop-bot-coupons.test.ts tests/analytics-insights.test.ts
+RUN_INTEGRATION=1 bun test tests/integration/coupons.integration.test.ts
+RUN_INTEGRATION=1 bun test tests/analytics-insights.test.ts tests/integration/analytics-top-customers.integration.test.ts
+```
+
 ## Quy trình mua và giao hàng
 
 `PurchaseService.purchase()` thực hiện trong một session transaction:

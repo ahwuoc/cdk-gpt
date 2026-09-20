@@ -67,6 +67,12 @@ export class InventoryReservationService {
           if (!order) return; // Delivery may be ambiguous; never make such inventory available automatically.
           const inventory = await this.inventory.releaseExpired(item._id, order._id, session);
           if (!inventory) return;
+          if (order.totalAmount === 0) {
+            await this.orders.updateOne({ _id: order._id }, { $set: { status: OrderStatus.CANCELLED,
+              deliveryStatus: DeliveryStatus.FAILED, failureReason: 'Reservation expired before delivery' } }, { session });
+            released++;
+            return;
+          }
           const before = await this.users.findActive(order.userId, session); if (!before) throw new Error('User missing during reservation refund');
           const after = await this.users.credit(order.userId, order.totalAmount, session); if (!after) throw new Error('Reservation refund failed');
           const transaction = await this.walletTransactions.create({ userId: order.userId, balanceBefore: before.walletBalance,

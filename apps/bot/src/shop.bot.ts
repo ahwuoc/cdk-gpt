@@ -1,4 +1,5 @@
 import { Markup, Telegraf, type Context } from 'telegraf';
+import { randomBytes } from 'node:crypto';
 import type { Model } from 'mongoose';
 import {
   BotSessionKind, BotSessionModel, CategoryModel, InventoryItemModel, OrderModel, ProductModel, SettingModel, UserModel,
@@ -46,6 +47,12 @@ type PendingQuantity = { productId: string; categoryKey: string };
 type PendingComplaint = { orderId: string; category: ComplaintCategoryValue };
 type PendingComplaintReply = { reportId: string };
 
+type CheckoutCart = {
+  nonce: string; productId: string; productName: string; quantity: number; unitPrice: number;
+  subtotal: number; discountAmount: number; totalAmount: number; couponCode?: string;
+  paymentMethod: 'WALLET' | 'BANK_QR'; submitted: boolean;
+};
+
 type DepositResponse = {
   id?: string;
   requestCode?: string;
@@ -65,6 +72,9 @@ type DepositResponse = {
   quantity?: number;
   unitPrice?: number;
   checkoutStatus?: string;
+  subtotal?: number;
+  discountAmount?: number;
+  couponCode?: string;
   cancelled?: boolean;
   activeCheckoutId?: string;
   activeCheckoutCode?: string;
@@ -94,6 +104,13 @@ export function createShopBot(
 ) {
   const bot = new Telegraf(token);
 
+  // Only named shopping events are collected. Never forward customer messages,
+  // support content, credentials, or the entire Telegram update to analytics.
+  bot.use(async (ctx, next) => {
+    await next();
+    await recordShoppingEvent(ctx, apiUrl, botApiSecret);
+  });
+
   bot.start(async (ctx) => {
     await ensureUser(data, ctx.from.id.toString(), ctx.from.username, [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '));
     const welcomeSetting = await data.settings.findOne({ key: 'shop.welcome_message' }).select('value').lean();
@@ -122,8 +139,37 @@ export function createShopBot(
     await ctx.reply(`✍️ Nhập số lượng muốn mua (tối đa ${maximumTelegramPurchaseQuantity()} mỗi lượt):`);
   });
   bot.action(/^qty:([a-f\d]{24}):(\d+)$/, async (ctx) => {
-    await ctx.answerCbQuery('Đang xử lý đơn hàng…');
+    await ctx.answerCbQuery('Đang tính tổng tiền…');
     await purchaseQuantity(ctx, ctx.match[1], Number(ctx.match[2]), apiUrl, botApiSecret, data);
+  });
+
+  bot.action(/^cart:(pay|coupon|clear|refresh):([a-f\d]{24})$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!ctx.from || !ctx.chat) return;
+    const pending = await data.botSessions.findOne({ chatId: String(ctx.chat.id), telegramUserId: String(ctx.from.id),
+      kind: { $in: [BotSessionKind.CHECKOUT_CONFIRMATION, BotSessionKind.COUPON_CODE] },
+      'data.nonce': ctx.match[2], expiresAt: { $gt: new Date() } }).lean();
+    if (!pending || !isCheckoutCart(pending.data)) {
+      await ctx.reply('⏱️ Báo giá này đã hết hạn hoặc được thay thế. Hãy chọn lại sản phẩm.', inlineMenu()); return;
+    }
+    const cart = pending.data;
+    if (ctx.match[1] === 'pay') {
+      await confirmCheckout(ctx, cart, apiUrl, botApiSecret, data); return;
+    }
+    if (cart.submitted) {
+      await ctx.reply('ℹ️ Đơn này đã được gửi xử lý, không thể đổi mã giảm giá. Bấm xác nhận lại để kiểm tra cùng đơn, hoặc mở Đơn hàng.',
+        Markup.inlineKeyboard([[Markup.button.callback('🔄 Kiểm tra cùng đơn', `cart:pay:${cart.nonce}`)],
+          [Markup.button.callback('📦 Đơn hàng', 'menu:orders')]])); return;
+    }
+    if (ctx.match[1] === 'coupon') {
+      const changed = await data.botSessions.findOneAndUpdate({ _id: pending._id, 'data.nonce': cart.nonce,
+        'data.submitted': false }, { $set: { kind: BotSessionKind.COUPON_CODE } }, { new: true });
+      if (changed) await ctx.reply('🎟 Nhập mã giảm giá của bạn (3–40 ký tự). Mã được kiểm tra trước khi thanh toán.',
+        Markup.inlineKeyboard([[Markup.button.callback('↩️ Không dùng mã', `cart:clear:${cart.nonce}`)]]));
+      return;
+    }
+    await quoteCart(ctx, cart.productId, cart.quantity, ctx.match[1] === 'clear' ? undefined : cart.couponCode,
+      apiUrl, botApiSecret, data, cart.nonce);
   });
 
   bot.command('balance', (ctx) => showBalance(ctx, data));
@@ -228,7 +274,9 @@ export function createShopBot(
     const pending = await takePendingInput(data, ctx.chat.id, ctx.from.id);
     if (!pending) return;
     if (pending.expired) {
-      if (pending.kind === BotSessionKind.DEPOSIT_AMOUNT) {
+      if (pending.kind === BotSessionKind.COUPON_CODE) {
+        await ctx.reply('⏱️ Báo giá đã hết hạn. Hãy chọn lại sản phẩm và nhập mã giảm giá.', inlineMenu());
+      } else if (pending.kind === BotSessionKind.DEPOSIT_AMOUNT) {
         await ctx.reply('⏱️ Yêu cầu nhập số tiền đã hết hạn. Hãy chọn Nạp tiền lại.', inlineMenu());
       } else if (pending.kind === BotSessionKind.ORDER_LOOKUP) {
         await ctx.reply('⏱️ Yêu cầu tìm đơn đã hết hạn. Hãy mở Khiếu nại và thử lại.', inlineMenu());
@@ -240,6 +288,15 @@ export function createShopBot(
         await ctx.reply('⏱️ Yêu cầu nhập số lượng đã hết hạn. Hãy chọn lại sản phẩm.', inlineMenu());
       }
       return;
+    }
+    if (pending.kind === BotSessionKind.COUPON_CODE) {
+      if (!isCheckoutCart(pending.data) || pending.data.submitted) return;
+      const couponCode = ctx.message.text.trim().toUpperCase();
+      if (!/^[A-Z0-9_-]{3,40}$/.test(couponCode)) {
+        await ctx.reply('❌ Mã gồm 3–40 chữ cái, chữ số, dấu gạch ngang hoặc gạch dưới. Vui lòng nhập lại.'); return;
+      }
+      await quoteCart(ctx, pending.data.productId, pending.data.quantity, couponCode,
+        apiUrl, botApiSecret, data, pending.data.nonce); return;
     }
     if (pending.kind === BotSessionKind.DEPOSIT_AMOUNT) {
       const amount = Number(ctx.message.text.trim());
@@ -361,14 +418,15 @@ async function createDeposit(ctx: Context, amount: number, apiUrl: string, botAp
 }
 
 async function createQuickCheckout(ctx: Context, input: { userId: string; productId: string; productName: string;
-  quantity: number; unitPrice: number }, apiUrl: string, botApiSecret: string) {
+  quantity: number; unitPrice: number; couponCode?: string; totalAmount?: number; discountAmount?: number; nonce?: string }, apiUrl: string, botApiSecret: string) {
   if (!ctx.chat) return;
   try {
     const response = await fetch(`${apiUrl}/api/bot/checkouts`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
       body: JSON.stringify({ userId: input.userId, productId: input.productId, quantity: input.quantity,
         expectedUnitPrice: input.unitPrice,
-        idempotencyKey: `checkout:${ctx.chat.id}:${ctx.update.update_id}:${input.productId}:${input.quantity}` }),
+        couponCode: input.couponCode, expectedTotalAmount: input.totalAmount,
+        idempotencyKey: `checkout:${ctx.chat.id}:${input.nonce ?? ctx.update.update_id}:${input.productId}:${input.quantity}` }),
     });
     const body = await response.json().catch(() => ({})) as DepositResponse & { message?: string | string[] };
     if (!response.ok && body.activeCheckoutId) {
@@ -381,14 +439,31 @@ async function createQuickCheckout(ctx: Context, input: { userId: string; produc
       });
       return;
     }
-    if (!response.ok || !body.id || !body.transferContent || !body.qrUrl || !body.bank?.accountNo) {
+    if (!response.ok || !body.id) {
       throw new Error(readErrorMessage(body.message, 'Không thể tạo mã thanh toán nhanh.'));
+    }
+    // A retried confirmation returns the original payment request, which may
+    // already be paid or cancelled. Never ask the buyer to transfer again.
+    if (body.status === 'APPROVED' || body.checkoutStatus === 'FULFILLED' || body.checkoutStatus === 'PROCESSING') {
+      await ctx.reply('✅ Mã thanh toán này đã được ghi nhận hoặc đang xử lý. Không chuyển khoản thêm. Bấm kiểm tra để xem đơn hàng hoặc số tiền đã được cộng vào ví.',
+        Markup.inlineKeyboard([[Markup.button.callback('🔄 Kiểm tra thanh toán cũ', 'checkout:check:' + body.id)],
+          [Markup.button.callback('📦 Đơn hàng', 'menu:orders')]])); return;
+    }
+    const expired = !!body.expiresAt && new Date(body.expiresAt).getTime() <= Date.now();
+    if (body.status !== 'PENDING' || body.checkoutStatus !== 'PENDING_PAYMENT' || body.cancelled || expired) {
+      await ctx.reply('⏱️ Mã thanh toán này đã hết hạn, bị hủy hoặc không còn chờ thanh toán. Không chuyển tiền vào mã cũ. Nếu đã chuyển, hãy kiểm tra giao dịch; nếu chưa, chọn sản phẩm để tạo đơn mới.',
+        Markup.inlineKeyboard([[Markup.button.callback('🔄 Kiểm tra giao dịch cũ', 'checkout:check:' + body.id)],
+          [Markup.button.callback('🛍 Chọn sản phẩm', 'menu:products')]])); return;
+    }
+    if (!body.transferContent || !body.qrUrl || !body.bank?.accountNo) {
+      throw new Error('Thông tin QR chưa đầy đủ. Hãy kiểm tra lại cùng đơn.');
     }
     const total = body.amount ?? input.unitPrice * input.quantity;
     const caption = [
       '⚡ THANH TOÁN ĐƠN HÀNG',
       `🛍 ${body.productName ?? input.productName}`,
       `📦 ${body.quantity ?? input.quantity} × ${formatMoney(body.unitPrice ?? input.unitPrice)}`,
+      ...((body.couponCode ?? input.couponCode) ? [`🎟 Mã ${body.couponCode ?? input.couponCode}: −${formatMoney(body.discountAmount ?? input.discountAmount ?? 0)}`] : []),
       `💵 CẦN CHUYỂN: ${formatMoney(total)}`, '',
       `🏦 ${body.bank.bankId ?? '—'} · ${body.bank.accountNo}`,
       `👤 ${body.bank.accountName ?? '—'}`,
@@ -727,7 +802,7 @@ async function ownedOrderByCode(ctx: Context, orderCode: string, data: ShopBotDa
 }
 
 async function showHelp(ctx: Context) {
-  await ctx.reply('ℹ️ *Hướng dẫn nhanh*\n\n1. Chọn *Sản phẩm* và số lượng cần mua.\n2. Nếu ví đủ tiền, bot đặt đơn ngay; nếu chưa đủ, bot tạo QR đúng tổng tiền để thanh toán nhanh.\n3. Chuyển đúng nội dung QR, Cake callback sẽ tự tạo đơn và gửi hàng.\n4. Nếu đơn gặp lỗi, chọn *Báo lỗi / Khiếu nại đơn*.\n\nBạn cũng có thể dùng /products, /balance, /buy <productId> hoặc /report <mã đơn>.', { parse_mode: 'Markdown', ...inlineMenu() });
+  await ctx.reply('ℹ️ *Hướng dẫn nhanh*\n\n1. Chọn *Sản phẩm* và số lượng cần mua.\n2. Nhập mã giảm giá nếu có, kiểm tra tổng tiền rồi *xác nhận*.\n3. Nếu ví đủ tiền, bot trừ ví; nếu chưa đủ, bot tạo QR đúng tổng tiền sau giảm giá. Chuyển đúng số tiền và nội dung QR để nhận hàng tự động.\n4. Nếu đơn gặp lỗi, chọn *Báo lỗi / Khiếu nại đơn*.\n\nBạn cũng có thể dùng /products, /balance, /buy <productId> hoặc /report <mã đơn>.', { parse_mode: 'Markdown', ...inlineMenu() });
 }
 
 async function sendComplaintReply(ctx: Context, reportId: string, rawBody: string,
@@ -772,45 +847,122 @@ async function sendDirectSupport(ctx: Context, rawBody: string, apiUrl: string, 
 
 async function purchaseQuantity(ctx: Context, productId: string | undefined, quantity: number, apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
   if (!ctx.from || !ctx.chat) return;
-  if (!productId || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > maximumTelegramPurchaseQuantity()) {
+  if (!productId || !/^[a-f\d]{24}$/.test(productId) || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > maximumTelegramPurchaseQuantity()) {
     await ctx.reply(`❌ Số lượng không hợp lệ. Mỗi lượt mua tối đa ${maximumTelegramPurchaseQuantity()} sản phẩm.`, inlineMenu());
     return;
   }
-  const product = await data.products.findOne({ _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).select('price name').lean();
-  if (!product) { await ctx.reply('Không tìm thấy sản phẩm. Hãy mở menu Sản phẩm để chọn lại.', inlineMenu()); return; }
-  const available = await data.inventoryItems.countDocuments(sellableInventoryFilter(productId));
-  if (quantity > available) {
-    await ctx.reply(`❌ Chỉ còn ${available} sản phẩm *${product.name}*.`, { parse_mode: 'Markdown', ...inlineMenu() });
-    return;
+  await quoteCart(ctx, productId, quantity, undefined, apiUrl, botApiSecret, data);
+  await recordShoppingEvent(ctx, apiUrl, botApiSecret, { type: 'CHECKOUT_START', productId });
+}
+
+async function quoteCart(ctx: Context, productId: string, quantity: number, couponCode: string | undefined,
+  apiUrl: string, botApiSecret: string, data: ShopBotDataContext, previousNonce?: string) {
+  if (!ctx.from || !ctx.chat) return;
+  try {
+    const product = await data.products.findOne({ _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).select('price name').lean();
+    if (!product) throw new Error('Sản phẩm không còn được bán.');
+    const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
+    const response = await fetch(`${apiUrl}/api/purchases/quote`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId: user._id.toString(), productId, quantity, expectedUnitPrice: product.price, couponCode }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await response.json() as Partial<CheckoutCart> & { message?: string | string[] };
+    if (!response.ok) throw new Error(readErrorMessage(body.message, 'Không thể tính tổng tiền.'));
+    const cart: CheckoutCart = { nonce: randomBytes(12).toString('hex'), productId, quantity,
+      productName: body.productName ?? product.name, unitPrice: body.unitPrice!,
+      subtotal: body.subtotal!, discountAmount: body.discountAmount!, totalAmount: body.totalAmount!,
+      ...(body.couponCode ? { couponCode: body.couponCode } : {}),
+      paymentMethod: user.walletBalance >= body.totalAmount! ? 'WALLET' : 'BANK_QR', submitted: false };
+    if (!isCheckoutCart(cart)) throw new Error('Báo giá không hợp lệ. Vui lòng thử lại.');
+    if (previousNonce) {
+      // A coupon edit cannot replace a cart that another callback already submitted.
+      const updated = await data.botSessions.findOneAndUpdate({ chatId: String(ctx.chat.id), telegramUserId: String(ctx.from.id),
+        'data.nonce': previousNonce, 'data.submitted': false, expiresAt: { $gt: new Date() } },
+      { $set: { kind: BotSessionKind.CHECKOUT_CONFIRMATION, data: cart, expiresAt: new Date(Date.now() + 10 * 60_000) } }, { new: true });
+      if (!updated) { await ctx.reply('Báo giá đã thay đổi hoặc đơn đang xử lý. Hãy dùng tin nhắn xác nhận mới nhất.'); return; }
+    } else await savePendingInput(data, ctx.chat.id, ctx.from.id, BotSessionKind.CHECKOUT_CONFIRMATION, cart, 10 * 60_000);
+    await ctx.reply([
+      '🧾 XÁC NHẬN ĐƠN HÀNG', `🛍 ${cart.productName} × ${cart.quantity}`,
+      `Tạm tính: ${formatMoney(cart.subtotal)}`,
+      ...(cart.couponCode ? [`🎟 ${cart.couponCode}: −${formatMoney(cart.discountAmount)}`] : []),
+      `💵 Thanh toán: ${formatMoney(cart.totalAmount)}`, `💰 Số dư ví: ${formatMoney(user.walletBalance)}`,
+      cart.paymentMethod === 'WALLET' ? 'Tiền sẽ trừ từ ví sau khi bạn xác nhận.' : 'Ví chưa đủ: bot sẽ tạo QR đúng số tiền sau giảm giá.',
+      'Báo giá có hiệu lực 10 phút; giá, tồn kho và mã được kiểm tra lại khi đặt đơn.',
+    ].join('\n'), Markup.inlineKeyboard([
+      [Markup.button.callback(cart.paymentMethod === 'WALLET' ? '✅ Xác nhận mua bằng ví' : '📱 Tạo QR thanh toán', `cart:pay:${cart.nonce}`)],
+      [Markup.button.callback(cart.couponCode ? '🎟 Đổi mã giảm giá' : '🎟 Nhập mã giảm giá', `cart:coupon:${cart.nonce}`)],
+      ...(cart.couponCode ? [[Markup.button.callback('Bỏ mã giảm giá', `cart:clear:${cart.nonce}`)]] : []),
+      [Markup.button.callback('🔄 Cập nhật báo giá', `cart:refresh:${cart.nonce}`), Markup.button.callback('⬅️ Sản phẩm', 'menu:products')],
+    ]));
+  } catch (error) {
+    await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể áp dụng mã giảm giá.'}`,
+      previousNonce ? Markup.inlineKeyboard([[Markup.button.callback('🎟 Nhập lại mã', `cart:coupon:${previousNonce}`)],
+        [Markup.button.callback('Tiếp tục không dùng mã', `cart:clear:${previousNonce}`)]]) : inlineMenu());
   }
+}
+
+async function confirmCheckout(ctx: Context, cart: CheckoutCart, apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
+  if (!ctx.from || !ctx.chat) return;
+  const current = await data.botSessions.findOneAndUpdate({ chatId: String(ctx.chat.id), telegramUserId: String(ctx.from.id),
+    'data.nonce': cart.nonce, expiresAt: { $gt: new Date() } },
+  { $set: { kind: BotSessionKind.CHECKOUT_CONFIRMATION, 'data.submitted': true } }, { new: true });
+  if (!current) { await ctx.reply('Báo giá đã được thay thế. Hãy chọn báo giá mới nhất.'); return; }
   const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
-  const total = product.price * quantity;
-  if (!Number.isSafeInteger(total)) {
-    await ctx.reply('❌ Tổng tiền vượt giới hạn an toàn. Hãy giảm số lượng mua.', inlineMenu());
-    return;
+  if (cart.paymentMethod === 'BANK_QR') {
+    await createQuickCheckout(ctx, { ...cart, userId: user._id.toString() }, apiUrl, botApiSecret); return;
   }
-  if (user.walletBalance < total) {
-    await createQuickCheckout(ctx, { userId: user._id.toString(), productId: product._id.toString(),
-      productName: product.name, quantity, unitPrice: product.price }, apiUrl, botApiSecret);
-    return;
+  try {
+    const response = await fetch(`${apiUrl}/api/purchases/batch`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ userId: user._id.toString(), productId: cart.productId, quantity: cart.quantity,
+        expectedUnitPrice: cart.unitPrice, expectedTotalAmount: cart.totalAmount, couponCode: cart.couponCode,
+        idempotencyPrefix: `cart:${ctx.chat.id}:${cart.nonce}` }), signal: AbortSignal.timeout(25_000),
+    });
+    const body = await response.json() as { message?: string | string[] };
+    if (!response.ok) throw new Error(readErrorMessage(body.message, 'Chưa thể xác nhận đơn.'));
+    await ctx.reply(`✅ Đã đặt ${cart.quantity} sản phẩm ${cart.productName}.\nThanh toán: ${formatMoney(cart.totalAmount)}${cart.couponCode ? `\n🎟 Mã ${cart.couponCode}: tiết kiệm ${formatMoney(cart.discountAmount)}` : ''}\n📦 Hàng sẽ được gửi tự động.`, inlineMenu());
+  } catch (error) {
+    // Keep the same cart and payment route on ambiguous failures. The API's
+    // idempotency key recovers the original purchase instead of charging twice.
+    await ctx.reply(`⚠️ ${error instanceof Error ? error.message : 'Chưa nhận được kết quả đặt đơn.'}\nBấm thử lại để kiểm tra cùng đơn, không tạo một giao dịch mới.`,
+      Markup.inlineKeyboard([[Markup.button.callback('🔄 Thử lại cùng đơn', `cart:pay:${cart.nonce}`)],
+        [Markup.button.callback('📦 Kiểm tra đơn hàng', 'menu:orders')]]));
   }
-  let purchased = 0; let firstError = '';
-  for (let index = 0; index < quantity; index++) {
-    const response = await fetch(`${apiUrl}/api/purchases`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
-      body: JSON.stringify({ userId: user._id.toString(), productId: product._id.toString(), expectedUnitPrice: product.price,
-        // Telegram can deliver the same webhook update again. The key must be
-        // deterministic so a retry returns the original order rather than
-        // reserving/debiting a second item.
-        idempotencyKey: `telegram:${ctx.chat.id}:${ctx.update.update_id}:${product._id.toString()}:${index}` }) });
-    const body = await response.json() as { orderCode?: string; message?: string };
-    if (!response.ok) { firstError = body.message ?? 'vui lòng thử lại'; break; }
-    purchased++;
-  }
-  if (purchased === quantity) {
-    await ctx.reply(`✅ Đã đặt ${purchased} sản phẩm *${product.name}*. Hàng sẽ được gửi ngay.`, { parse_mode: 'Markdown', ...inlineMenu() });
-  } else {
-    await ctx.reply(`⚠️ Đã đặt ${purchased}/${quantity} sản phẩm *${product.name}*. ${firstError ? `Lý do: ${firstError}` : ''}`, { parse_mode: 'Markdown', ...inlineMenu() });
-  }
+}
+
+function isCheckoutCart(value: Record<string, unknown>): value is CheckoutCart {
+  return typeof value.nonce === 'string' && /^[a-f\d]{24}$/.test(value.nonce)
+    && typeof value.productId === 'string' && /^[a-f\d]{24}$/.test(value.productId)
+    && typeof value.productName === 'string' && typeof value.submitted === 'boolean'
+    && [value.quantity, value.unitPrice, value.subtotal, value.discountAmount, value.totalAmount].every(Number.isSafeInteger)
+    && Number(value.quantity) >= 1 && Number(value.quantity) <= maximumTelegramPurchaseQuantity()
+    && Number(value.unitPrice) >= 0 && Number(value.discountAmount) >= 0 && Number(value.totalAmount) >= 0
+    && value.subtotal === Number(value.quantity) * Number(value.unitPrice)
+    && value.totalAmount === Number(value.subtotal) - Number(value.discountAmount)
+    && (value.couponCode === undefined || (typeof value.couponCode === 'string' && /^[A-Z0-9_-]{3,40}$/.test(value.couponCode)))
+    && (value.paymentMethod === 'WALLET' || value.paymentMethod === 'BANK_QR');
+}
+
+async function recordShoppingEvent(ctx: Context, apiUrl: string, botApiSecret: string,
+  explicit?: { type: 'CHECKOUT_START'; productId: string }) {
+  if (!ctx.from) return;
+  const callback = ctx.callbackQuery && 'data' in ctx.callbackQuery ? ctx.callbackQuery.data : '';
+  const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+  const product = /^select:([a-f\d]{24}):/.exec(callback);
+  const menu = ['menu:home', 'menu:products'].includes(callback)
+    || /^\/(?:start|products)(?:@\w+)?(?:\s|$)/.test(text) || text === '🛍 Sản phẩm';
+  const type = explicit?.type ?? (product ? 'PRODUCT_VIEW' : menu ? 'MENU_VIEW' : undefined);
+  if (!type) return;
+  try {
+    const response = await fetch(`${apiUrl}/api/bot/analytics/events`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-bot-secret': botApiSecret },
+      body: JSON.stringify({ telegramId: String(ctx.from.id), updateId: ctx.update.update_id, type,
+        ...(explicit || product ? { productId: explicit?.productId ?? product![1] } : {}) }),
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!response.ok) console.warn({ event: 'shopping-analytics-unavailable', status: response.status });
+  } catch { console.warn({ event: 'shopping-analytics-unavailable' }); }
 }
 
 async function savePendingInput(models: ShopBotDataContext, chatId: number, userId: number,
@@ -824,7 +976,10 @@ async function takePendingInput(models: ShopBotDataContext, chatId: number, user
   | { kind: typeof BotSessionKind[keyof typeof BotSessionKind]; data: Record<string, unknown>; expired: boolean }
   | undefined
 > {
-  const pending = await models.botSessions.findOneAndDelete({ chatId: String(chatId), telegramUserId: String(userId) }).lean();
+  const owner = { chatId: String(chatId), telegramUserId: String(userId) };
+  const pending = await models.botSessions.findOneAndDelete({ ...owner,
+    kind: { $nin: [BotSessionKind.CHECKOUT_CONFIRMATION, BotSessionKind.COUPON_CODE] } }).lean()
+    ?? await models.botSessions.findOne({ ...owner, kind: BotSessionKind.COUPON_CODE }).lean();
   if (!pending) return undefined;
   return {
     kind: pending.kind,

@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsIn, IsInt, IsMongoId, IsOptional, IsString, Length, Matches, Max, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsIn, IsInt, IsMongoId, IsOptional, IsString, Length, Matches, Max, Min, ValidateIf, ValidateNested } from 'class-validator';
 
 export class CreatePaymentRequestDto {
   @IsMongoId() userId!: string;
@@ -32,6 +32,11 @@ export class CreateBotCheckoutDto {
   quantity!: number;
   @IsInt() @Min(0)
   expectedUnitPrice!: number;
+  @ValidateIf((_, value) => value !== undefined) @Transform(({ value }) => typeof value === 'string' ? value.trim().toUpperCase() : value)
+  @IsString() @Matches(/^[A-Z0-9][A-Z0-9_-]{2,39}$/)
+  couponCode?: string;
+  @ValidateIf((_, value) => value !== undefined) @IsInt() @Min(0) @Max(Number.MAX_SAFE_INTEGER)
+  expectedTotalAmount?: number;
   @IsString() @Length(8, 160)
   idempotencyKey!: string;
 }

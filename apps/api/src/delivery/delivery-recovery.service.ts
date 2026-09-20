@@ -61,7 +61,7 @@ export class DeliveryRecoveryService {
           if (refunded) { result = refunded; return; }
           throw new Error('Only failed deliveries can be refunded');
         }
-        await this.wallet.credit({ userId: order.userId, amount: order.totalAmount, type: WalletTransactionType.REFUND,
+        if (order.totalAmount > 0) await this.wallet.credit({ userId: order.userId, amount: order.totalAmount, type: WalletTransactionType.REFUND,
           reason: `Delivery refund for ${order.orderCode}`, referenceType: WalletReferenceType.ORDER, referenceId: order._id,
           idempotencyKey: `delivery-refund:${order._id}`, actorType: ActorType.ADMIN, actorId: new Types.ObjectId(adminId) }, session);
         await this.items.updateOne({ _id: order.inventoryItemId, status: InventoryStatus.RESERVED },

@@ -1,12 +1,14 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, Bot, Boxes, CheckCircle2, CircleDollarSign, Eye, FileUp, Info, KeyRound, LayoutDashboard,
+import { Activity, ChartNoAxesCombined, TicketPercent, Bot, Boxes, CheckCircle2, CircleDollarSign, Eye, FileUp, Info, KeyRound, LayoutDashboard,
   ListChecks, LogOut, MessagesSquare, MessageSquareWarning, Package, Pencil, Plus, Power, QrCode, RefreshCw, ServerCog,
   ShoppingCart, Tags, Trash2, TriangleAlert, Users, WalletCards, X } from 'lucide-react';
 import { inventoryPatternExample, parseInventoryPatternLine, parseInventoryPatternTemplate } from '@store/shared';
 import { CategoryManager } from './category-manager';
 import { ComplaintManager } from './complaint-manager';
+import { CouponManager } from './coupon-manager';
+import { GrowthAnalytics } from './growth-analytics';
 import { InventoryManager } from './inventory-manager';
 import { ManagementHub } from './management-hub';
 import { MessageCenter } from './message-center';
@@ -74,7 +76,7 @@ interface BotConfig {
   runtime?: RuntimeConfig;
 }
 type AdminSection = 'dashboard' | 'orders' | 'reports' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
-  | 'messages' | 'ledger' | 'audit' | 'bot' | 'payments' | 'system';
+  | 'messages' | 'ledger' | 'audit' | 'bot' | 'payments' | 'system' | 'coupons' | 'analytics';
 type FlashMessageKind = 'success' | 'error' | 'warning' | 'info';
 interface FlashMessageState { id: number; text: string; kind: FlashMessageKind; }
 interface PendingDuplicateImport { rows: Record<string, unknown>[]; preview: ImportReport; }
@@ -559,6 +561,8 @@ export default function AdminPage() {
 
         {section === 'reports' && <ComplaintManager authorized={authorized} setMessage={setMessage} />}
         {section === 'messages' && <MessageCenter authorized={authorized} setMessage={setMessage} />}
+        {section === 'coupons' && <CouponManager authorized={authorized} setMessage={setMessage} />}
+        {section === 'analytics' && <GrowthAnalytics authorized={authorized} />}
 
         {section === 'categories' && <section className="space-y-6">
           <PageHeading eyebrow="Hàng hóa" title="Quản lý danh mục" description="Tổ chức sản phẩm theo nhóm để khách tìm nhanh hơn trên Telegram." />
@@ -833,6 +837,10 @@ function AdminSidebar({ section, navigate }: { section: AdminSection; navigate(n
       { id: 'products', label: 'Sản phẩm', icon: <Package size={17} /> },
       { id: 'inventory', label: 'Kho hàng', icon: <Boxes size={17} /> },
     ] },
+    { label: 'Tăng trưởng', items: [
+      { id: 'analytics', label: 'Phân tích', icon: <ChartNoAxesCombined size={17} /> },
+      { id: 'coupons', label: 'Voucher giảm giá', icon: <TicketPercent size={17} /> },
+    ] },
     { label: 'Kiểm soát', items: [
       { id: 'ledger', label: 'Sổ cái ví', icon: <CircleDollarSign size={17} /> },
       { id: 'audit', label: 'Nhật ký & tracing', icon: <Activity size={17} /> },
@@ -928,7 +936,7 @@ function apiErrorMessage(body: unknown, fallback: string) {
 function adminSectionFromLocation(): AdminSection {
   if (typeof window === 'undefined') return 'dashboard';
   const value = new URL(window.location.href).searchParams.get('view');
-  const sections: AdminSection[] = ['dashboard', 'orders', 'reports', 'messages', 'deposits', 'users', 'categories', 'products', 'inventory', 'ledger', 'audit', 'bot', 'payments', 'system'];
+  const sections: AdminSection[] = ['dashboard', 'orders', 'reports', 'messages', 'deposits', 'users', 'categories', 'products', 'inventory', 'ledger', 'audit', 'bot', 'payments', 'system', 'coupons', 'analytics'];
   return sections.includes(value as AdminSection) ? value as AdminSection : 'dashboard';
 }
 

@@ -12,12 +12,15 @@ import { DELIVERY_QUEUE, type DeliveryQueueClient } from '../delivery/delivery.q
 import { InventoryReservationService } from '../inventory/inventory-reservation.service';
 import type { PurchaseDto } from './purchase.dto';
 import { PURCHASE_ALERT_QUEUE, type PurchaseAlertQueueClient } from './purchase-alert.queue';
+import { CouponUnavailableError, CouponsService, normalizeCouponCode, type CouponPricing } from '../coupons/coupons.service';
 
 export interface PurchaseBatchInput {
   userId: string;
   productId: string;
   expectedUnitPrice: number;
   quantity: number;
+  couponCode?: string;
+  expectedTotalAmount?: number;
   idempotencyPrefix: string;
   paymentRequestId?: string;
   /** New bank QR checkouts are quotes only. They reserve stock atomically
@@ -31,6 +34,9 @@ export interface PurchaseQuote {
   unitPrice: number;
   quantity: number;
   totalAmount: number;
+  subtotal: number;
+  discountAmount: number;
+  couponCode?: string;
   available: number;
 }
 
@@ -60,6 +66,7 @@ export class PurchaseService {
     private readonly walletTransactions: WalletTransactionRepository,
     @Inject(DELIVERY_QUEUE) private readonly deliveryQueue: DeliveryQueueClient,
     @Optional() @Inject(PURCHASE_ALERT_QUEUE) private readonly purchaseAlerts?: PurchaseAlertQueueClient,
+    @Optional() private readonly coupons?: CouponsService,
   ) {}
 
   async purchase(input: PurchaseDto) {
@@ -149,8 +156,9 @@ export class PurchaseService {
     if (!user) throw new Error('User is not active');
     if (!product) throw new Error('Product is not available for sale');
     if (product.price !== input.expectedUnitPrice) throw new Error('Product price changed; confirm the current price');
-    const totalAmount = product.price * input.quantity;
-    if (!Number.isSafeInteger(totalAmount) || totalAmount <= 0) throw new Error('Invalid checkout total');
+    const subtotal = product.price * input.quantity;
+    if (!Number.isSafeInteger(subtotal) || subtotal <= 0) throw new Error('Invalid checkout total');
+    const pricing = await this.couponPricing(input, subtotal);
     const available = await this.inventory.countAvailable(productId);
     if (available < input.quantity) throw new OutOfStockError();
     if (product.purchaseLimitPerUser > 0) {
@@ -159,7 +167,8 @@ export class PurchaseService {
       if (purchased + input.quantity > product.purchaseLimitPerUser) throw new Error('Purchase limit reached');
     }
     return { productId: product._id.toString(), productName: product.name, unitPrice: product.price,
-      quantity: input.quantity, totalAmount, available };
+      quantity: input.quantity, subtotal, discountAmount: pricing.discountAmount,
+      totalAmount: pricing.totalAmount, couponCode: pricing.couponCode, available };
   }
 
   /** Quotes an unpaid QR inside the caller transaction and serializes other
@@ -177,8 +186,9 @@ export class PurchaseService {
       deletedAt: null }).session(session);
     if (!product) throw new Error('Product is not available for sale');
     if (product.price !== input.expectedUnitPrice) throw new Error('Product price changed; confirm the current price');
-    const totalAmount = product.price * input.quantity;
-    if (!Number.isSafeInteger(totalAmount) || totalAmount <= 0) throw new Error('Invalid checkout total');
+    const subtotal = product.price * input.quantity;
+    if (!Number.isSafeInteger(subtotal) || subtotal <= 0) throw new Error('Invalid checkout total');
+    const pricing = await this.couponPricing(input, subtotal, session);
     const available = await this.inventory.countAvailable(productId, session);
     if (available < input.quantity) throw new OutOfStockError();
     if (product.purchaseLimitPerUser > 0) {
@@ -187,7 +197,8 @@ export class PurchaseService {
       if (purchased + input.quantity > product.purchaseLimitPerUser) throw new Error('Purchase limit reached');
     }
     return { productId: product._id.toString(), productName: product.name, unitPrice: product.price,
-      quantity: input.quantity, totalAmount, available };
+      quantity: input.quantity, subtotal, discountAmount: pricing.discountAmount,
+      totalAmount: pricing.totalAmount, couponCode: pricing.couponCode, available };
   }
 
   /** Checks the paid quote under the same per-user lock used by purchases.
@@ -249,7 +260,7 @@ export class PurchaseService {
       if (!reserved) throw new OutOfStockError();
     }
     return { productId: product._id.toString(), productName: product.name, unitPrice: product.price,
-      quantity: input.quantity, totalAmount, available };
+      quantity: input.quantity, subtotal: totalAmount, discountAmount: 0, totalAmount, available };
   }
 
   async releaseBankCheckoutReservation(paymentRequestId: string, session?: ClientSession) {
@@ -335,22 +346,30 @@ export class PurchaseService {
     const paymentRequestId = input.paymentRequestId ? new Types.ObjectId(input.paymentRequestId) : undefined;
     const user = await this.users.findActive(userId, session);
     if (!user) throw new Error('User is not active');
-    if (input.allowUnreservedPayment) await this.users.lockForCheckout(userId, session);
+    await this.users.lockForCheckout(userId, session);
     const product = await this.products.findOne(paymentRequestId
       ? input.allowUnreservedPayment ? { _id: productId, deletedAt: null } : { _id: productId }
       : { _id: productId, status: ProductStatus.ACTIVE, deletedAt: null }).session(session);
     if (!product) throw new Error('Product is not available for sale');
     if (!paymentRequestId && product.price !== input.expectedUnitPrice) throw new Error('Product price changed; confirm the current price');
     const unitPrice = paymentRequestId ? input.expectedUnitPrice : product.price;
-    const total = unitPrice * input.quantity;
-    if (!Number.isSafeInteger(total) || total <= 0) throw new Error('Invalid checkout total');
+    const subtotal = unitPrice * input.quantity;
+    if (!Number.isSafeInteger(subtotal) || subtotal <= 0) throw new Error('Invalid checkout total');
+    const couponCode = normalizeCouponCode(input.couponCode);
+    if (couponCode && input.expectedTotalAmount === undefined) throw new CouponUnavailableError('Vui lòng xác nhận tổng tiền sau giảm giá');
+    const pricing = couponCode && this.coupons ? await this.coupons.redeem({ userId, productId, subtotal, couponCode,
+      quantity: input.quantity, checkoutKey: input.idempotencyPrefix, expectedTotalAmount: input.expectedTotalAmount }, session)
+      : await this.couponPricing(input, subtotal, session);
+    const total = pricing.totalAmount;
     if (user.walletBalance < total) throw new InsufficientBalanceError();
     // A legacy paid checkout consumes its earlier hold. A soft checkout
     // rechecks eligibility and reserves available rows only after payment.
     if ((!paymentRequestId || input.allowUnreservedPayment) && product.purchaseLimitPerUser > 0) {
+      await this.inventory.releaseExpiredPaymentReservationsForProduct(productId, session);
+      const held = await this.inventory.countActivePaymentReservations(productId, userId, session);
       const purchased = await this.orderModel.countDocuments({ userId, productId,
         status: { $nin: [OrderStatus.CANCELLED, OrderStatus.REFUNDED] } }).session(session);
-      if (purchased + input.quantity > product.purchaseLimitPerUser) throw new Error('Purchase limit reached');
+      if (purchased + held + input.quantity > product.purchaseLimitPerUser) throw new Error('Purchase limit reached');
     }
 
     const heldItems = paymentRequestId && !input.allowUnreservedPayment
@@ -364,6 +383,11 @@ export class PurchaseService {
     const created: BatchOrder[] = [];
     let balanceBefore = user.walletBalance;
     for (let index = 0; index < input.quantity; index++) {
+      const discountAmount = Math.floor(pricing.discountAmount / input.quantity) + (index < pricing.discountAmount % input.quantity ? 1 : 0);
+      const totalAmount = unitPrice - discountAmount;
+      const metadata = { source: paymentRequestId ? 'bank-quick-checkout' : 'wallet-batch',
+        paymentRequestId: input.paymentRequestId, purchaseGroupId: input.idempotencyPrefix,
+        batchQuantity: input.quantity, batchTotalAmount: total };
       const orderId = new Types.ObjectId();
       const held = heldItems?.[index];
       const reserved = held && paymentRequestId
@@ -374,22 +398,25 @@ export class PurchaseService {
       if (!reserved) throw new OutOfStockError();
       const order = await this.orders.create({
         _id: orderId, orderCode: this.orderCode(), userId, productId, inventoryItemId: reserved._id,
-        quantity: 1, unitPrice, totalAmount: unitPrice,
+        quantity: 1, unitPrice, grossAmount: unitPrice, discountAmount, totalAmount,
+        couponCode: pricing.couponCode, couponId: pricing.couponId,
         status: OrderStatus.PENDING_DELIVERY, paymentMethod: PaymentMethod.WALLET,
         deliveryStatus: 'PENDING', idempotencyKey: keys[index],
-        metadata: { source: 'bank-quick-checkout', paymentRequestId: input.paymentRequestId },
+        metadata,
       } as Partial<Order>, session) as BatchOrder;
-      const debited = await this.users.debit(userId, unitPrice, session);
+      const debited = await this.users.debit(userId, totalAmount, session);
       if (!debited) throw new InsufficientBalanceError();
-      const walletTransaction = await this.walletTransactions.create({
-        userId, balanceBefore, balanceAfter: debited.walletBalance, amount: -unitPrice,
-        type: WalletTransactionType.PURCHASE, reason: `Purchase ${order.orderCode}`,
-        referenceType: WalletReferenceType.ORDER, referenceId: order._id,
-        idempotencyKey: `purchase:${keys[index]}`, actorType: ActorType.USER, actorId: userId,
-        metadata: { source: 'bank-quick-checkout', paymentRequestId: input.paymentRequestId },
-      }, session);
-      await this.orders.attachWalletTransaction(order._id, walletTransaction._id, session);
-      order.walletTransactionId = walletTransaction._id;
+      if (totalAmount > 0) {
+        const walletTransaction = await this.walletTransactions.create({
+          userId, balanceBefore, balanceAfter: debited.walletBalance, amount: -totalAmount,
+          type: WalletTransactionType.PURCHASE, reason: `Purchase ${order.orderCode}`,
+          referenceType: WalletReferenceType.ORDER, referenceId: order._id,
+          idempotencyKey: `purchase:${keys[index]}`, actorType: ActorType.USER, actorId: userId,
+          metadata,
+        }, session);
+        await this.orders.attachWalletTransaction(order._id, walletTransaction._id, session);
+        order.walletTransactionId = walletTransaction._id;
+      }
       balanceBefore = debited.walletBalance;
       created.push(order);
     }
@@ -402,6 +429,23 @@ export class PurchaseService {
     if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 100) throw new Error('Invalid checkout quantity');
     if (!input.idempotencyPrefix || input.idempotencyPrefix.length > 115) throw new Error('Invalid checkout idempotency key');
     if (input.paymentRequestId && !Types.ObjectId.isValid(input.paymentRequestId)) throw new Error('Invalid payment request');
+    if (input.expectedTotalAmount !== undefined && (!Number.isSafeInteger(input.expectedTotalAmount) || input.expectedTotalAmount < 0)) throw new Error('Invalid checkout total');
+    if (input.couponCode !== undefined && (!normalizeCouponCode(input.couponCode) || !/^[A-Z0-9][A-Z0-9_-]{2,39}$/.test(normalizeCouponCode(input.couponCode)!))) {
+      throw new CouponUnavailableError('Mã giảm giá không hợp lệ');
+    }
+  }
+
+  private async couponPricing(input: Pick<PurchaseBatchInput, 'userId' | 'productId' | 'couponCode' | 'expectedTotalAmount'>,
+    subtotal: number, session?: ClientSession): Promise<CouponPricing> {
+    const couponCode = normalizeCouponCode(input.couponCode);
+    if (couponCode && !this.coupons) throw new CouponUnavailableError('Dịch vụ mã giảm giá chưa sẵn sàng');
+    const pricing = couponCode ? await this.coupons!.price({ userId: new Types.ObjectId(input.userId),
+      productId: new Types.ObjectId(input.productId), couponCode, subtotal }, session)
+      : { subtotal, discountAmount: 0, totalAmount: subtotal };
+    if (input.expectedTotalAmount !== undefined && input.expectedTotalAmount !== pricing.totalAmount) {
+      throw new CouponUnavailableError('Tổng thanh toán đã thay đổi; vui lòng xác nhận lại');
+    }
+    return pricing;
   }
 
   private batchKeys(input: PurchaseBatchInput) {
@@ -414,11 +458,14 @@ export class PurchaseService {
 
   private assertCompleteBatch(found: BatchOrder[], input: PurchaseBatchInput, keys: string[]) {
     if (found.length !== input.quantity) throw new IdempotencyConflictError();
+    if (input.expectedTotalAmount !== undefined && found.reduce((sum, order) => sum + order.totalAmount, 0) !== input.expectedTotalAmount) throw new IdempotencyConflictError();
     const byKey = new Map(found.map((order) => [order.idempotencyKey, order]));
     return keys.map((key) => {
       const order = byKey.get(key);
       if (!order || order.userId.toString() !== input.userId || order.productId.toString() !== input.productId ||
-        order.unitPrice !== input.expectedUnitPrice) throw new IdempotencyConflictError();
+        order.unitPrice !== input.expectedUnitPrice || order.couponCode !== normalizeCouponCode(input.couponCode) ||
+        (order.metadata?.batchQuantity !== undefined && order.metadata.batchQuantity !== input.quantity) ||
+        order.metadata?.paymentRequestId !== input.paymentRequestId) throw new IdempotencyConflictError();
       return order;
     });
   }

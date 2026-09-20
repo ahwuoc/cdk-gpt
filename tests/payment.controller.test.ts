@@ -69,13 +69,14 @@ describe('Cake payment callback', () => {
       const result = { id: 'checkout-id', requestCode: 'DONABC', amount: 170_000, status: 'PENDING' as const,
         transferContent: 'DONABC', expiresAt: '2026-08-25T12:00:00.000Z', productId: '65b65b65b65b65b65b65b65b',
         productName: 'ChatGPT Plus', quantity: 2, unitPrice: 85_000, checkoutStatus: 'PENDING_PAYMENT' as const,
+        subtotal: 170_000, discountAmount: 0, couponCode: undefined,
         bank: { bankId: 'CAKE', accountNo: '123', accountName: 'TEST', template: 'compact2' }, qrUrl: 'https://example.test/qr' };
       const createBankCheckout = mock(async () => result);
       const controller = new PaymentController({ createBankCheckout } as unknown as PaymentService, {} as BotConfigService);
       const body = { userId: '64b64b64b64b64b64b64b64b', productId: '65b65b65b65b65b65b65b65b',
         quantity: 2, expectedUnitPrice: 85_000, idempotencyKey: 'checkout-idempotency' };
       await expect(controller.createBotCheckout(body, 'quick-checkout-test-secret')).resolves.toEqual(result);
-      expect(createBankCheckout).toHaveBeenCalledWith(body.userId, body.productId, 2, 85_000, body.idempotencyKey);
+      expect(createBankCheckout).toHaveBeenCalledWith(body.userId, body.productId, 2, 85_000, body.idempotencyKey, undefined, undefined);
     } finally {
       if (previous === undefined) delete process.env.BOT_API_SECRET;
       else process.env.BOT_API_SECRET = previous;

@@ -10,6 +10,7 @@ import { loadConfig } from '@store/config';
 import { BotConfigService, type BankHistoryProvider, type RuntimeBankConfig } from '../bot-config/bot-config.service';
 import { PurchaseService } from '../purchase/purchase.service';
 import { WalletService } from '../wallet/wallet.service';
+import { normalizeCouponCode } from '../coupons/coupons.service';
 
 const BANK_PROVIDER = 'BANK_API';
 const BANK_HISTORY_ORIGIN = 'https://thueapibank.vn';
@@ -36,6 +37,9 @@ interface QuickCheckoutMetadata {
   quantity: number;
   unitPrice: number;
   totalAmount: number;
+  subtotal?: number;
+  discountAmount?: number;
+  couponCode?: string;
   idempotencyPrefix: string;
   status: 'PENDING_PAYMENT' | 'PROCESSING' | 'FULFILLED' | 'FAILED';
   /** Missing means a legacy checkout whose inventory was held at QR creation. */
@@ -109,7 +113,10 @@ export class PaymentService {
     };
   }
 
-  async createBankCheckout(userId: string, productId: string, quantity: number, expectedUnitPrice: number, idempotencyKey: string) {
+  async createBankCheckout(userId: string, productId: string, quantity: number, expectedUnitPrice: number, idempotencyKey: string,
+    couponCode?: string, expectedTotalAmount?: number) {
+    couponCode = normalizeCouponCode(couponCode);
+    if (couponCode && expectedTotalAmount === undefined) throw new BadRequestException('Vui lòng xác nhận tổng tiền sau giảm giá');
     const activeBank = await this.requireBankConfig();
     if (!this.purchases) throw new BadRequestException('Thanh toán nhanh chưa sẵn sàng');
     if (!Types.ObjectId.isValid(userId) || !Types.ObjectId.isValid(productId)) throw new BadRequestException('Thông tin thanh toán không hợp lệ');
@@ -118,7 +125,7 @@ export class PaymentService {
     }
     const prior = await this.requests.findOne({ idempotencyKey, deletedAt: null });
     if (prior) {
-      const priorCheckout = this.assertSameBankCheckout(prior, userId, productId, quantity, expectedUnitPrice);
+      const priorCheckout = this.assertSameBankCheckout(prior, userId, productId, quantity, expectedUnitPrice, couponCode, expectedTotalAmount);
       const bank = await this.resolveBankConfigForRequest(prior, activeBank);
       return bankCheckoutResponse(prior, priorCheckout, bank);
     }
@@ -137,7 +144,8 @@ export class PaymentService {
         const existing = await this.requests.findOne({ idempotencyKey, deletedAt: null }).session(session);
         if (existing) { request = existing; return; }
         const quote = await this.purchases!.quoteBatchForPayment({ userId, productId, quantity,
-          expectedUnitPrice }, session);
+          expectedUnitPrice, couponCode, expectedTotalAmount }, session);
+        if (quote.totalAmount < 1) throw new BadRequestException('Đơn miễn phí hãy xác nhận mua bằng ví, không cần chuyển khoản');
         const activeCheckout = await this.requests.findOne({ userId: objectUserId, provider: BANK_PROVIDER,
           status: PaymentRequestStatus.PENDING, deletedAt: null,
           'metadata.quickCheckout': { $exists: true }, 'metadata.expiresAt': { $gt: new Date().toISOString() } })
@@ -152,6 +160,7 @@ export class PaymentService {
         const checkout: QuickCheckoutMetadata = {
           productId: quote.productId, productName: quote.productName, quantity: quote.quantity,
           unitPrice: quote.unitPrice, totalAmount: quote.totalAmount,
+          subtotal: quote.subtotal, discountAmount: quote.discountAmount, couponCode: quote.couponCode,
           idempotencyPrefix: `quickpay:${requestCode}`, status: 'PENDING_PAYMENT', reservationMode: 'SOFT',
         };
         request = (await this.requests.create([{ _id: requestId, requestCode, userId: objectUserId,
@@ -165,7 +174,7 @@ export class PaymentService {
       request = await this.requests.findOne({ idempotencyKey, deletedAt: null });
     } finally { await session.endSession(); }
     if (!request) throw new Error('Bank checkout could not be created');
-    const stored = this.assertSameBankCheckout(request, userId, productId, quantity, expectedUnitPrice);
+    const stored = this.assertSameBankCheckout(request, userId, productId, quantity, expectedUnitPrice, couponCode, expectedTotalAmount);
     const bank = await this.resolveBankConfigForRequest(request, activeBank);
     return bankCheckoutResponse(request, stored, bank, expiresAt.toISOString());
   }
@@ -221,10 +230,11 @@ export class PaymentService {
   }
 
   private assertSameBankCheckout(request: PaymentRequestDocument, userId: string, productId: string,
-    quantity: number, expectedUnitPrice: number) {
+    quantity: number, expectedUnitPrice: number, couponCode?: string, expectedTotalAmount?: number) {
     const checkout = quickCheckoutFrom(request);
     if (!request.userId.equals(userId) || request.provider !== BANK_PROVIDER || !checkout ||
       checkout.productId !== productId || checkout.quantity !== quantity || checkout.unitPrice !== expectedUnitPrice ||
+      checkout.couponCode !== couponCode || (expectedTotalAmount !== undefined && checkout.totalAmount !== expectedTotalAmount) ||
       request.amount !== checkout.totalAmount) {
       throw new BadRequestException('Checkout idempotency key was already used for another request');
     }
@@ -582,6 +592,7 @@ export class PaymentService {
             userId: request.userId.toString(), productId: checkout.productId, quantity: checkout.quantity,
             expectedUnitPrice: checkout.unitPrice, idempotencyPrefix: checkout.idempotencyPrefix,
             paymentRequestId: request._id.toString(),
+            couponCode: checkout.couponCode, expectedTotalAmount: checkout.totalAmount,
             allowUnreservedPayment: checkout.reservationMode === 'SOFT',
           }, session);
           const fulfilled: QuickCheckoutMetadata = { ...checkout, status: 'FULFILLED',
@@ -669,6 +680,7 @@ export class PaymentService {
         userId: request.userId.toString(), productId: checkout.productId, quantity: checkout.quantity,
         expectedUnitPrice: checkout.unitPrice, idempotencyPrefix: checkout.idempotencyPrefix,
         paymentRequestId: request._id.toString(),
+        couponCode: checkout.couponCode, expectedTotalAmount: checkout.totalAmount,
         allowUnreservedPayment: checkout.reservationMode === 'SOFT',
       });
       const fulfilled: QuickCheckoutMetadata = { ...checkout, status: 'FULFILLED',
@@ -796,6 +808,8 @@ function publicQuickCheckout(checkout?: QuickCheckoutMetadata) {
   if (!checkout) return undefined;
   return { productId: checkout.productId, productName: checkout.productName, quantity: checkout.quantity,
     unitPrice: checkout.unitPrice, totalAmount: checkout.totalAmount, status: checkout.status,
+    subtotal: checkout.subtotal ?? checkout.unitPrice * checkout.quantity,
+    discountAmount: checkout.discountAmount ?? 0, couponCode: checkout.couponCode,
     orderCodes: checkout.orderCodes ?? [], fulfillmentError: checkout.fulfillmentError };
 }
 
@@ -808,6 +822,8 @@ function bankCheckoutResponse(request: PaymentRequestDocument, checkout: QuickCh
     transferContent: content, expiresAt: expirationFrom(request) ?? fallbackExpiresAt,
     productId: checkout.productId, productName: checkout.productName, quantity: checkout.quantity,
     unitPrice: checkout.unitPrice, checkoutStatus: checkout.status,
+    subtotal: checkout.subtotal ?? checkout.unitPrice * checkout.quantity,
+    discountAmount: checkout.discountAmount ?? 0, couponCode: checkout.couponCode,
     bank: { bankId: bank.bankId, accountNo: bank.accountNo, accountName: bank.accountName, template: bank.template },
     qrUrl: vietQrUrl(bank, request.amount, content),
   };
@@ -825,7 +841,7 @@ function checkoutErrorMessage(error: unknown) {
 
 function isExpectedSoftCheckoutFailure(error: unknown) {
   const value = error as { code?: unknown; message?: unknown };
-  return value?.code === 'OUT_OF_STOCK';
+  return value?.code === 'OUT_OF_STOCK' || value?.code === 'COUPON_UNAVAILABLE';
 }
 
 function extractTransferCodes(description: string) {

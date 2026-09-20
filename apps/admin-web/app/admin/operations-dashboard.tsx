@@ -20,6 +20,7 @@ import {
   WalletCards,
   X,
 } from 'lucide-react';
+import { TopSpenders } from './top-spenders';
 
 export type AuthorizedRequest = (path: string, init?: RequestInit) => Promise<Response>;
 export type OperationsView = 'overview' | 'orders' | 'deposits';
@@ -106,6 +107,7 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
   const [orders, setOrders] = useState<PageResult<OrderRecord>>(blankPage);
   const [deposits, setDeposits] = useState<PageResult<DepositRecord>>(blankPage);
   const [summaryBusy, setSummaryBusy] = useState(true);
+  const [spendingRefreshVersion, setSpendingRefreshVersion] = useState(0);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [ordersQuery, setOrdersQuery] = useState({ search: '', userId: '', status: '', from: '', to: '', page: 1 });
   const [depositsQuery, setDepositsQuery] = useState({ search: '', userId: '', status: '', provider: '', from: '', to: '', page: 1 });
@@ -198,7 +200,7 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
           <h2 className="mt-1 text-2xl font-semibold tracking-tight text-white">Theo dõi shop trong một chỗ</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Xem doanh thu, đơn hàng, tiền nạp và tồn kho mà không phải tìm từng mục.</p>
         </div>
-        <button type="button" onClick={() => void loadSummary()} disabled={summaryBusy} className="button-secondary inline-flex shrink-0 items-center justify-center gap-2 px-3 py-2.5">
+        <button type="button" onClick={() => { void loadSummary(); setSpendingRefreshVersion((value) => value + 1); }} disabled={summaryBusy} className="button-secondary inline-flex shrink-0 items-center justify-center gap-2 px-3 py-2.5">
           <RefreshCw size={15} className={summaryBusy ? 'animate-spin' : ''} /> Làm mới
         </button>
       </div>
@@ -212,6 +214,7 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
       </div>
     </div>}
 
+    {view === 'overview' && <TopSpenders authorized={authorized} refreshVersion={spendingRefreshVersion} />}
     {view === 'overview' && <Overview
       summary={summary}
       loading={summaryBusy}

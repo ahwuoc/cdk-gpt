@@ -18,7 +18,12 @@ export interface ApiApplicationOptions {
 export async function createApiApplication({ enableSwagger = true }: ApiApplicationOptions = {}): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), { bufferLogs: true });
   app.setGlobalPrefix('api');
-  app.enableCors({ origin: (process.env.WEB_APP_URL ?? 'http://localhost:3000').split(','), credentials: true });
+  app.enableCors({
+    origin: (process.env.WEB_APP_URL ?? 'http://localhost:3000').split(',').map((origin) => origin.trim()).filter(Boolean),
+    credentials: true,
+    // Fastify defaults to GET/HEAD/POST; editing vouchers/products uses PATCH.
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
   app.useGlobalFilters(new ApiExceptionFilter());
 

@@ -2,12 +2,19 @@ import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/permissions.guard';
 import { AnalyticsService } from './analytics.service';
+import { AnalyticsInsightsService } from './insights.service';
+import { AnalyticsInsightsQueryDto } from './insights.dto';
 import { AuditHistoryQueryDto, DepositHistoryQueryDto, OrderHistoryQueryDto, UserHistoryQueryDto, WalletHistoryQueryDto } from './analytics.dto';
 
 @ApiTags('admin-analytics')
 @Controller('admin')
 export class AnalyticsController {
-  constructor(private readonly analytics: AnalyticsService) {}
+  constructor(private readonly analytics: AnalyticsService, private readonly insightsService: AnalyticsInsightsService) {}
+
+  @Get('analytics/insights')
+  @RequirePermissions('analytics.read')
+  @ApiOperation({ summary: 'Revenue, purchase leaderboard and privacy-limited customer behavior by Vietnam date range' })
+  insights(@Query() query: AnalyticsInsightsQueryDto) { return this.insightsService.insights(query); }
 
   @Get('analytics/summary')
   @RequirePermissions('analytics.read')

@@ -9,8 +9,9 @@ import { QStashTaskPublisher } from '../serverless/qstash';
 import { PURCHASE_ALERT_QUEUE, PurchaseAlertQueue, ServerlessPurchaseAlertQueue } from './purchase-alert.queue';
 import { PurchaseController } from './purchase.controller';
 import { PurchaseService } from './purchase.service';
+import { CouponsModule } from '../coupons/coupons.module';
 
-@Module({ imports: [BotConfigModule, DeliveryModule, InventoryModule], controllers: [PurchaseController], providers: [
+@Module({ imports: [BotConfigModule, DeliveryModule, InventoryModule, CouponsModule], controllers: [PurchaseController], providers: [
   { provide: PURCHASE_ALERT_QUEUE, useFactory: (runtimeConfig: BotConfigService) => {
     const config = loadConfig();
     if (config.appRuntime === 'serverless') {

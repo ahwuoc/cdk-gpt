@@ -7,8 +7,10 @@ import { serverlessRuntimeIndexesMigration } from './005-serverless-runtime-inde
 import { orderReportIndexesMigration } from './006-order-report-indexes';
 import { quickCheckoutReservationsMigration } from './007-quick-checkout-reservations';
 import { customerMessageIndexesMigration } from './008-customer-message-indexes';
+import { couponIndexesMigration } from './009-coupon-indexes';
+import { customerAnalyticsIndexesMigration } from './010-customer-analytics-indexes';
 
 export const migrations: MongoMigration[] = [createIndexesMigration, backfillSafeDefaultsMigration, categoryProductIndexesMigration,
   repairLegacyCollectionNamesMigration, serverlessRuntimeIndexesMigration, orderReportIndexesMigration,
-  quickCheckoutReservationsMigration, customerMessageIndexesMigration];
+  quickCheckoutReservationsMigration, customerMessageIndexesMigration, couponIndexesMigration, customerAnalyticsIndexesMigration];
 export type { MongoMigration } from './types';
