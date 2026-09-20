@@ -29,21 +29,24 @@ export class ProductRepeatPurchasesService {
   async report(query: Partial<ProductRepeatPurchasesQueryDto>) {
     const range = insightsDateRange(query);
     const days = query.days ?? 2;
+    const maxDays = query.maxDays ?? null;
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    if (![2, 3].includes(days) || !Number.isSafeInteger(page) || page < 1
+    if (!Number.isSafeInteger(days) || days < 2 || days > 366
+      || (maxDays !== null && (!Number.isSafeInteger(maxDays) || maxDays < days || maxDays > 366))
+      || !Number.isSafeInteger(page) || page < 1
       || !Number.isSafeInteger(limit) || limit < 1 || limit > 100
       || !Number.isSafeInteger((page - 1) * limit)
       || (query.productId !== undefined && !/^[a-fA-F0-9]{24}$/.test(query.productId))) {
-      throw new BadRequestException('Chọn chuỗi 2 hoặc 3 ngày, sản phẩm và phân trang hợp lệ.');
+      throw new BadRequestException('Chọn số ngày liên tiếp từ 2 đến 366, số ngày tối đa không nhỏ hơn tối thiểu, sản phẩm và phân trang hợp lệ.');
     }
     const [result] = await this.orders.aggregate<RepeatPurchaseFacet>(repeatPurchasePipeline(
-      range, days, page, limit, query.productId,
+      range, days, maxDays, page, limit, query.productId,
     )).option({ maxTimeMS: 20_000, allowDiskUse: true }).exec();
     const summary = result?.summary[0] ?? { buyers: 0, repeatBuyers: 0 };
     const total = result?.meta[0]?.total ?? 0;
     return {
-      range: { from: range.from, to: range.to, days: range.days }, timezone: TIMEZONE, days,
+      range: { from: range.from, to: range.to, days: range.days }, timezone: TIMEZONE, days, maxDays,
       summary: { buyers: summary.buyers, repeatBuyers: summary.repeatBuyers,
         repeatRate: summary.buyers ? summary.repeatBuyers / summary.buyers * 100 : null },
       products: result?.products ?? [], items: result?.items ?? [],
@@ -52,11 +55,15 @@ export class ProductRepeatPurchasesService {
   }
 }
 
-function repeatPurchasePipeline(range: InsightsDateRange, days: 2 | 3, page: number, limit: number,
+function repeatPurchasePipeline(range: InsightsDateRange, days: number, maxDays: number | null, page: number, limit: number,
   productId?: string): PipelineStage[] {
   const productFilter: PipelineStage.Match[] = productId
     ? [{ $match: { '_id.product': new Types.ObjectId(productId) } }] : [];
-  const qualified: PipelineStage.Match = { $match: { 'streak.longest': { $gte: days } } };
+  const qualifies = { $and: [
+    { $gte: ['$streak.longest', days] },
+    ...(maxDays === null ? [] : [{ $lte: ['$streak.longest', maxDays] }]),
+  ] };
+  const qualified: PipelineStage.Match = { $match: { $expr: qualifies } };
   const delivered = { $eq: ['$status', OrderStatus.DELIVERED] };
   return [
     // Group before the range filter: one checkout can straddle midnight and
@@ -109,7 +116,7 @@ function repeatPurchasePipeline(range: InsightsDateRange, days: 2 | 3, page: num
     { $facet: {
       summary: [
         ...productFilter,
-        { $group: { _id: '$_id.user', qualified: { $max: { $cond: [{ $gte: ['$streak.longest', days] }, 1, 0] } } } },
+        { $group: { _id: '$_id.user', qualified: { $max: { $cond: [qualifies, 1, 0] } } } },
         { $group: { _id: null, buyers: { $sum: 1 }, repeatBuyers: { $sum: '$qualified' } } },
       ],
       products: [

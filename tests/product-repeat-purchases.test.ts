@@ -4,6 +4,7 @@ import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import { BadRequestException } from '@nestjs/common';
 import { OrderSchema, ProductSchema, UserSchema, type Order, type Product, type User } from '@store/database';
 import { OrderStatus } from '@store/shared';
 import { AnalyticsController } from '../apps/api/src/analytics/analytics.controller';
@@ -16,12 +17,17 @@ describe('product repeat-purchase query boundaries', () => {
     expect(defaults).toMatchObject({ days: 2, page: 1, limit: 20 });
     expect(await validate(defaults)).toHaveLength(0);
     const valid = plainToInstance(ProductRepeatPurchasesQueryDto, {
-      from: '2026-09-01', to: '2026-09-30', days: '3', page: '2', limit: '100', productId: new Types.ObjectId().toString(),
+      from: '2026-09-01', to: '2026-09-30', days: '3', maxDays: '7', page: '2', limit: '100', productId: new Types.ObjectId().toString(),
     });
-    expect(valid).toMatchObject({ days: 3, page: 2, limit: 100 });
+    expect(valid).toMatchObject({ days: 3, maxDays: 7, page: 2, limit: 100 });
     expect(await validate(valid)).toHaveLength(0);
+    for (const days of [4, 7, 30, 366]) {
+      expect(await validate(plainToInstance(ProductRepeatPurchasesQueryDto, { days: String(days) }))).toHaveLength(0);
+      expect(await validate(plainToInstance(ProductRepeatPurchasesQueryDto, { days: String(days), maxDays: '366' }))).toHaveLength(0);
+    }
     for (const payload of [
-      { days: '1' }, { days: '4' }, { days: '2.5' }, { productId: 'bad' }, { productId: '' },
+      { days: '1' }, { days: '367' }, { days: '2.5' }, { maxDays: '1' }, { maxDays: '367' },
+      { maxDays: '2.5' }, { maxDays: 'bad' }, { productId: 'bad' }, { productId: '' },
       { page: '0' }, { page: '1.5' }, { page: Number.MAX_SAFE_INTEGER + 1 },
       { limit: '0' }, { limit: '101' }, { from: '2026-09-01T00:00:00Z' }, { to: 'bad' },
       { unexpected: 'field' },
@@ -35,10 +41,11 @@ describe('product repeat-purchase query boundaries', () => {
     const receiver = Object.create(ProductRepeatPurchasesService.prototype);
     for (const payload of [
       { from: '2026-02-30', to: '2026-03-01' }, { from: '2026-09-03', to: '2026-09-01' },
-      { from: '2025-01-01', to: '2026-01-02' }, { days: 4 }, { days: 2.5 },
+      { from: '2025-01-01', to: '2026-01-02' }, { days: 1 }, { days: 367 }, { days: 2.5 },
+      { maxDays: 1 }, { maxDays: 367 }, { maxDays: 2.5 }, { maxDays: Number.NaN }, { days: 7, maxDays: 4 },
       { page: 0 }, { page: 1.5 }, { page: Number.MAX_SAFE_INTEGER, limit: 100 },
       { limit: 0 }, { limit: 101 }, { productId: '' }, { productId: 'not-an-object-id' },
-    ]) await expect(report.call(receiver, plainToInstance(ProductRepeatPurchasesQueryDto, payload))).rejects.toThrow();
+    ]) await expect(report.call(receiver, plainToInstance(ProductRepeatPurchasesQueryDto, payload))).rejects.toBeInstanceOf(BadRequestException);
   });
 
   test('the endpoint requires analytics.read and is not public', () => {
@@ -100,7 +107,7 @@ integration('product repeat purchases against isolated MongoDB', () => {
   test('empty periods return zero counts, null rate, defaults, and no fabricated customers', async () => {
     const result = await service.report(range);
     expect(result).toEqual({
-      range: { ...range, days: 7 }, timezone: 'Asia/Ho_Chi_Minh', days: 2,
+      range: { ...range, days: 7 }, timezone: 'Asia/Ho_Chi_Minh', days: 2, maxDays: null,
       summary: { buyers: 0, repeatBuyers: 0, repeatRate: null }, products: [], items: [],
       pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
     });
@@ -142,6 +149,46 @@ integration('product repeat purchases against isolated MongoDB', () => {
     const result = await service.report(range);
     expect(result.summary).toEqual({ buyers: 2, repeatBuyers: 0, repeatRate: 0 });
     expect(result.items).toEqual([]);
+  });
+
+  test('supports any minimum and an inclusive longest-streak interval with matching summaries and item totals', async () => {
+    const item = await product();
+    for (const length of [2, 4, 7]) {
+      const buyer = await customer(length);
+      for (let day = 1; day <= length; day++) await order(buyer, item, day);
+    }
+
+    for (const { days, maxDays, expected } of [
+      { days: 4, expected: [7, 4] }, { days: 7, expected: [7] },
+      { days: 2, maxDays: 4, expected: [4, 2] }, { days: 2, expected: [7, 4, 2] },
+      { days: 2, maxDays: 2, expected: [2] }, { days: 8, expected: [] },
+      { days: 30, expected: [] }, { days: 366, expected: [] },
+    ]) {
+      const result = await service.report({ ...range, days, maxDays });
+      expect(result.days).toBe(days);
+      expect(result.maxDays).toBe(maxDays ?? null);
+      expect(result.items.map(({ longestStreak }) => longestStreak)).toEqual(expected);
+      expect(result.pagination.total).toBe(expected.length);
+      expect(result.summary).toEqual({ buyers: 3, repeatBuyers: expected.length, repeatRate: expected.length / 3 * 100 });
+    }
+  });
+
+  test('counts a customer once when one product is inside the interval and another is above it', async () => {
+    const buyer = await customer(1);
+    const shorter = await product('Four-day product');
+    const longer = await product('Seven-day product');
+    for (let day = 1; day <= 7; day++) {
+      await order(buyer, longer, day);
+      if (day <= 4) await order(buyer, shorter, day);
+    }
+    const result = await service.report({ ...range, days: 2, maxDays: 4 });
+    expect(result.summary).toEqual({ buyers: 1, repeatBuyers: 1, repeatRate: 100 });
+    expect(result.items.map(({ productId }) => productId)).toEqual([shorter.toString()]);
+    expect(result.pagination.total).toBe(1);
+    const selected = await service.report({ ...range, days: 2, maxDays: 4, productId: longer.toString() });
+    expect(selected.summary).toEqual({ buyers: 1, repeatBuyers: 0, repeatRate: 0 });
+    expect(selected.pagination.total).toBe(0);
+    expect(selected.items).toEqual([]);
   });
 
   test('groups QR and wallet batches once per customer/product and keeps net spend and every unit', async () => {
