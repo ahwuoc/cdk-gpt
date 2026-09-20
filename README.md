@@ -143,6 +143,26 @@ Admin web nhận JSON array hoặc JSONL. API thực hiện:
 
 Không gửi plaintext vào log, BullMQ job, notification hay audit log.
 
+## Tốc độ thông báo Telegram
+
+Ba luồng thông báo (admin gửi toàn bộ, hàng về và có khách mua hàng) xử lý tối đa 12 người nhận đồng thời. Chúng dùng chung bộ giới hạn trong collection `telegram_broadcast_rates`: tối đa 25 lần bắt đầu gửi trong mỗi cửa sổ trượt 1 giây, kể cả khi chạy nhiều worker hoặc nhiều instance Vercel. Khoảng cách cho cùng một chat là ít nhất 1 giây (group: 3 giây). Hạn mức này dành riêng cho thông báo hàng loạt, để lại khoảng trống cho tin nhắn giao hàng và tương tác với bot.
+
+Collection giới hạn tốc độ chỉ giữ một document cho cửa hàng, với tối đa khoảng 75 lượt gửi gần nhất. MongoDB dùng đồng hồ máy chủ và index `_id` có sẵn; không cần Redis hoặc migration bổ sung. Tốc độ thực tế còn phụ thuộc độ trễ Telegram/MongoDB và lưu lượng tương tác khác.
+
+Danh sách người nhận vẫn phân trang theo `_id` tăng dần, nên khách có bản ghi được tạo sớm thường được xếp trước. Đây là thứ tự trong mã nguồn, không phải Telegram ưu tiên người đăng ký trước. Các lượt gửi được xử lý song song trong mỗi trang nên thứ tự nhận thực tế không được bảo đảm. Nếu duy trì 25 tin/giây, 1.000 người nhận tương ứng khoảng 40 giây; đây là ước tính công suất, không phải cam kết thời gian giao tin. Nhiều chiến dịch đồng thời chia sẻ hạn mức này.
+
+Telegram Bot API không có endpoint nhận nhiều `chat_id` để gửi tin nhắn riêng trong một request. `sendMediaGroup`, `forwardMessages` và `copyMessages` gom nhiều nội dung cho **một** chat. Mức miễn phí khoảng 30 tin/giây; paid broadcasts có thể nâng lên 1.000 tin/giây nhưng tính phí Stars. Mã này không bật `allow_paid_broadcast`. Tham khảo [Telegram Bot FAQ](https://core.telegram.org/bots/faq#broadcasting-to-users) và [sendMessage](https://core.telegram.org/bots/api#sendmessage).
+
+Khi nhận 429, sender chia sẻ thời gian nghỉ `retry_after` cho mọi worker. Cooldown dài được đưa lại vào hàng đợi ở đúng trang người nhận hiện tại, không bỏ qua khách phía sau. Bản ghi `SENT` và lỗi cuối cùng `FAILED` không được gửi lại khi trang chạy lại; lỗi mạng không rõ kết quả được giữ để kiểm tra, tránh tự động gửi trùng. Claim `SENDING` ngăn hai lượt xử lý cùng gửi cho một khách và có thể thu hồi sau 5 phút nếu worker dừng đột ngột.
+
+Kiểm tra bằng bot giả lập, MongoDB và Redis tạm, không gửi Telegram thật (test hàng đợi tích hợp cần `redis-server`):
+
+```bash
+bun test tests/broadcast-sender.test.ts tests/broadcast-processors.test.ts tests/broadcast-queue-retry.test.ts
+RUN_INTEGRATION=1 bun test tests/broadcast-rate-store.test.ts tests/broadcast-queue-retry.test.ts
+BROADCAST_BENCHMARK=1 bun test tests/broadcast-processors.test.ts --test-name-pattern 'broadcast benchmark'
+```
+
 ## Phiếu giảm giá và phân tích kinh doanh
 
 Admin có mục **Voucher giảm giá** để tạo, sửa và bật/tắt mã. Hỗ trợ giảm theo phần trăm hoặc số tiền cố định, đơn tối thiểu, trần tiền giảm, thời gian áp dụng theo giờ Việt Nam, giới hạn tổng lượt dùng/mỗi khách và danh sách sản phẩm được áp dụng. Mã không phân biệt chữ hoa/thường; mỗi đơn chỉ dùng một mã. Quyền quản lý là `products.manage`, thao tác được ghi audit.

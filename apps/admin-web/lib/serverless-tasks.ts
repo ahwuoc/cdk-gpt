@@ -14,6 +14,7 @@ import { DeliveryProcessor } from '../../bot/src/delivery.processor';
 import { StockAlertProcessor, type StockAlertBatch } from '../../bot/src/stock-alert.processor';
 import { PurchaseAlertProcessor, type PurchaseAlertBatch } from '../../bot/src/purchase-alert.processor';
 import { AdminBroadcastProcessor, type AdminBroadcastBatch } from '../../bot/src/admin-broadcast.processor';
+import { processServerlessBroadcastPage } from '../../bot/src/broadcast-queue-retry';
 
 type TelegramClient = { telegram: Pick<Telegram, 'sendMessage' | 'sendDocument' | 'deleteMessage'> };
 const PENDING_DELIVERY_RECOVERY_LIMIT = 10;
@@ -94,9 +95,13 @@ export async function processDeliveryTask(orderId: string, retried = 0) {
 export async function processRestockTask(task: StockAlertBatch) {
   const { client, config } = await currentTelegramRuntime();
   const processor = new StockAlertProcessor(client);
-  const result = await processor.processBatch(task);
+  const publisher = new QStashTaskPublisher(() => config.getQStashRuntimeConfig());
+  const result = await processServerlessBroadcastPage(() => processor.processBatch(task), {
+    publisher, path: '/api/internal/tasks/restock', payload: { ...task },
+    deduplicationId: `product-restocked-${task.importBatchId}-${task.cursor ?? 'start'}`,
+  });
   if ('nextCursor' in result && result.nextCursor) {
-    await new QStashTaskPublisher(() => config.getQStashRuntimeConfig()).publish('/api/internal/tasks/restock', {
+    await publisher.publish('/api/internal/tasks/restock', {
       ...task,
       cursor: result.nextCursor,
       limit: task.limit ?? 50,
@@ -111,9 +116,13 @@ export async function processRestockTask(task: StockAlertBatch) {
 export async function processPurchaseAlertTask(task: PurchaseAlertBatch) {
   const { client, config } = await currentTelegramRuntime();
   const processor = new PurchaseAlertProcessor(client);
-  const result = await processor.processBatch(task);
+  const publisher = new QStashTaskPublisher(() => config.getQStashRuntimeConfig());
+  const result = await processServerlessBroadcastPage(() => processor.processBatch(task), {
+    publisher, path: '/api/internal/tasks/purchase-alert', payload: { ...task },
+    deduplicationId: `purchase-proof-${task.purchaseGroupId}-${task.cursor ?? 'start'}`,
+  });
   if ('nextCursor' in result && result.nextCursor) {
-    await new QStashTaskPublisher(() => config.getQStashRuntimeConfig()).publish('/api/internal/tasks/purchase-alert', {
+    await publisher.publish('/api/internal/tasks/purchase-alert', {
       ...task, cursor: result.nextCursor, limit: task.limit ?? 50,
     }, {
       deduplicationId: `purchase-proof-${task.purchaseGroupId}-${result.nextCursor}`,
@@ -125,9 +134,13 @@ export async function processPurchaseAlertTask(task: PurchaseAlertBatch) {
 
 export async function processAdminBroadcastTask(task: AdminBroadcastBatch) {
   const { client, config } = await currentTelegramRuntime();
-  const result = await new AdminBroadcastProcessor(client).processBatch(task);
+  const publisher = new QStashTaskPublisher(() => config.getQStashRuntimeConfig());
+  const result = await processServerlessBroadcastPage(() => new AdminBroadcastProcessor(client).processBatch(task), {
+    publisher, path: '/api/internal/tasks/admin-broadcast', payload: { ...task },
+    deduplicationId: `admin-broadcast-${task.campaignId}-${task.cursor ?? 'start'}`,
+  });
   if ('nextCursor' in result && result.nextCursor) {
-    await new QStashTaskPublisher(() => config.getQStashRuntimeConfig()).publish('/api/internal/tasks/admin-broadcast', {
+    await publisher.publish('/api/internal/tasks/admin-broadcast', {
       ...task, cursor: result.nextCursor, limit: task.limit ?? 50,
     }, { deduplicationId: `admin-broadcast-${task.campaignId}-${result.nextCursor}`, retries: 5 });
   }

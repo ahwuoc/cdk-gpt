@@ -13,7 +13,7 @@ import { redisConnectionOptions } from '@store/config';
 import {
   AdminModel, AuditLogModel, CustomerMessageModel, ImportBatchModel, InventoryItemModel, InventoryRepository, NotificationModel,
   OrderModel, OrderRepository, PaymentRequestModel, ProductModel, RoleModel, RuntimeLeaseModel, SettingModel, UserModel,
-  UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel, DatabaseModule,
+  UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel, DatabaseModule, customerMessageId,
 } from '@store/database';
 import { InventoryStatus, OutOfStockError, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
 import { PurchaseService } from '../../apps/api/src/purchase/purchase.service';
@@ -1126,6 +1126,55 @@ integration('digital store on a MongoDB replica set', () => {
     expect(messages[0]?.text).not.toContain(buyer.telegramId);
     expect(await NotificationModel.countDocuments({ userId: observer._id,
       referenceType: 'PURCHASE_SOCIAL_PROOF', status: 'SENT' })).toBe(1);
+  });
+
+  test('broadcast retries can reclaim expired admin delivery claims without refreshing their age', async () => {
+    const { user, adminId } = await fixture(0);
+    const campaign = await NotificationModel.create({ adminId, channel: 'ADMIN_WEB', title: 'Stale broadcast',
+      body: 'Recover a stopped worker.', status: 'PENDING', referenceType: 'ADMIN_BROADCAST', metadata: {} });
+    const key = `admin-broadcast:${campaign._id}:${user._id}`;
+    const record = await CustomerMessageModel.create({ _id: customerMessageId(key), userId: user._id,
+      adminId, campaignId: campaign._id, conversationType: 'DIRECT', direction: 'ADMIN_TO_USER',
+      audience: 'BROADCAST', body: campaign.body, status: 'SENDING', deduplicationKey: key });
+    await CustomerMessageModel.updateOne({ _id: record._id }, { $set: { updatedAt: new Date(Date.now() - 6 * 60_000) } },
+      { timestamps: false });
+    let sends = 0;
+    const processor = new AdminBroadcastProcessor({ telegram: { sendMessage: async () => ({ message_id: ++sends }) } });
+
+    await processor.processBatch({ campaignId: campaign._id.toString() });
+    await processor.processBatch({ campaignId: campaign._id.toString() });
+
+    expect(sends).toBe(1);
+    expect((await CustomerMessageModel.findById(record._id))?.status).toBe('SENT');
+    expect((await NotificationModel.findById(campaign._id))?.status).toBe('SENT');
+  });
+
+  test('broadcast retries can reclaim expired stock and purchase notification claims', async () => {
+    const { product, user } = await fixture(0);
+    const batchId = new Types.ObjectId();
+    const purchaseGroupId = new Types.ObjectId();
+    const keys = [`restock:${batchId}:${user._id}`, `purchase-proof:${purchaseGroupId}:${user._id}`];
+    for (const key of keys) {
+      const record = await NotificationModel.create({ userId: user._id, channel: 'TELEGRAM', title: 'Stale notice',
+        body: 'Recover a stopped worker.', status: 'SENDING', deduplicationKey: key, metadata: {} });
+      await NotificationModel.updateOne({ _id: record._id }, { $set: { updatedAt: new Date(Date.now() - 6 * 60_000) } },
+        { timestamps: false });
+    }
+    let sends = 0;
+    const bot = { telegram: { sendMessage: async () => ({ message_id: ++sends }) } };
+    const stock = new StockAlertProcessor(bot);
+    const purchase = new PurchaseAlertProcessor(bot);
+    const stockTask = { productId: product._id.toString(), importBatchId: batchId.toString(), importedRows: 1 };
+    const purchaseTask = { productId: product._id.toString(), purchaseGroupId: purchaseGroupId.toString(),
+      buyerId: new Types.ObjectId().toString(), quantity: 1 };
+
+    await stock.processBatch(stockTask);
+    await purchase.processBatch(purchaseTask);
+    await stock.processBatch(stockTask);
+    await purchase.processBatch(purchaseTask);
+
+    expect(sends).toBe(2);
+    expect(await NotificationModel.countDocuments({ deduplicationKey: { $in: keys }, status: 'SENT' })).toBe(2);
   });
 
   test('11. an unknown encryption key version cannot be decrypted', () => {

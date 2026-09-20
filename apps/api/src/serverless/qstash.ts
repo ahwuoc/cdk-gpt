@@ -13,8 +13,10 @@ export interface QStashRuntimeConfig {
 export class QStashTaskPublisher {
   constructor(private readonly resolveRuntime: () => Promise<QStashRuntimeConfig> = qstashConfigFromEnvironment) {}
 
-  async publish(path: string, payload: Record<string, unknown>, options: { deduplicationId: string; retries?: number } ) {
+  async publish(path: string, payload: Record<string, unknown>, options: { deduplicationId: string; retries?: number; delayMs?: number } ) {
     if (!path.startsWith('/')) throw new Error('Serverless task path must start with /');
+    if (options.delayMs !== undefined && (!Number.isFinite(options.delayMs) || options.delayMs < 0
+      || options.delayMs > 7 * 24 * 60 * 60_000)) throw new Error('Invalid serverless task delay');
     const runtime = await this.resolveRuntime();
     const taskSecret = requireEnv(process.env, 'TASK_QUEUE_SECRET');
     const endpoint = requireHttpsUrl(runtime.endpoint, 'QSTASH_URL').replace(/\/+$/, '');
@@ -30,6 +32,7 @@ export class QStashTaskPublisher {
         'upstash-deduplication-id': options.deduplicationId,
         'upstash-retries': String(options.retries ?? 5),
         'upstash-timeout': '55s',
+        ...(options.delayMs ? { 'upstash-delay': `${Math.ceil(options.delayMs / 1_000)}s` } : {}),
       },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10_000),

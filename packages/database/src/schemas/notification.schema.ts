@@ -3,7 +3,15 @@ import type { HydratedDocument, Types, Model } from 'mongoose';
 import { baseSchemaOptions, metadata, objectId } from './common';
 
 export const NotificationChannel = { TELEGRAM: 'TELEGRAM', ADMIN_WEB: 'ADMIN_WEB', EMAIL: 'EMAIL' } as const;
-export const NotificationStatus = { PENDING: 'PENDING', SENT: 'SENT', FAILED: 'FAILED', READ: 'READ' } as const;
+export const NotificationStatus = { PENDING: 'PENDING', SENDING: 'SENDING', SENT: 'SENT', FAILED: 'FAILED', READ: 'READ' } as const;
+
+/** A shared recipient claim prevents overlapping queue deliveries from sending the same notice. */
+export function claimableNotificationDelivery(now = new Date()) {
+  return { $or: [
+    { status: { $in: [NotificationStatus.PENDING, NotificationStatus.FAILED] } },
+    { status: NotificationStatus.SENDING, updatedAt: { $lt: new Date(now.getTime() - 5 * 60_000) } },
+  ] };
+}
 export interface Notification {
   userId?: Types.ObjectId; adminId?: Types.ObjectId; channel: typeof NotificationChannel[keyof typeof NotificationChannel];
   title: string; body: string; status: typeof NotificationStatus[keyof typeof NotificationStatus];

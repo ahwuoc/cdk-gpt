@@ -2,11 +2,12 @@ import type { Job } from 'bullmq';
 import { Types } from 'mongoose';
 import { Markup } from 'telegraf';
 import {
-  NotificationChannel, NotificationModel, NotificationStatus, ProductModel, UserModel,
+  NotificationChannel, NotificationModel, NotificationStatus, ProductModel, UserModel, claimableNotificationDelivery, customerMessageId,
 } from '@store/database';
 import { ProductStatus, UserStatus, isMongoDuplicateKey } from '@store/shared';
 import type { PurchaseAlertJob } from '../../api/src/purchase/purchase-alert.queue';
 import type { TelegramBotClient } from './delivery.processor';
+import { broadcastClaimRetryAfter, broadcastSender, BroadcastRetryError, forEachBroadcastRecipient, type BroadcastSender } from './broadcast-sender';
 
 export interface PurchaseAlertBatch extends PurchaseAlertJob {
   cursor?: string;
@@ -15,7 +16,7 @@ export interface PurchaseAlertBatch extends PurchaseAlertJob {
 
 /** Broadcasts real, anonymous purchase activity once per order group and customer. */
 export class PurchaseAlertProcessor {
-  constructor(private readonly bot: TelegramBotClient) {}
+  constructor(private readonly bot: TelegramBotClient, private readonly sender: BroadcastSender = broadcastSender) {}
 
   async process(job: Job<PurchaseAlertJob>) { return this.processBatch(job.data); }
 
@@ -50,23 +51,32 @@ export class PurchaseAlertProcessor {
       .select('_id telegramId').sort({ _id: 1 }).limit(requestedLimit ? requestedLimit + 1 : 0).lean();
     const hasMore = requestedLimit > 0 && users.length > requestedLimit;
     const page = hasMore ? users.slice(0, requestedLimit) : users;
-    for (const user of page) {
+    await forEachBroadcastRecipient(page, async (user) => {
       const notification = await createPurchaseNotification(user._id, productId, groupId, input.quantity);
-      if (notification.status === NotificationStatus.SENT) { skipped++; continue; }
+      if (notification.status === NotificationStatus.SENT) { skipped++; return; }
+      if (notification.status === NotificationStatus.FAILED) { failed++; return; }
+      const claimed = await NotificationModel.findOneAndUpdate({ _id: notification._id,
+        status: { $ne: NotificationStatus.FAILED }, ...claimableNotificationDelivery() },
+        { $set: { status: NotificationStatus.SENDING }, $unset: { errorCode: 1 } }, { new: true });
+      if (!claimed) throw new BroadcastRetryError('Purchase announcement recipient is being delivered by another worker', {
+        retryAfterMs: broadcastClaimRetryAfter(notification.updatedAt),
+      });
       try {
-        await this.bot.telegram.sendMessage(user.telegramId, message, { parse_mode: 'Markdown', ...keyboard });
-        await NotificationModel.updateOne({ _id: notification._id }, { $set: {
-          status: NotificationStatus.SENT, sentAt: new Date(),
-        }, $unset: { errorCode: 1 } });
-        sent++;
+        await this.sender.send(user.telegramId, () => this.bot.telegram.sendMessage(user.telegramId, message, { parse_mode: 'Markdown', ...keyboard }));
       } catch (error) {
         await NotificationModel.updateOne({ _id: notification._id }, { $set: {
-          status: NotificationStatus.FAILED, errorCode: telegramErrorCode(error),
+          status: error instanceof BroadcastRetryError ? NotificationStatus.PENDING : NotificationStatus.FAILED,
+          errorCode: error instanceof BroadcastRetryError ? 'BROADCAST_RETRY' : telegramErrorCode(error),
         } });
+        if (error instanceof BroadcastRetryError) throw error;
         failed++;
+        return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 45));
-    }
+      await NotificationModel.updateOne({ _id: notification._id }, { $set: {
+        status: NotificationStatus.SENT, sentAt: new Date(),
+      }, $unset: { errorCode: 1 } });
+      sent++;
+    });
     return { status: 'complete', sent, failed, skipped,
       nextCursor: hasMore ? page.at(-1)?._id.toString() : undefined };
   }
@@ -75,13 +85,15 @@ export class PurchaseAlertProcessor {
 async function createPurchaseNotification(userId: Types.ObjectId, productId: Types.ObjectId,
   groupId: Types.ObjectId, quantity: number) {
   const filter = { deduplicationKey: `purchase-proof:${groupId.toString()}:${userId.toString()}` };
+  const createdAt = new Date();
   try {
     return await NotificationModel.findOneAndUpdate(filter, { $setOnInsert: {
+      _id: customerMessageId(filter.deduplicationKey),
       userId, channel: NotificationChannel.TELEGRAM, title: 'Vừa có khách mua hàng',
       body: `Anonymous purchase announcement for ${productId.toString()}`,
       status: NotificationStatus.PENDING, referenceType: 'PURCHASE_SOCIAL_PROOF', referenceId: groupId,
-      deduplicationKey: filter.deduplicationKey, metadata: { productId: productId.toString(), quantity },
-    } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+      deduplicationKey: filter.deduplicationKey, metadata: { productId: productId.toString(), quantity }, createdAt, updatedAt: createdAt,
+    } }, { upsert: true, new: true, setDefaultsOnInsert: true, timestamps: false });
   } catch (error) {
     if (!isMongoDuplicateKey(error)) throw error;
     const existing = await NotificationModel.findOne(filter);

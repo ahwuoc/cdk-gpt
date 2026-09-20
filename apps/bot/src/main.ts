@@ -10,6 +10,7 @@ import { PurchaseAlertProcessor } from './purchase-alert.processor';
 import type { PurchaseAlertJob } from '../../api/src/purchase/purchase-alert.queue';
 import { AdminBroadcastProcessor } from './admin-broadcast.processor';
 import type { AdminBroadcastJob } from '../../api/src/messaging/admin-broadcast.queue';
+import { processBroadcastQueueJob } from './broadcast-queue-retry';
 
 const config = loadConfig();
 const botApiSecret = process.env.BOT_API_SECRET;
@@ -27,14 +28,15 @@ worker.on('failed', (job, error) => {
 });
 worker.on('error', (error) => console.error({ event: 'delivery-worker-error', message: error.message }));
 const stockAlertProcessor = new StockAlertProcessor(bot);
-const stockAlertWorker = new Worker<StockAlertJob>('product-restock-alerts', (job) => stockAlertProcessor.process(job), {
+const stockAlertWorker = new Worker<StockAlertJob>('product-restock-alerts',
+  (job, token) => processBroadcastQueueJob(job, token, () => stockAlertProcessor.process(job)), {
   connection: redisConnectionOptions(config.redisUrl), concurrency: 1, lockDuration: 10 * 60_000, stalledInterval: 60_000, maxStalledCount: 1,
 });
 stockAlertWorker.on('failed', (job, error) => console.error({ event: 'product-restock-alert-failed', jobId: job?.id, message: error.message }));
 stockAlertWorker.on('error', (error) => console.error({ event: 'product-restock-alert-worker-error', message: error.message }));
 const purchaseAlertProcessor = new PurchaseAlertProcessor(bot);
 const purchaseAlertWorker = new Worker<PurchaseAlertJob>('purchase-social-proofs',
-  (job) => purchaseAlertProcessor.process(job), {
+  (job, token) => processBroadcastQueueJob(job, token, () => purchaseAlertProcessor.process(job)), {
     connection: redisConnectionOptions(config.redisUrl), concurrency: 1,
     lockDuration: 10 * 60_000, stalledInterval: 60_000, maxStalledCount: 1,
   });
@@ -43,7 +45,8 @@ purchaseAlertWorker.on('failed', (job, error) => console.error({ event: 'purchas
 purchaseAlertWorker.on('error', (error) => console.error({ event: 'purchase-social-proof-worker-error', message: error.message }));
 const adminBroadcastProcessor = new AdminBroadcastProcessor(bot);
 const adminBroadcastWorker = new Worker<AdminBroadcastJob>('admin-broadcasts',
-  (job) => adminBroadcastProcessor.process(job), { connection: redisConnectionOptions(config.redisUrl), concurrency: 1,
+  (job, token) => processBroadcastQueueJob(job, token, () => adminBroadcastProcessor.process(job)), {
+    connection: redisConnectionOptions(config.redisUrl), concurrency: 1,
     lockDuration: 10 * 60_000, stalledInterval: 60_000, maxStalledCount: 1 });
 adminBroadcastWorker.on('failed', (job, error) => console.error({ event: 'admin-broadcast-failed', jobId: job?.id, message: error.message }));
 adminBroadcastWorker.on('error', (error) => console.error({ event: 'admin-broadcast-worker-error', message: error.message }));
