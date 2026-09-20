@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useState } f
 import { ArrowUpRight, CalendarDays, ChartNoAxesCombined, ChevronDown, CircleDollarSign, Info, LoaderCircle, Package, RefreshCw, ShoppingBag, Trophy, Users } from 'lucide-react';
 import type { AuthorizedRequest } from './operations-dashboard';
 import { analyticsPresetRange } from './analytics-date-range';
+import { ProductRepeatPurchases } from './product-repeat-purchases';
 
 interface RevenueDay { date: string; net: number; gross: number; discount: number; purchaseCount: number; orderCount: number; quantity: number; }
 interface RankedCustomer {
@@ -66,16 +67,19 @@ export function GrowthAnalytics({ authorized }: { authorized: AuthorizedRequest 
     const next = analyticsPresetRange(value);
     setPreset(value); setRangeError(''); setDraftRange(next); setRange(next); setLoading(true);
   }
-  function applyRange(event: FormEvent) {
+  function applyRange(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const from = new Date(draftRange.from).getTime(); const to = new Date(draftRange.to).getTime();
+    // Read the submitted controls, including native date-picker/autofill changes.
+    const fields = new FormData(event.currentTarget);
+    const submitted = { from: String(fields.get('from') ?? ''), to: String(fields.get('to') ?? '') };
+    const from = new Date(submitted.from).getTime(); const to = new Date(submitted.to).getTime();
     if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) {
       setRangeError('Hãy chọn ngày bắt đầu không sau ngày kết thúc.'); return;
     }
     if (Math.round((to - from) / dayMs) + 1 > 366) {
       setRangeError('Mỗi báo cáo hỗ trợ tối đa 366 ngày. Vui lòng rút ngắn khoảng thời gian.'); return;
     }
-    setRangeError(''); setPreset('custom'); setRange({ ...draftRange }); setLoading(true);
+    setRangeError(''); setPreset('custom'); setDraftRange(submitted); setRange(submitted); setLoading(true);
   }
 
   return <section className="space-y-6" aria-label="Phân tích doanh thu và khách hàng">
@@ -90,8 +94,8 @@ export function GrowthAnalytics({ authorized }: { authorized: AuthorizedRequest 
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Khoảng thời gian nhanh">{[['month', 'Tháng này'], ['lastMonth', 'Tháng trước'], ['7', '7 ngày'], ['30', '30 ngày'], ['90', '90 ngày']].map(([value, label]) => <button key={value} type="button" aria-pressed={preset === value} onClick={() => choosePreset(value)} className={`rounded-lg px-3 py-2 text-xs font-medium transition ${preset === value ? 'bg-indigo-400/15 text-indigo-200 ring-1 ring-inset ring-indigo-400/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}>{label}</button>)}</div>
         <form onSubmit={applyRange} className="flex min-w-0 flex-wrap items-end gap-2">
-          <label className="min-w-0"><span className="mb-1 block text-[10px] text-slate-500">Từ ngày · VN</span><input type="date" required className="input max-w-[160px] !py-2 text-xs" value={draftRange.from} onChange={(event) => setDraftRange({ ...draftRange, from: event.target.value })} aria-label="Ngày bắt đầu báo cáo" /></label>
-          <label className="min-w-0"><span className="mb-1 block text-[10px] text-slate-500">Đến hết ngày · VN</span><input type="date" required className="input max-w-[160px] !py-2 text-xs" value={draftRange.to} onChange={(event) => setDraftRange({ ...draftRange, to: event.target.value })} aria-label="Ngày kết thúc báo cáo" /></label>
+          <label className="min-w-0"><span className="mb-1 block text-[10px] text-slate-500">Từ ngày · VN</span><input type="date" name="from" required className="input max-w-[160px] !py-2 text-xs" value={draftRange.from} onChange={(event) => setDraftRange({ ...draftRange, from: event.target.value })} aria-label="Ngày bắt đầu báo cáo" /></label>
+          <label className="min-w-0"><span className="mb-1 block text-[10px] text-slate-500">Đến hết ngày · VN</span><input type="date" name="to" required className="input max-w-[160px] !py-2 text-xs" value={draftRange.to} onChange={(event) => setDraftRange({ ...draftRange, to: event.target.value })} aria-label="Ngày kết thúc báo cáo" /></label>
           <button type="submit" className="button-secondary !py-2 text-xs">Áp dụng</button>
         </form>
       </div>
@@ -130,6 +134,11 @@ export function GrowthAnalytics({ authorized }: { authorized: AuthorizedRequest 
         </div>
       </div>
 
+    </>}
+
+    <ProductRepeatPurchases authorized={authorized} from={range.from} to={range.to} refreshVersion={version} />
+
+    {!loading && !error && data && <>
       <div className="admin-card overflow-hidden">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 p-5"><div className="flex gap-3"><Trophy size={20} className="mt-0.5 text-amber-300" /><div><h2 className="font-semibold text-slate-100">Khách hàng chi tiêu nhiều nhất</h2><p className="mt-1 text-xs leading-5 text-slate-500">Xếp hạng theo số tiền thực mua của đơn đã giao trong kỳ, không phải số tiền nạp ví.</p></div></div><span className="rounded-md border border-slate-700 px-2 py-1 text-[10px] font-medium tracking-wider text-slate-400">TOP {data.topCustomers.length || '—'}</span></div>
         {!data.topCustomers.length ? <EmptyState icon={<Trophy size={25} />} title="Chưa có khách trong bảng xếp hạng" detail="Các lượt mua đã giao trong khoảng ngày này sẽ xuất hiện tại đây." /> : <div className="max-h-[560px] overflow-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="sticky top-0 z-10 bg-slate-950 text-[10px] uppercase tracking-wider text-slate-500"><tr><th className="px-5 py-3 font-medium">Hạng</th><th className="px-5 py-3 font-medium">Khách hàng</th><th className="px-5 py-3 text-right font-medium">Đã chi tiêu</th><th className="px-5 py-3 text-right font-medium">Lượt mua</th><th className="px-5 py-3 text-right font-medium">Sản phẩm</th><th className="px-5 py-3 font-medium">Mua gần nhất</th><th className="px-5 py-3"><span className="sr-only">Lịch sử</span></th></tr></thead>

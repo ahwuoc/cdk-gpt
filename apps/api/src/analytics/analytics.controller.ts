@@ -4,12 +4,20 @@ import { RequirePermissions } from '../auth/permissions.guard';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsInsightsService } from './insights.service';
 import { AnalyticsInsightsQueryDto } from './insights.dto';
+import { ProductRepeatPurchasesQueryDto } from './product-repeat-purchases.dto';
+import { ProductRepeatPurchasesService } from './product-repeat-purchases.service';
 import { AuditHistoryQueryDto, DepositHistoryQueryDto, OrderHistoryQueryDto, UserHistoryQueryDto, WalletHistoryQueryDto } from './analytics.dto';
 
 @ApiTags('admin-analytics')
 @Controller('admin')
 export class AnalyticsController {
-  constructor(private readonly analytics: AnalyticsService, private readonly insightsService: AnalyticsInsightsService) {}
+  constructor(private readonly analytics: AnalyticsService, private readonly insightsService: AnalyticsInsightsService,
+    private readonly productRepeatPurchases: ProductRepeatPurchasesService) {}
+
+  @Get('analytics/product-repeat-purchases')
+  @RequirePermissions('analytics.read')
+  @ApiOperation({ summary: 'Customers purchasing the same product on consecutive Vietnam calendar days' })
+  repeatPurchases(@Query() query: ProductRepeatPurchasesQueryDto) { return this.productRepeatPurchases.report(query); }
 
   @Get('analytics/insights')
   @RequirePermissions('analytics.read')

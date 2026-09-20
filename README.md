@@ -175,6 +175,12 @@ Mục **Phân tích** có khoảng ngày (tối đa 366 ngày), doanh thu theo n
 
 Báo cáo mặc định từ đầu tháng đến hôm nay, có lựa chọn tháng trước và 7/30/90 ngày. Tỷ lệ mua lặp lại = khách có ít nhất hai lượt mua / khách đã mua trong kỳ. Tỷ lệ khách hoạt động có mua dùng tập khách có tương tác được ghi nhận hoặc đơn đã giao; không phải tỷ lệ trên toàn bộ khách đăng ký và hiển thị “—” khi kỳ chưa có dữ liệu tương tác. Trang **Tổng quan** cũng có bảng top 20 chi tiêu với bộ lọc ngày và liên kết lịch sử đơn theo khách.
 
+Mục **Mua lại theo sản phẩm** lọc cùng khách mua cùng sản phẩm trong ít nhất **2 hoặc 3 ngày liên tiếp**, theo khoảng ngày của báo cáo. Mỗi ngày phải có ít nhất một lượt mua thành công; nhiều lượt mua cùng ngày chỉ tính một ngày, có ngày trống thì chuỗi bị ngắt. Chuỗi 3 ngày cũng đạt bộ lọc 2 ngày. Đây là ngày lịch Việt Nam (`Asia/Ho_Chi_Minh`), không phải khoảng 48/72 giờ giữa hai lần mua.
+
+Gộp theo khách, sản phẩm và mã thanh toán QR hoặc mã nhóm mua bằng ví; mỗi nhóm phải có đơn hiện đã giao mới được tính là một lượt mua. Chỉ cộng số lượng và chi tiêu của phần đã giao, nhưng lấy ngày tạo sớm nhất của toàn bộ nhóm làm ngày mua trước khi lọc kỳ, kể cả khi phần tạo trước chưa giao hoặc đã hoàn. Việc giao nhiều phần vào các ngày khác nhau không tạo lượt mua lại hay dịch ngày mua. Chuỗi chỉ tính các ngày nằm trong kỳ đã chọn. Tỷ lệ = số khách có chuỗi đạt điều kiện / số khách đã mua trong kỳ với bộ lọc sản phẩm hiện tại; chọn tất cả sản phẩm vẫn đếm mỗi khách một lần trong tỷ lệ, còn bảng có một dòng cho mỗi cặp khách–sản phẩm. Không có khách mua thì tỷ lệ hiển thị “—”. Ngày mua ở mục này có thể khác ngày giao dùng cho doanh thu phía trên.
+
+API `GET /admin/analytics/product-repeat-purchases` dùng quyền `analytics.read`, nhận `from`, `to`, `days=2|3`, `productId` tùy chọn, `page` và `limit` (tối đa 100). Bảng phân trang hiển thị khách, sản phẩm, chuỗi dài nhất, các ngày mua, tổng lượt mua và tiền mua trong kỳ. Danh sách chọn sản phẩm gồm các sản phẩm có lượt mua trong kỳ, không giới hạn ở top 20 doanh thu.
+
 Thống kê hành vi gồm khách hoạt động, khách mới/quay lại/mua lặp, lượt khách xem sản phẩm/bắt đầu thanh toán, tỷ lệ mua sau hành vi và QR hết hạn chưa thanh toán. Bot chỉ ghi loại sự kiện, khách, sản phẩm, mã update và thời gian máy chủ; không ghi nội dung tin nhắn, mật khẩu hoặc hội thoại hỗ trợ. Dữ liệu hành vi bắt đầu từ khi triển khai tính năng; không dựng lịch sử lượt xem từ đơn hàng cũ. Tỷ lệ chuyển đổi dùng khách có đơn giao sau hành vi trong cùng kỳ, không phải mô hình quy kết quảng cáo.
 
 Trước khi triển khai, chạy `bun run migration:up` bằng cấu hình đúng của môi trường đích để thêm indexes `009-coupon-indexes` và `010-customer-analytics-indexes`. Lệnh này chưa được chạy trên production trong quá trình phát triển.
@@ -185,6 +191,7 @@ Kiểm tra bằng dữ liệu tạm, không gửi Telegram/ngân hàng thật:
 bun test tests/shop-bot-coupons.test.ts tests/analytics-insights.test.ts
 RUN_INTEGRATION=1 bun test tests/integration/coupons.integration.test.ts
 RUN_INTEGRATION=1 bun test tests/analytics-insights.test.ts tests/integration/analytics-top-customers.integration.test.ts
+RUN_INTEGRATION=1 bun test tests/product-repeat-purchases.test.ts
 ```
 
 ## Quy trình mua và giao hàng
