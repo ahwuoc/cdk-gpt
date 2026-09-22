@@ -219,7 +219,8 @@ export class BankReconciliationService {
       return Boolean(pinned && pinned !== bankConfigId);
     });
     const hasLegacyUnscoped = bankConfigId !== LEGACY_BANK_ID && rowRequests.some((request) => !bankConfigIdFrom(request));
-    const scopeUncertainty = (hasScopeMismatch || hasLegacyUnscoped) && !hasScopedLedgerEvidence;
+    const hasRawUnscopedReference = bankConfigId !== LEGACY_BANK_ID && rowRequests.some((request) => request.providerReference === transactionId);
+    const scopeUncertainty = (hasScopeMismatch || hasLegacyUnscoped || hasRawUnscopedReference) && !hasScopedLedgerEvidence;
     const rejected = rowRequests.find((request) => request.status === PaymentRequestStatus.REJECTED);
     const expired = rowRequests.find((request) => request.status === PaymentRequestStatus.EXPIRED);
     const cancelled = rowRequests.find((request) => Boolean(request.metadata?.userCancelledAt));
@@ -230,6 +231,9 @@ export class BankReconciliationService {
     if (hasLegacyUnscoped) notes.push(hasScopedLedgerEvidence
       ? 'Yêu cầu nạp cũ không lưu bank scope; idempotency key scoped xác nhận tài khoản nhận.'
       : 'Yêu cầu nạp cũ không lưu bank scope; không thể chứng minh thuộc tài khoản này.');
+    if (hasRawUnscopedReference) notes.push(hasScopedLedgerEvidence
+      ? 'Payment request dùng transactionID legacy; ledger scoped xác nhận tài khoản nhận.'
+      : 'transactionID legacy không đủ để xác định tài khoản ngân hàng nhận tiền.');
     if (rowWallets.some((wallet) => {
       const value = wallet.metadata?.bankConfigId;
       return typeof value === 'string' && value !== bankConfigId;
