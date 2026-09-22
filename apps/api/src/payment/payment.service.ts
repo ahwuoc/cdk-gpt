@@ -861,7 +861,7 @@ function isExpectedSoftCheckoutFailure(error: unknown) {
   return value?.code === 'OUT_OF_STOCK' || value?.code === 'COUPON_UNAVAILABLE';
 }
 
-function extractTransferCodes(description: string) {
+export function extractTransferCodes(description: string) {
   const matches = description.toUpperCase().matchAll(/(?:^|[^A-Z0-9])((?:NAP|DON)[A-F0-9]{16})(?=$|[^A-Z0-9])/g);
   return [...new Set([...matches].map((match) => match[1]).filter((value): value is string => Boolean(value)))];
 }
@@ -872,9 +872,23 @@ function scopedBankReference(reference: string, bankConfigId?: string) {
 
 export type CakeHistoryFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+export interface BankHistorySnapshot {
+  transactions: BankTransaction[];
+  rawCount: number;
+  validCount: number;
+  discardedCount: number;
+  truncated: boolean;
+}
+
 /** Fetch and strictly normalize one provider's history without exposing its token to a client. */
 export async function fetchBankHistoryTransactions(provider: BankHistoryProvider, token: string,
   fetcher: CakeHistoryFetch = globalThis.fetch) {
+  return (await fetchBankHistorySnapshot(provider, token, fetcher)).transactions;
+}
+
+/** Fetch history with provider coverage metadata for read-only reconciliation screens. */
+export async function fetchBankHistorySnapshot(provider: BankHistoryProvider, token: string,
+  fetcher: CakeHistoryFetch = globalThis.fetch): Promise<BankHistorySnapshot> {
   const normalizedToken = token.trim();
   if (!normalizedToken || normalizedToken.length > 500) throw new Error('Bank history token is invalid');
   const response = await fetcher(`${BANK_HISTORY_ORIGIN}/${BANK_HISTORY_PATH[provider]}/${encodeURIComponent(normalizedToken)}`, {
@@ -884,8 +898,12 @@ export async function fetchBankHistoryTransactions(provider: BankHistoryProvider
   const payload: unknown = await response.json();
   if (!isPlainObject(payload) || String(payload.status ?? '').toLowerCase() !== 'success' ||
     !Array.isArray(payload.transactions)) throw new Error('Bank history response is invalid');
-  return payload.transactions.slice(0, CAKE_HISTORY_MAX_TRANSACTIONS)
+  const rawCount = payload.transactions.length;
+  const transactions = payload.transactions.slice(0, CAKE_HISTORY_MAX_TRANSACTIONS)
     .map(normalizeCakeHistoryTransaction).filter((transaction): transaction is BankTransaction => Boolean(transaction));
+  return { transactions, rawCount, validCount: transactions.length,
+    discardedCount: Math.max(0, Math.min(rawCount, CAKE_HISTORY_MAX_TRANSACTIONS) - transactions.length),
+    truncated: rawCount > CAKE_HISTORY_MAX_TRANSACTIONS };
 }
 
 /** Backwards-compatible helper for existing Cake callers and tests. */
@@ -900,7 +918,7 @@ function normalizeCakeHistoryTransaction(value: unknown): BankTransaction | unde
   const description = typeof value.description === 'string' ? value.description.trim() : '';
   const type = String(value.type ?? 'IN').trim().toUpperCase();
   const transactionDate = typeof value.transactionDate === 'string' ? value.transactionDate.trim() : undefined;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(transactionID) || !Number.isSafeInteger(amount) || amount <= 0 ||
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(transactionID) || !Number.isSafeInteger(amount) || amount <= 0 || amount > 9_999_999_999_999 ||
     !description || description.length > 1000 || !['IN', 'OUT'].includes(type) ||
     (transactionDate?.length ?? 0) > 100) return undefined;
   return { transactionID, amount, description, type, ...(transactionDate ? { transactionDate } : {}) };

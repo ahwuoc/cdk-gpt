@@ -14,6 +14,7 @@ import { ManagementHub } from './management-hub';
 import { MessageCenter } from './message-center';
 import { OperationsDashboard } from './operations-dashboard';
 import { ProductManager, type CategoryRecord, type ProductPagination, type ProductRecord } from './product-manager';
+import { BankReconciliation } from './bank-reconciliation';
 import { requestId } from './request-id';
 import { showAdminToast as setMessage } from './admin-toast';
 
@@ -623,6 +624,7 @@ export default function AdminPage() {
         {section === 'payments' && <section className="space-y-6">
           <PageHeading eyebrow="Thanh toán" title="Nạp tiền & VietQR"
             description="Lưu nhiều tài khoản ngân hàng, nhưng chỉ một tài khoản được bật để nhận mã QR mới. BIDV V4 callback vẫn nhận giao dịch của các mã QR đang chờ." />
+          <BankReconciliation authorized={authorized} banks={bankConfigs} activeBankId={activeBankId} />
           <Panel icon={<ListChecks />} title="Danh sách BIDV" subtitle="Bật một tài khoản để dùng cho đơn mới. Khi bật tài khoản khác, tài khoản hiện tại sẽ tự tắt.">
             {bankConfigs.length === 0
               ? <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-5 text-sm text-slate-400">Chưa có cấu hình nào. Hãy thêm tài khoản bên dưới.</div>

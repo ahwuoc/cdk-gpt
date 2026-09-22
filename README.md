@@ -157,6 +157,14 @@ Khi triển khai theo từng bước, chạy riêng `createInventorySearchIndexe
 
 Giao diện gửi tìm kiếm qua `POST /api/admin/inventory/search` với JSON body để tránh giới hạn độ dài URL. Endpoint dùng cùng bộ lọc, phân trang và quyền `inventory.manage` hoặc `inventory.import` như `GET /api/admin/inventory`; GET vẫn được hỗ trợ.
 
+## Đối soát tiền ngân hàng
+
+Trong **Thanh toán → Đối soát tiền ngân hàng**, admin chọn một tài khoản đã lưu và bấm tra cứu thủ công. Hệ thống lấy một snapshot tối đa 500 giao dịch gần nhất từ API ngân hàng, sau đó đối chiếu read-only với `payment_requests` và các bút toán ví `DEPOSIT` thật. Không có nút tự duyệt, tự cộng tiền hoặc gọi lại API khi lọc bảng.
+
+Có thể lọc cục bộ theo mã giao dịch, nội dung chuyển khoản, mã nạp, ngày và trạng thái. Mã dạng `DON`/`NAP` + 16 ký tự hex như `DONEA88E69F0BD2558D` được ghép với yêu cầu nạp tương ứng. Mỗi dòng tách rõ tiền bank nhận, số tiền yêu cầu, số tiền shop đã cộng và chênh lệch.
+
+Nếu bank đã nhận tiền nhưng lịch sử nạp có trạng thái `REJECTED`, `EXPIRED` hoặc khách đã hủy, bảng hiển thị cảnh báo riêng cùng lý do từ chối nếu có. Không thấy giao dịch trong snapshot chỉ có nghĩa là **không thấy trong phần lịch sử API trả về**, không kết luận ngân hàng chưa nhận. Các giao dịch `OUT` được hiển thị riêng và không tính vào tổng tiền vào.
+
 ## Tốc độ thông báo Telegram
 
 Ba luồng thông báo (admin gửi toàn bộ, hàng về và có khách mua hàng) xử lý tối đa 12 người nhận đồng thời. Chúng dùng chung bộ giới hạn trong collection `telegram_broadcast_rates`: tối đa 25 lần bắt đầu gửi trong mỗi cửa sổ trượt 1 giây, kể cả khi chạy nhiều worker hoặc nhiều instance Vercel. Khoảng cách cho cùng một chat là ít nhất 1 giây (group: 3 giây). Hạn mức này dành riêng cho thông báo hàng loạt, để lại khoảng trống cho tin nhắn giao hàng và tương tác với bot.
