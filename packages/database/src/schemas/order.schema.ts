@@ -32,6 +32,8 @@ export const OrderSchema = new Schema<Order>({
 OrderSchema.index({ orderCode: 1 }, { unique: true });
 OrderSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 OrderSchema.index({ userId: 1, createdAt: -1 });
+OrderSchema.index({ 'metadata.paymentRequestId': 1, userId: 1, productId: 1 }, { name: 'analytics_payment_checkout' });
+OrderSchema.index({ 'metadata.purchaseGroupId': 1, userId: 1, productId: 1 }, { name: 'analytics_wallet_checkout' });
 OrderSchema.index({ createdAt: -1, _id: -1 }, { name: 'admin_history_created_id' });
 OrderSchema.index({ productId: 1, status: 1, createdAt: -1 });
 OrderSchema.index({ inventoryItemId: 1 }, { unique: true });

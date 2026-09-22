@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
@@ -7,6 +7,9 @@ import {
   type InventoryItem, type Product,
 } from '@store/database';
 import { InventoryAdminService } from '../../apps/api/src/inventory/inventory-admin.service';
+import type { InventoryListQueryDto } from '../../apps/api/src/inventory/inventory.dto';
+import { inventorySearchValues } from '@store/shared';
+import { backfillInventorySearchValues, inventorySearchMigration } from '../../packages/database/src/migrations/013-inventory-search';
 
 const integration = process.env.RUN_INTEGRATION === '1' ? describe : describe.skip;
 
@@ -50,6 +53,19 @@ integration('inventory search against isolated MongoDB', () => {
     return id;
   }
 
+  async function explainList(query: InventoryListQueryDto) {
+    let filter: Record<string, unknown> = {};
+    const capture = (event: { commandName: string; command: Record<string, any> }) => {
+      if (event.commandName === 'find' && event.command.find === 'inventory_items') filter = event.command.filter;
+    };
+    connection.getClient().on('commandStarted', capture);
+    let result;
+    try { result = await service.list(query); } finally { connection.getClient().off('commandStarted', capture); }
+    const page = await items.collection.find(filter).sort({ createdAt: -1, _id: -1 }).limit(query.limit).explain('executionStats');
+    const count = await items.collection.aggregate([{ $match: filter }, { $count: 'total' }]).explain('executionStats');
+    return { result, pageStats: page.executionStats, countStats: count.executionStats ?? count.stages[0].$cursor.executionStats };
+  }
+
   test('ID-only searches combine inventory and batch IDs with paging, filters and no preview substring matches', async () => {
     const batchId = new Types.ObjectId();
     const first = await inventory({ importBatchId: batchId });
@@ -90,6 +106,67 @@ integration('inventory search against isolated MongoDB', () => {
     expect((await service.list({ page: 1, limit: 20, search: 'LK@EXAMPLE' })).total).toBe(1);
   });
 
+  test('exact mode matches complete case-insensitive values and IDs, including unmigrated rows, without exposing secrets', async () => {
+    const preview = { login: ' Alice+Test@Example.invalid ', password: 'se****et' };
+    const indexed = await inventory({ maskedPreview: preview, searchValues: inventorySearchValues(preview) });
+    const legacy = await inventory({ maskedPreview: { login: ' Bob@example.invalid ' } });
+    const nullIndex = await inventory({ maskedPreview: { login: 'ĐẶNG@example.invalid' } });
+    await items.collection.updateOne({ _id: nullIndex }, { $set: { searchValues: null } });
+    await inventory({ maskedPreview: { login: 'prefix-alice+test@example.invalid' }, searchValues: ['prefix-alice+test@example.invalid'] });
+    await inventory({ maskedPreview: preview, searchValues: inventorySearchValues(preview), deletedAt: new Date() });
+    const byId = await inventory({ maskedPreview: {}, searchValues: inventorySearchValues({}) });
+
+    const found = await service.list({ page: 1, limit: 20, searchMode: 'exact',
+      search: `ALICE+TEST@example.invalid----private-password----2fa\nbob@EXAMPLE.invalid\nđặng@example.invalid\n${byId}` });
+    expect(found.items.map((item) => item.id).sort()).toEqual([indexed, legacy, nullIndex, byId].map(String).sort());
+    expect(JSON.stringify(found)).not.toContain('searchValues');
+    expect(JSON.stringify(found)).not.toContain('private-password');
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'exact', search: 'test@example.invalid' })).total).toBe(0);
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'exact', search: 'Default product' })).total).toBe(0);
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'contains', search: 'test@example.invalid' })).total).toBe(2);
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'exact', search: 'secret' })).total).toBe(0);
+  });
+
+  test('backfill compares preview snapshots, handles old concurrent writers and remains idempotent', async () => {
+    const stable = await inventory({ maskedPreview: { login: 'STABLE@example.invalid', password: 'se****et' } });
+    const changed = await inventory({ maskedPreview: { login: 'old@example.invalid' } });
+    const modern = await inventory({ maskedPreview: { login: 'modern-old@example.invalid' } });
+    const collection = connection.collection('inventory_items');
+    const write = collection.bulkWrite.bind(collection);
+    const intercepted = spyOn(collection, 'bulkWrite').mockImplementationOnce(async (operations, options) => {
+      await collection.updateOne({ _id: changed }, { $set: { maskedPreview: { login: 'new@example.invalid' } } });
+      await collection.updateOne({ _id: modern }, { $set: {
+        maskedPreview: { login: 'modern-new@example.invalid' }, searchValues: ['modern-new@example.invalid'],
+      } });
+      return write(operations, options);
+    });
+    try { await backfillInventorySearchValues(connection); } finally { intercepted.mockRestore(); }
+    expect((await items.findById(stable).select('+searchValues').lean())?.searchValues).toEqual(['stable@example.invalid', 'se****et']);
+    expect((await items.findById(changed).select('+searchValues').lean())?.searchValues).toBeUndefined();
+    expect((await items.findById(modern).select('+searchValues').lean())?.searchValues).toEqual(['modern-new@example.invalid']);
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'exact', search: 'new@example.invalid' })).items[0]?.id).toBe(changed.toString());
+
+    await inventorySearchMigration.up(connection);
+    await inventorySearchMigration.up(connection);
+    expect((await items.findById(changed).select('+searchValues').lean())?.searchValues).toEqual(['new@example.invalid']);
+    expect(await collection.countDocuments({ searchValues: null })).toBe(0);
+    // An old instance may insert after the migration's cursor has completed.
+    const late = await inventory({ maskedPreview: { login: 'late@example.invalid' } });
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'exact', search: 'late@example.invalid' })).items[0]?.id).toBe(late.toString());
+    await backfillInventorySearchValues(connection);
+    expect((await items.findById(late).select('+searchValues').lean())?.searchValues).toEqual(['late@example.invalid']);
+
+    // An old instance can also change an already-backfilled preview. A full
+    // post-rollout repair is required once those old invocations have drained.
+    await collection.updateOne({ _id: stable }, { $set: { maskedPreview: { login: 'replaced@example.invalid' } } });
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'exact', search: 'replaced@example.invalid' })).total).toBe(0);
+    await backfillInventorySearchValues(connection, { includeExisting: true });
+    expect((await service.list({ page: 1, limit: 20, searchMode: 'exact', search: 'replaced@example.invalid' })).items[0]?.id).toBe(stable.toString());
+    const repaired = await items.findById(stable).select('+searchValues').lean();
+    expect(repaired?.searchValues).toEqual(['replaced@example.invalid']);
+    expect(repaired?.updatedAt).toEqual(createdAt);
+  });
+
   test('ID searches hydrate both direct and historical sold-order buyer links', async () => {
     const userId = new Types.ObjectId();
     const directOrder = new Types.ObjectId();
@@ -124,19 +201,36 @@ integration('inventory search against isolated MongoDB', () => {
     await items.collection.insertMany(rows);
 
     for (const [search, matches] of [[rows[0]!._id.toString(), 1], [batchId.toString(), 10]] as const) {
-      let filter: Record<string, unknown> = {};
-      const capture = (event: { commandName: string; command: Record<string, any> }) => {
-        if (event.commandName === 'find' && event.command.find === 'inventory_items') filter = event.command.filter;
-      };
-      connection.getClient().on('commandStarted', capture);
-      try {
-        expect((await service.list({ page: 1, limit: 20, search })).total).toBe(matches);
-      } finally { connection.getClient().off('commandStarted', capture); }
-      const page = await items.collection.find(filter).sort({ createdAt: -1, _id: -1 }).limit(20).explain('executionStats');
-      const count = await items.collection.aggregate([{ $match: filter }, { $count: 'total' }]).explain('executionStats');
-      const countStats = count.executionStats ?? count.stages[0].$cursor.executionStats;
-      expect(page.executionStats.totalDocsExamined).toBeLessThanOrEqual(matches);
+      const { result, pageStats, countStats } = await explainList({ page: 1, limit: 20, search });
+      expect(result.total).toBe(matches);
+      expect(pageStats.totalDocsExamined).toBeLessThanOrEqual(matches);
       expect(countStats.totalDocsExamined).toBeLessThanOrEqual(matches);
+    }
+  });
+
+  test('exact search only scans matching and legacy rows; ordinary paging reads one page with covered counts', async () => {
+    const otherProduct = new Types.ObjectId();
+    const rows = Array.from({ length: 2_000 }, (_, index) => {
+      const maskedPreview = index >= 1_900 ? {} : { login: `user-${index}@example.invalid` };
+      return { _id: new Types.ObjectId(), productId: index % 3 ? productId : otherProduct,
+        status: index % 2 ? 'AVAILABLE' : 'SOLD', maskedPreview, searchValues: inventorySearchValues(maskedPreview),
+        payloadHash: String(index).padStart(64, '0'), deletedAt: null,
+        createdAt: new Date(createdAt.getTime() + index), updatedAt: createdAt };
+    });
+    await items.collection.insertMany(rows);
+    for (let index = 0; index < 5; index++) await inventory({ maskedPreview: {
+      login: index === 0 ? 'user-17@example.invalid' : `legacy-${index}@example.invalid`,
+    } });
+    const exact = await explainList({ page: 1, limit: 20, searchMode: 'exact', search: 'USER-17@EXAMPLE.INVALID' });
+    expect(exact.result.total).toBe(2);
+    expect(exact.pageStats.totalDocsExamined).toBeLessThanOrEqual(6);
+    expect(exact.countStats.totalDocsExamined).toBeLessThanOrEqual(6);
+    for (const filter of [{}, { status: 'SOLD' as const }, { productId: productId.toString() },
+      { productId: productId.toString(), status: 'SOLD' as const }]) {
+      const { result, pageStats, countStats } = await explainList({ page: 1, limit: 20, ...filter });
+      expect(result.items).toHaveLength(20);
+      expect(pageStats.totalDocsExamined).toBeLessThanOrEqual(20);
+      expect(countStats.totalDocsExamined).toBe(0);
     }
   });
 });

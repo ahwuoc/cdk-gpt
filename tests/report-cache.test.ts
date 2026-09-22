@@ -39,4 +39,18 @@ describe('short report cache', () => {
     expect(await cache.get('32', async () => -1)).toBe(32);
     expect(await cache.get('0', async () => 100)).toBe(100);
   });
+
+  test('message inboxes can use a shorter expiry without changing the report default', async () => {
+    let now = 1_000;
+    const clock = spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const inbox = new ReportCache<number>(5_000);
+      const report = new ReportCache<number>();
+      await inbox.get('inbox', async () => 1);
+      await report.get('report', async () => 1);
+      now += 5_000;
+      expect(await inbox.get('inbox', async () => 2)).toBe(2);
+      expect(await report.get('report', async () => 2)).toBe(1);
+    } finally { clock.mockRestore(); }
+  });
 });

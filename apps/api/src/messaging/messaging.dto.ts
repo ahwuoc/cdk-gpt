@@ -41,6 +41,9 @@ export class AdminMessageQueryDto {
 }
 
 export class AdminConversationQueryDto {
+  @IsOptional() @IsIn(['1'])
+  refresh?: '1';
+
   @IsOptional() @Transform(({ value }) => String(value ?? '').trim()) @IsString() @Length(1, 100)
   search?: string;
 

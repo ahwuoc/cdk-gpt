@@ -1035,15 +1035,18 @@ integration('digital store on a MongoDB replica set', () => {
     expect(JSON.stringify(preview)).not.toContain('"password":"secret"');
     expect(preview.errors).toContainEqual({ line: 2, reason: 'Blank row skipped' });
     const first = await importer.commit(product._id.toString(), [row, row], adminId.toString(), 'first.csv');
+    expect((await InventoryItemModel.findOne().select('+searchValues').lean())?.searchValues).toEqual(['duplicate@example.invalid', 'se**et']);
     const second = await importer.commit(product._id.toString(), [row], adminId.toString(), 'second.csv');
     expect(first.importedRows).toBe(1); expect(first.duplicateRows).toBe(1);
     expect(second.importedRows).toBe(0); expect(second.duplicateRows).toBe(1);
+    await InventoryItemModel.updateOne({}, { $set: { searchValues: ['stale@example.invalid'] } });
     const overwritten = await importer.commit(product._id.toString(), [row], adminId.toString(), 'confirmed.csv', true);
     expect(overwritten).toMatchObject({ importedRows: 0, overwrittenRows: 1, duplicateRows: 1 });
     expect(await InventoryItemModel.countDocuments()).toBe(1);
-    const item = await InventoryItemModel.findOne().select('+encryptedPayload');
+    const item = await InventoryItemModel.findOne().select('+encryptedPayload +searchValues');
     expect(item?.importBatchId?.toString()).toBe(overwritten.batchId.toString());
     expect(encryption.decrypt<Record<string, unknown>>(item!.encryptedPayload)).toEqual(row);
+    expect(item?.searchValues).toEqual(['duplicate@example.invalid', 'se**et']);
 
     const safeBatchId = item!.importBatchId!.toString();
     const ciphertext = item!.encryptedPayload;
@@ -1305,9 +1308,10 @@ integration('digital store on a MongoDB replica set', () => {
       fieldDefinitions: renamedFields, inventoryPattern: 'login----note' }, adminId.toString(), 'rename-login-to-api');
     expect(renamed.inventoryPattern).toBe('api----note');
     expect(renamed.deliveryTemplate).toContain('{{api}}');
-    const renamedItem = await InventoryItemModel.findOne({ productId: created._id }).select('+encryptedPayload +payloadHash');
+    const renamedItem = await InventoryItemModel.findOne({ productId: created._id }).select('+encryptedPayload +payloadHash +searchValues');
     expect(encryption.decrypt<Record<string, unknown>>(renamedItem!.encryptedPayload)).toEqual({ api: 'managed@example.invalid' });
     expect(renamedItem!.maskedPreview).toMatchObject({ api: 'managed@example.invalid' });
+    expect(renamedItem!.searchValues).toEqual(['managed@example.invalid']);
     expect(renamedItem!.payloadHash).toBe(encryption.normalizedHash({ api: 'managed@example.invalid' }));
     await expect(service.update(created._id.toString(), { ...input, deliveryTemplate: 'Static', fieldDefinitions: [compatibleFields[1]!] },
       adminId.toString(), 'unsafe-fields')).rejects.toThrow('cannot be removed');

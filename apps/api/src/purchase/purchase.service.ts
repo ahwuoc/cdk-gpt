@@ -481,15 +481,18 @@ export class PurchaseService {
       && stored.every((order) => order.userId.equals(first.userId) && order.productId.equals(first.productId)
         && order.metadata?.paymentRequestId === paymentRequestId);
     const queueOrders = sameQuickCheckout ? [first] : orders;
-    for (const order of queueOrders) {
-      try { await this.deliveryQueue.enqueue(order._id.toString()); }
-      catch (error) {
-        // The committed PENDING_DELIVERY order is the durable outbox. Scheduled
-        // maintenance republishes pending orders, so a transient QStash/Redis
-        // failure must not turn an already-paid checkout into a failed sale.
-        console.error({ event: 'quick-checkout-delivery-enqueue-failed', orderId: order._id.toString(),
-          message: error instanceof Error ? error.message : 'unknown error' });
-      }
+    // Only post-commit queue publishes run concurrently; cap requests to the broker.
+    for (let offset = 0; offset < queueOrders.length; offset += 4) {
+      await Promise.all(queueOrders.slice(offset, offset + 4).map(async (order) => {
+        try { await this.deliveryQueue.enqueue(order._id.toString()); }
+        catch (error) {
+          // The committed PENDING_DELIVERY order is the durable outbox. Scheduled
+          // maintenance republishes pending orders, so a transient QStash/Redis
+          // failure must not turn an already-paid checkout into a failed sale.
+          console.error({ event: 'quick-checkout-delivery-enqueue-failed', orderId: order._id.toString(),
+            message: error instanceof Error ? error.message : 'unknown error' });
+        }
+      }));
     }
   }
 

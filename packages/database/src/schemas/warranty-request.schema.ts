@@ -25,4 +25,6 @@ WarrantyRequestSchema.index({ orderId: 1 }, { unique: true, partialFilterExpress
 WarrantyRequestSchema.index({ userId: 1, createdAt: -1 });
 WarrantyRequestSchema.index({ status: 1, createdAt: 1 });
 WarrantyRequestSchema.index({ category: 1, status: 1, createdAt: -1 });
+WarrantyRequestSchema.index({ createdAt: -1, _id: -1 }, { name: 'report_history_created_id' });
+WarrantyRequestSchema.index({ status: 1, createdAt: -1, _id: -1 }, { name: 'report_history_status_created_id' });
 export const WarrantyRequestModel: Model<WarrantyRequest> = (models.WarrantyRequest as Model<WarrantyRequest> | undefined) ?? model<WarrantyRequest>('WarrantyRequest', WarrantyRequestSchema, 'warranty_requests');

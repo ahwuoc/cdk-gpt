@@ -243,7 +243,7 @@ export class PaymentService {
 
   async checkBankDeposit(requestId: string, userId: string) {
     if (!Types.ObjectId.isValid(requestId) || !Types.ObjectId.isValid(userId)) throw new BadRequestException('Invalid payment request');
-    await this.expireBankTopups();
+    await this.expireBankTopups(1, { requestId, userId });
     let request = await this.requests.findOne({ _id: requestId, userId, provider: BANK_PROVIDER, deletedAt: null }).lean();
     if (!request) throw new NotFoundException('Payment request not found');
     let historyCheck: CakeHistoryCheckResult = { status: 'NOT_NEEDED' };
@@ -360,12 +360,19 @@ export class PaymentService {
    * wallet credit remain transactionally idempotent on the bank-scoped transactionID.
    */
   async processCakeCallback(transactions: BankTransaction[], bankConfigId?: string) {
-    await this.expireBankTopups();
+    // Approval checks the matched request's expiry inside its credit transaction.
+    // Serverless uses maintenance; standalone cleanup runs only after credit.
     let approved = 0; let incoming = 0;
     for (const transaction of transactions) {
       if (String(transaction.type ?? 'IN').toUpperCase() !== 'IN') continue;
       incoming++;
       if (await this.processBankTransaction(transaction, bankConfigId)) approved++;
+    }
+    if (this.config.appRuntime === 'server') {
+      // Standalone workers have no serverless maintenance route. Clean up only
+      // after crediting incoming funds, and never fail a paid callback on cleanup.
+      try { await this.expireBankTopups(25); }
+      catch { console.error({ event: 'bank-expiry-cleanup-failed' }); }
     }
     return { status: true, msg: 'OK', examined: transactions.length, incoming, approved };
   }
@@ -716,25 +723,35 @@ export class PaymentService {
     return latest ? quickCheckoutFrom(latest) : undefined;
   }
 
-  private async expireBankTopups() {
-    const expiresAt = new Date().toISOString();
-    const checkouts = await this.requests.find({ provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
-      'metadata.expiresAt': { $lte: expiresAt }, 'metadata.quickCheckout': { $exists: true } })
-      .select('_id').sort({ createdAt: 1 }).limit(500).lean();
+  async expireBankTopups(limit = 25, owner?: { requestId: string; userId: string }) {
+    const filter = { provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
+      'metadata.expiresAt': { $lte: new Date().toISOString() },
+      ...(owner ? { _id: owner.requestId, userId: owner.userId } : {}) };
+    // Ordinary deposits and explicit soft checkouts never hold inventory.
+    const unreserved = await this.requests.updateMany({ ...filter, $or: [
+      { 'metadata.quickCheckout': { $exists: false } }, { 'metadata.quickCheckout.reservationMode': 'SOFT' },
+    ] }, { $set: { status: PaymentRequestStatus.EXPIRED } });
+    const checkouts = await this.requests.find({ ...filter, 'metadata.quickCheckout': { $exists: true },
+      'metadata.quickCheckout.reservationMode': { $ne: 'SOFT' } })
+      .select('_id').sort({ 'metadata.expiresAt': 1 }).limit(Math.min(Math.max(limit, 1), 25)).lean();
+    let legacyExpired = 0;
     for (const checkout of checkouts) {
       const session = await this.connection.startSession();
+      let changed = false;
       try {
         await session.withTransaction(async () => {
-          const expired = await this.requests.findOneAndUpdate({ _id: checkout._id, provider: BANK_PROVIDER,
-            status: PaymentRequestStatus.PENDING, 'metadata.expiresAt': { $lte: new Date().toISOString() } },
+          changed = false;
+          const expired = await this.requests.findOneAndUpdate({ ...filter, _id: checkout._id },
           { $set: { status: PaymentRequestStatus.EXPIRED } }, { new: true, session });
-          if (expired) await this.purchases?.releaseBankCheckoutReservation(expired._id.toString(), session);
+          if (expired) {
+            await this.purchases?.releaseBankCheckoutReservation(expired._id.toString(), session);
+            changed = true;
+          }
         });
+        if (changed) legacyExpired++;
       } finally { await session.endSession(); }
     }
-    await this.requests.updateMany({ provider: BANK_PROVIDER, status: PaymentRequestStatus.PENDING,
-      'metadata.expiresAt': { $lte: expiresAt }, 'metadata.quickCheckout': { $exists: false } },
-    { $set: { status: PaymentRequestStatus.EXPIRED } });
+    return { expired: unreserved.modifiedCount + legacyExpired, legacyExpired };
   }
 
   private async approveAs(requestId: string, actor: {

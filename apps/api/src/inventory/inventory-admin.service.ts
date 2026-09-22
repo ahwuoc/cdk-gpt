@@ -64,27 +64,18 @@ export class InventoryAdminService {
       if (ids.length) {
         matches.push({ _id: { $in: ids } }, { importBatchId: { $in: ids } });
       }
-      // ID-only searches must not include the unindexed preview expression in $or:
-      // it forces MongoDB to inspect every row even when the IDs have indexes.
-      if (ids.length !== searchTerms.length) {
+      if (query.searchMode === 'exact') {
+        matches.push({ searchValues: { $in: searchTerms.map((term) => term.toLocaleLowerCase('en-US')) } });
+        // The non-sparse searchValues index also locates missing/null legacy values.
+        // Only those rows need the preview fallback, including imports by an old
+        // instance during rollout; populated rows keep using indexed equality.
+        matches.push({ searchValues: null, $expr: previewSearchExpression(
+          `^(?:${searchTerms.map(escapeRegex).join('|')})$`, true,
+        ) });
+      } else if (ids.length !== searchTerms.length) {
+        // ID-only searches skip this unrestricted preview expression in $or.
         const safePattern = searchTerms.map(escapeRegex).join('|');
-        matches.push({
-          $expr: {
-            $anyElementTrue: {
-              $map: {
-                input: { $objectToArray: { $ifNull: ['$maskedPreview', {}] } },
-                as: 'field',
-                in: {
-                  $regexMatch: {
-                    input: { $convert: { input: '$$field.v', to: 'string', onError: '', onNull: '' } },
-                    regex: safePattern,
-                    options: 'i',
-                  },
-                },
-              },
-            },
-          },
-        });
+        matches.push({ $expr: previewSearchExpression(safePattern) });
         // Mixed ID/text input retains substring and product-name matches.
         if (this.products) {
           const matchingProducts = await this.products.find({
@@ -275,4 +266,12 @@ export class InventoryAdminService {
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function previewSearchExpression(pattern: string, exact = false) {
+  const value = { $convert: { input: '$$field.v', to: 'string', onError: '', onNull: '' } };
+  return { $anyElementTrue: { $map: {
+    input: { $objectToArray: { $ifNull: ['$maskedPreview', {}] } }, as: 'field',
+    in: { $regexMatch: { input: exact ? { $trim: { input: value } } : value, regex: pattern, options: 'i' } },
+  } } };
 }

@@ -56,6 +56,10 @@ export const CustomerMessageSchema = new Schema<CustomerMessage>({
 }, baseSchemaOptions);
 
 CustomerMessageSchema.index({ userId: 1, conversationType: 1, createdAt: -1 });
+CustomerMessageSchema.index({ conversationType: 1, createdAt: -1, _id: -1, userId: 1, audience: 1 },
+  { name: 'messages_conversation_latest' });
+CustomerMessageSchema.index({ userId: 1, conversationType: 1, createdAt: -1, _id: -1, audience: 1 },
+  { name: 'messages_user_latest' });
 CustomerMessageSchema.index({ warrantyRequestId: 1, createdAt: 1 });
 CustomerMessageSchema.index({ campaignId: 1, status: 1 });
 CustomerMessageSchema.index({ deduplicationKey: 1 }, { unique: true, sparse: true });

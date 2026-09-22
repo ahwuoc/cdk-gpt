@@ -52,6 +52,18 @@ export function normalizeInventorySearchTerms(value: string) {
   return terms;
 }
 
+/** Index only values already visible in maskedPreview; never pass a decrypted payload here. */
+export function inventorySearchValues(maskedPreview: Record<string, unknown> | null | undefined): string[] {
+  const values = [...new Set(Object.values(maskedPreview ?? {}).flatMap((value) => {
+    if (!['string', 'number', 'boolean'].includes(typeof value)) return [];
+    const text = String(value).trim();
+    return text && text.length <= MAX_INVENTORY_SEARCH_TERM_LENGTH ? [text.toLocaleLowerCase('en-US')] : [];
+  }))];
+  // Mongo indexes [] as undefined, making the legacy null lookup scan empty
+  // previews too. An empty string is unsearchable and has its own index key.
+  return values.length ? values : [''];
+}
+
 /** Returns the rounded percentage off, or 0 when the product is not on sale. */
 export function productDiscountPercent(price: number, originalPrice?: number | null) {
   if (!Number.isSafeInteger(price) || price < 0 || !Number.isSafeInteger(originalPrice) ||

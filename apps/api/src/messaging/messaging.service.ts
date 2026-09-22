@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Inject, Injectable, NotFoundExc
 import { InjectModel } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
-import type { FilterQuery, Model } from 'mongoose';
+import type { FilterQuery, Model, PipelineStage } from 'mongoose';
 import {
   AuditLog, CustomerConversationType, CustomerMessage, CustomerMessageAudience, CustomerMessageDirection,
   CustomerMessageStatus, Notification, NotificationChannel, NotificationStatus, User,
@@ -12,9 +12,12 @@ import { UserStatus, isMongoDuplicateKey } from '@store/shared';
 import type { AdminConversationQueryDto, AdminMessageQueryDto, BroadcastQueryDto, ReceiveSupportMessageDto } from './messaging.dto';
 import { ADMIN_BROADCAST_QUEUE, type AdminBroadcastQueueClient } from './admin-broadcast.queue';
 import { TelegramMessenger } from './telegram-messenger';
+import { ReportCache } from '../analytics/report-cache';
 
 @Injectable()
 export class MessagingService {
+  private conversationPages = new ReportCache<Awaited<ReturnType<MessagingService['loadConversations']>>>(5_000);
+
   constructor(
     @InjectModel('User') private readonly users: Model<User>,
     @InjectModel('CustomerMessage') private readonly messages: Model<CustomerMessage>,
@@ -37,6 +40,7 @@ export class MessagingService {
     const claimed = await this.messages.findOneAndUpdate({ _id: message._id, ...claimableCustomerMessageDelivery() },
     { $set: { status: CustomerMessageStatus.SENDING }, $unset: { errorCode: 1 } }, { new: true });
     if (!claimed) return directResult(message, user);
+    this.invalidateConversations();
     try {
       const sent = await this.telegram.sendSupportMessage(user.telegramId, message.body);
       await this.messages.updateOne({ _id: message._id }, { $set: {
@@ -47,7 +51,7 @@ export class MessagingService {
         status: CustomerMessageStatus.FAILED, errorCode: telegramErrorCode(error),
       } });
       throw new BadRequestException('Telegram không gửi được tin nhắn; khách có thể chưa mở bot hoặc đã chặn bot');
-    }
+    } finally { this.invalidateConversations(); }
     await this.audits.create({ actorType: 'ADMIN', actorId: new Types.ObjectId(adminId), action: 'CUSTOMER_MESSAGE_SENT',
       resourceType: 'User', resourceId: user._id, requestId, metadata: { telegramId: user.telegramId, messageLength: body.length } });
     const updated = await this.messages.findById(message._id).lean();
@@ -77,19 +81,25 @@ export class MessagingService {
     }
     if (query.search?.trim()) filter.body = { $regex: escapeRegex(query.search.trim()), $options: 'i' };
     const [items, total] = await Promise.all([
-      this.messages.find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      this.messages.find(filter).select('_id userId direction audience body status errorCode createdAt')
+        .sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.messages.countDocuments(filter),
     ]);
-    const users = await this.users.find({ _id: { $in: [...new Set(items.map((item) => item.userId.toString()))] } })
-      .select('_id telegramId username displayName').lean();
+    const users = items.length ? await this.users.find({ _id: { $in: [...new Set(items.map((item) => item.userId.toString()))] } })
+      .select('_id telegramId username displayName').lean() : [];
     const byId = new Map(users.map((user) => [user._id.toString(), user]));
     return { items: items.reverse().map((message) => publicMessage(message, byId.get(message.userId.toString()))),
       page, limit, total, totalPages: Math.ceil(total / limit) };
   }
 
-  async listConversations(query: AdminConversationQueryDto) {
+  listConversations(query: AdminConversationQueryDto) {
     const page = query.page ?? 1; const limit = query.limit ?? 50;
     const search = query.search?.trim().replace(/^@/, '');
+    const key = JSON.stringify([page, limit, search ?? '']);
+    return this.conversationPages.get(key, () => this.loadConversations({ page, limit, search }), query.refresh === '1');
+  }
+
+  private async loadConversations({ page, limit, search }: { page: number; limit: number; search?: string }) {
     const searchRegex = search ? new RegExp(escapeRegex(search), 'i') : undefined;
     type ConversationAggregate = {
       items: Array<{
@@ -99,19 +109,27 @@ export class MessagingService {
       }>;
       metadata: Array<{ total: number }>;
     };
+    const lastMessage: PipelineStage.FacetPipelineStage[] = [
+      { $lookup: { from: this.messages.collection.name, localField: 'lastMessageId', foreignField: '_id',
+        pipeline: [{ $project: { direction: 1, audience: 1, body: 1, status: 1, errorCode: 1, createdAt: 1 } }], as: 'lastMessage' } },
+      { $unwind: '$lastMessage' },
+    ];
     const [result] = await this.messages.aggregate<ConversationAggregate>([
       { $match: directConversationFilter() },
       { $sort: { createdAt: -1, _id: -1 } },
-      { $group: { _id: '$userId', lastMessage: { $first: '$$ROOT' }, messageCount: { $sum: 1 } } },
-      { $lookup: { from: this.users.collection.name, localField: '_id', foreignField: '_id', as: 'user' } },
+      // Count lightweight index entries; only fetch message bodies for the requested page.
+      { $group: { _id: '$userId', lastMessageId: { $first: '$_id' }, lastMessageAt: { $first: '$createdAt' },
+        messageCount: { $sum: 1 } } },
+      { $lookup: { from: this.users.collection.name, localField: '_id', foreignField: '_id',
+        pipeline: [{ $match: { deletedAt: null } }, { $project: { telegramId: 1, username: 1, displayName: 1 } }], as: 'user' } },
       { $unwind: '$user' },
-      { $match: { 'user.deletedAt': null, ...(searchRegex ? { $or: [
+      ...(searchRegex ? [...lastMessage, { $match: { $or: [
         { 'user.telegramId': searchRegex }, { 'user.username': searchRegex },
         { 'user.displayName': searchRegex }, { 'lastMessage.body': searchRegex },
-      ] } : {}) } },
-      { $sort: { 'lastMessage.createdAt': -1, 'lastMessage._id': -1 } },
+      ] } }] : []),
+      { $sort: { lastMessageAt: -1, lastMessageId: -1 } },
       { $facet: {
-        items: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+        items: [{ $skip: (page - 1) * limit }, { $limit: limit }, ...(!searchRegex ? lastMessage : [])],
         metadata: [{ $count: 'total' }],
       } },
     ]);
@@ -166,7 +184,12 @@ export class MessagingService {
       if (!isMongoDuplicateKey(error)) throw error;
       const existing = await this.messages.findById(_id);
       if (!existing) throw error; return existing;
-    }
+    } finally { this.invalidateConversations(); }
+  }
+
+  private invalidateConversations() {
+    // Replacing the cache also keeps any older in-flight read from repopulating fresh entries.
+    this.conversationPages = new ReportCache(5_000);
   }
 }
 

@@ -111,7 +111,9 @@ Code hỗ trợ hai runtime:
 5. Trong nhà cung cấp Cake, đặt Webhook Callback là `POST https://<domain>/api/webhooks/bank/cake`, `Content-Type: application/json` và header `signature` bằng đúng `TOKEN_API_BANK` đã lưu. Callback lặp được khử trùng theo `transactionID`; không tạo cron/QStash Schedule để quét giao dịch bank.
 6. Tạo một đơn thử, nhập kho và thử `/start`, nạp tiền, giao hàng. QStash sẽ gọi các route nội bộ có `TASK_QUEUE_SECRET`; không public secret vào frontend.
 
-`/api/internal/cron` **không kiểm tra giao dịch bank**. Lịch `0 0 * * *` chỉ chạy bảo trì mỗi ngày lúc 00:00 UTC: nhả reservation hết hạn và republish delivery bị lỡ sau commit, nên tương thích Vercel Hobby. Nút **Kiểm tra tiền** trên bot chỉ đọc trạng thái mới nhất đã được Cake callback cập nhật.
+`/api/internal/cron` **không kiểm tra giao dịch bank**. Lịch `0 0 * * *` chạy bảo trì mỗi ngày lúc 00:00 UTC: nhả reservation hết hạn, republish delivery bị lỡ sau commit và đánh dấu yêu cầu QR hết hạn, nên tương thích Vercel Hobby. Nút **Kiểm tra tiền** trên bot đọc trạng thái yêu cầu tương ứng.
+
+Callback ngân hàng trên Vercel xử lý khoản tiền nhận được mà không đợi dọn yêu cầu hết hạn của khách khác; tình huống trả tiền muộn vẫn được xác định và xử lý trong transaction của chính khoản tiền đó. Kiểm tra trạng thái chỉ dọn yêu cầu thuộc đúng khách. Bảo trì cập nhật hàng loạt nạp tiền thường/QR SOFT không giữ hàng; tối đa 25 QR cũ có giữ hàng được xử lý riêng bằng transaction. Runtime Docker giữ bước dọn có giới hạn sau khi xử lý tiền vào; lỗi dọn không biến khoản tiền đã ghi nhận thành callback thất bại.
 
 Không deploy `apps/bot/src/main.ts` hay worker Docker lên Vercel: chúng dành cho runtime `server` chạy dài hạn. Sau khi đã test webhook/QStash/cron ở Production, có thể tắt VPS và Redis.
 
@@ -145,7 +147,13 @@ Không gửi plaintext vào log, BullMQ job, notification hay audit log.
 
 Trong **Kho hàng**, có thể dán tối đa 100 từ khóa khác nhau (mỗi từ khóa tối đa 120 ký tự), mỗi dòng một email, tên sản phẩm hoặc ID hàng/lô. Dạng `email----password----2fa` chỉ lấy phần email/login để tìm; mật khẩu và 2FA không được gửi trong yêu cầu tìm kiếm. Dữ liệu quá giới hạn hoặc thiếu email/login sẽ báo lỗi và giữ nguyên bộ lọc đang áp dụng.
 
-Nếu mọi dòng đều là ObjectId (24 ký tự hex), tìm kiếm chỉ khớp chính xác ID hàng hoặc ID lô và dùng các index có sẵn, không quét dữ liệu xem trước. Khi có dòng văn bản, tìm kiếm vẫn khớp một phần dữ liệu xem trước/tên sản phẩm, không phân biệt hoa thường, đồng thời tìm các ID đi kèm. Tìm email/login theo chuỗi con vẫn có thể chậm trên kho lớn; tối ưu này không giải mã hoặc lưu thêm dữ liệu nhạy cảm.
+Ở chế độ tìm chuỗi con, nếu mọi dòng đều là ObjectId (24 ký tự hex), tìm kiếm chỉ khớp chính xác ID hàng hoặc ID lô và dùng các index có sẵn, không quét dữ liệu xem trước. Khi có dòng văn bản, tìm kiếm vẫn khớp một phần dữ liệu xem trước/tên sản phẩm, không phân biệt hoa thường, đồng thời tìm các ID đi kèm. Tìm email/login theo chuỗi con vẫn có thể chậm trên kho lớn.
+
+Với danh sách email/login đầy đủ, chọn **Khớp chính xác (nhanh)** để tìm toàn bộ giá trị xem trước hoặc ID hàng/lô bằng chỉ mục; chế độ này không tìm tên sản phẩm. **Chứa từ / tên sản phẩm** giữ cách tìm chuỗi con và vẫn là mặc định. API nhận `searchMode: "exact" | "contains"`; nếu bỏ qua, hành vi cũ được giữ nguyên. Giá trị tìm chính xác được cắt khoảng trắng và chuyển chữ thường từ `maskedPreview`, không lấy từ payload đã giải mã. Dữ liệu nhạy cảm bị che vẫn chỉ tìm được theo phần đã che.
+
+Migration `013-inventory-search` tạo chỉ mục tìm chính xác, chỉ mục phân trang theo trạng thái/sản phẩm và backfill dữ liệu xem trước theo lô 500. Trong lúc triển khai, các bản ghi chưa có giá trị tìm kiếm vẫn được tra qua nhánh tương thích chỉ đọc những bản ghi thiếu này. Sau khi bản mới được đưa lên và các instance cũ đã kết thúc (Vercel hiện tối đa 60 giây mỗi invocation), **phải chạy** `backfillInventorySearchValues(connection, { includeExisting: true })` từ migration này một lần để sửa cả bản ghi đã backfill nhưng còn bị instance cũ ghi đè. Hàm có thể chạy lại an toàn, so sánh bản xem trước và giá trị chỉ mục trước khi ghi, bỏ qua hàng đã đúng, không thay đổi timestamp nghiệp vụ. Giữ chế độ tìm chuỗi con trong khoảng chuyển tiếp nếu chưa chạy bước sửa đầy đủ này.
+
+Khi triển khai theo từng bước, chạy riêng `createInventorySearchIndexes(connection)` trước khi đưa bản mới lên, chưa backfill và chưa ghi migration hoàn tất. Sau khi chuyển sang bản mới và chờ instance cũ kết thúc ít nhất 60 giây, chạy migration runner rồi bước sửa đầy đủ ở trên. Cách này chuẩn bị chỉ mục sẵn nhưng giữ dữ liệu cũ trên nhánh tương thích trong thời gian chuyển tiếp.
 
 Giao diện gửi tìm kiếm qua `POST /api/admin/inventory/search` với JSON body để tránh giới hạn độ dài URL. Endpoint dùng cùng bộ lọc, phân trang và quyền `inventory.manage` hoặc `inventory.import` như `GET /api/admin/inventory`; GET vẫn được hỗ trợ.
 
@@ -191,9 +199,11 @@ API `GET /admin/analytics/product-repeat-purchases` dùng quyền `analytics.rea
 
 Thống kê hành vi gồm khách hoạt động, khách mới/quay lại/mua lặp, lượt khách xem sản phẩm/bắt đầu thanh toán, tỷ lệ mua sau hành vi và QR hết hạn chưa thanh toán. Bot chỉ ghi loại sự kiện, khách, sản phẩm, mã update và thời gian máy chủ; không ghi nội dung tin nhắn, mật khẩu hoặc hội thoại hỗ trợ. Dữ liệu hành vi bắt đầu từ khi triển khai tính năng; không dựng lịch sử lượt xem từ đơn hàng cũ. Tỷ lệ chuyển đổi dùng khách có đơn giao sau hành vi trong cùng kỳ, không phải mô hình quy kết quảng cáo.
 
-Trước khi triển khai, chạy `bun run migration:up` bằng cấu hình đúng của môi trường đích để thêm các index còn thiếu, gồm `009-coupon-indexes`, `010-customer-analytics-indexes` và `011-admin-history-indexes`. Migration 011 thêm index phục vụ phân trang lịch sử đơn/nạp/ví/khách/audit và bảo đảm index tra cứu lô kho đã tồn tại.
+Các migration mới nhất là `012-operational-query-indexes`, `013-inventory-search` và `014-message-query-indexes`. Chúng bổ sung index cho người nhận thông báo, lịch sử chiến dịch, QR hết hạn, nhóm checkout, khiếu nại, kho và hội thoại. Migration 013 có dữ liệu dẫn xuất cần được sửa đầy đủ sau khi phiên bản cũ kết thúc; khi triển khai cuốn chiếu, làm theo các bước ở mục kho phía trên thay vì backfill trong lúc các instance cũ vẫn ghi dữ liệu.
 
 Dashboard và báo cáo mua liên tiếp dùng cache 15 giây trong mỗi tiến trình, tối đa 32 bộ lọc; các yêu cầu trùng đang chạy dùng chung kết quả. Nút tải lại/thử lại gửi `refresh=1` để lấy dữ liệu mới. Cache chỉ áp dụng cho báo cáo đọc, không tham gia thanh toán hay cập nhật số dư. Phân trang lịch sử không tìm từ khóa lấy trang trước rồi mới nối dữ liệu liên quan; tìm từ khóa vẫn giữ đầy đủ kết quả và tổng đếm. Trung tâm tin nhắn ngừng tải nền khi tab ẩn, tránh request chồng nhau và bỏ kết quả của request đã bị thay thế.
+
+Báo cáo mua liên tiếp thăm dò tối đa 101 đơn trong kỳ. Kỳ nhỏ dùng index ngày rồi tra đủ các phần của nhóm thanh toán, kể cả phần nằm ngoài kỳ; kỳ lớn gom lịch sử một lần để tránh hàng nghìn lượt lookup. Kết quả ngày mua và tiền sau hoàn/giảm giá không đổi. Danh sách hội thoại dùng cache 5 giây, được xóa khi gửi/nhận tin trên cùng tiến trình; `refresh=1` luôn lấy mới. Truy vấn gom ID/ngày/count từ index rồi chỉ tải nội dung tin nhắn cho trang cần xem.
 
 Kiểm tra bằng dữ liệu tạm, không gửi Telegram/ngân hàng thật:
 
@@ -215,6 +225,8 @@ RUN_INTEGRATION=1 bun test tests/product-repeat-purchases.test.ts
 5. tạo wallet ledger và gắn vào order;
 6. commit với majority write concern;
 7. enqueue delivery sau commit (BullMQ ở `server`; QStash ở `serverless`).
+
+Với một lần mua nhiều hàng bằng ví, các yêu cầu đưa đơn vào hàng đợi sau commit chạy tối đa 4 yêu cầu cùng lúc, vẫn đợi tất cả hoàn tất và giữ cơ chế phục hồi khi publish lỗi. Nhóm QR vẫn chỉ tạo một tác vụ giao hàng. Không chạy các thao tác trừ ví/giữ hàng song song bên trong transaction.
 
 Worker/task claim order, giải mã trong memory, render template rồi gửi đúng `telegramId`. Sau xác nhận gửi thành công, transaction thứ hai chuyển inventory sang `SOLD` và order sang `DELIVERED`. Lỗi 429/5xx retry exponential; blocked/chat-not-found/dữ liệu-key lỗi dừng retry; lỗi timeout hoặc crash sau send được xem là mơ hồ và yêu cầu admin xử lý.
 

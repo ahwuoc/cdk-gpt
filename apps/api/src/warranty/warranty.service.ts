@@ -89,14 +89,25 @@ export class WarrantyService {
     if (Object.keys(match).length) pipeline.push({ $match: match });
     const joins = reportJoinStages();
     const regex = searchRegex(query.search);
-    if (regex) pipeline.push(...joins, { $match: { $or: [
+    const pagination: PipelineStage.FacetPipelineStage[] = [
+      { $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
+    ];
+    if (!regex) {
+      // The collection cursor can use the sort index and join only the requested page.
+      const count = this.reports.countDocuments(match);
+      if (!Object.keys(match).length) count.hint('_id_');
+      const [items, total] = await Promise.all([
+        this.reports.aggregate<ReportRecord>([...pipeline, ...pagination, ...joins]).exec(), count.exec(),
+      ]);
+      return { items: items.map(reportListItem), page, limit, total, totalPages: Math.ceil(total / limit) };
+    }
+    pipeline.push(...joins, { $match: { $or: [
       { requestCode: regex }, { reason: regex }, { 'order.orderCode': regex },
       { 'user.displayName': regex }, { 'user.username': regex }, { 'user.telegramId': regex },
       { 'product.name': regex }, { 'product.slug': regex },
     ] } });
     pipeline.push({ $facet: {
-      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
-        ...(!regex ? joins : [])],
+      items: pagination,
       meta: [{ $count: 'total' }],
     } });
     const [result] = await this.reports.aggregate<FacetResult>(pipeline).exec();

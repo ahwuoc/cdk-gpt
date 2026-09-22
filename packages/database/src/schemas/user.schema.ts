@@ -24,5 +24,6 @@ UserSchema.index({ telegramId: 1 }, { unique: true, partialFilterExpression: { d
 UserSchema.index({ referralCode: 1 }, { unique: true, partialFilterExpression: { deletedAt: null } });
 UserSchema.index({ referredByUserId: 1, createdAt: -1 });
 UserSchema.index({ status: 1, createdAt: -1 });
+UserSchema.index({ status: 1, deletedAt: 1, _id: 1 }, { name: 'broadcast_active_cursor' });
 UserSchema.index({ deletedAt: 1, createdAt: -1, _id: -1 }, { name: 'admin_history_active_created_id' });
 export const UserModel: Model<User> = (models.User as Model<User> | undefined) ?? model<User>('User', UserSchema, 'users');

@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import type { Model } from 'mongoose';
 import { EncryptionService, createMaskedPreview } from '@store/encryption';
 import { ImportBatch, ImportBatchStatus, InventoryItem, Product } from '@store/database';
-import { InventoryStatus, isMongoDuplicateKey } from '@store/shared';
+import { InventoryStatus, inventorySearchValues, isMongoDuplicateKey } from '@store/shared';
 import { STOCK_ALERT_QUEUE, type StockAlertQueueClient } from './stock-alert.queue';
 
 interface PreparedRow {
@@ -88,7 +88,8 @@ export class InventoryImportService {
       try {
         const result = await this.inventory.bulkWrite(chunk.map((row) => ({ insertOne: { document: {
           productId: new Types.ObjectId(productId), encryptedPayload: this.encryption.encrypt(row.normalized),
-          maskedPreview: row.maskedPreview, payloadHash: row.hash, status: InventoryStatus.AVAILABLE,
+          maskedPreview: row.maskedPreview, searchValues: inventorySearchValues(row.maskedPreview),
+          payloadHash: row.hash, status: InventoryStatus.AVAILABLE,
           importBatchId: batch._id, createdBy: new Types.ObjectId(adminId), deletedAt: null,
         } } })), { ordered: false });
         importedRows += result.insertedCount;
@@ -109,6 +110,7 @@ export class InventoryImportService {
           filter: { _id: row.existingId, productId: new Types.ObjectId(productId), status: InventoryStatus.AVAILABLE,
             deletedAt: null, payloadHash: row.hash },
           update: { $set: { encryptedPayload: this.encryption.encrypt(row.normalized), maskedPreview: row.maskedPreview,
+            searchValues: inventorySearchValues(row.maskedPreview),
             importBatchId: batch._id, updatedBy: new Types.ObjectId(adminId) } },
         } })), { ordered: false });
       } catch (error) {

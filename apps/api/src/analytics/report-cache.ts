@@ -2,6 +2,8 @@
 export class ReportCache<T> {
   private readonly entries = new Map<string, { promise: Promise<T>; expiresAt: number; pending: boolean }>();
 
+  constructor(private readonly ttlMs = 15_000) {}
+
   get(key: string, load: () => Promise<T>, refresh = false): Promise<T> {
     const cached = this.entries.get(key);
     if (!refresh && cached && (cached.pending || cached.expiresAt > Date.now())) return cached.promise;
@@ -11,7 +13,7 @@ export class ReportCache<T> {
     const entry = { promise: Promise.resolve().then(load), expiresAt: 0, pending: true };
     entry.promise = entry.promise.then((value) => {
       entry.pending = false;
-      entry.expiresAt = Date.now() + 15_000;
+      entry.expiresAt = Date.now() + this.ttlMs;
       return value;
     }, (error: unknown) => {
       if (this.entries.get(key) === entry) this.entries.delete(key);

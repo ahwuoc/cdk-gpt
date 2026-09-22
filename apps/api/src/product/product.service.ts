@@ -5,7 +5,7 @@ import type { ClientSession, Connection, Model } from 'mongoose';
 import { ProductFieldType, type AuditLog, type Category, type InventoryItem, type Product,
   type ProductDocument, type ProductFieldDefinition } from '@store/database';
 import { EncryptionService, createMaskedPreview } from '@store/encryption';
-import { InventoryStatus, ProductStatus, isMongoDuplicateKey, parseInventoryPatternTemplate,
+import { InventoryStatus, ProductStatus, inventorySearchValues, isMongoDuplicateKey, parseInventoryPatternTemplate,
   productDiscountPercent, productOriginalPriceAfterChange } from '@store/shared';
 import type { SaveProductDto } from './product.dto';
 import type { ProductQueryDto } from './product-query.dto';
@@ -254,6 +254,7 @@ export class ProductService {
         encryptedPayload,
         payloadHash,
         maskedPreview,
+        searchValues: inventorySearchValues(maskedPreview),
         updatedBy: actor,
       } } } };
     });

@@ -54,7 +54,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
   const [data, setData] = useState<InventoryPage>(emptyPage);
   const [busy, setBusy] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
-  const [filter, setFilter] = useState({ productId: '', status: '', search: '', page: 1 });
+  const [filter, setFilter] = useState({ productId: '', status: '', search: '', searchMode: 'contains', page: 1 });
   const [searchDraft, setSearchDraft] = useState('');
   const activeRequest = useRef<AbortController | null>(null);
   const refreshCurrentFilter = useRef<(() => Promise<void>) | null>(null);
@@ -73,6 +73,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
       const query = new URLSearchParams({ page: String(filter.page), limit: String(pageSize) });
       if (filter.productId) query.set('productId', filter.productId);
       if (filter.status) query.set('status', filter.status);
+      query.set('searchMode', filter.searchMode);
       const search = filter.search.trim();
       const response = search
         ? await authorized('/admin/inventory/search', { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -116,7 +117,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
 
   function clearFilters() {
     setSearchDraft('');
-    setFilter({ productId: '', status: '', search: '', page: 1 });
+    setFilter({ productId: '', status: '', search: '', searchMode: 'contains', page: 1 });
   }
 
   async function removeItem(item: InventoryRecord) {
@@ -172,6 +173,16 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
           onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); applySearch(); } }}
           placeholder={'Dán danh sách cần tìm, mỗi dòng một email hoặc ID:\nuser1@example.com\nuser2@example.com\nuser3@example.com'}
           aria-label="Tìm kiếm kho hàng" aria-describedby="inventory-search-help" spellCheck={false} autoCapitalize="none" />
+      </label>
+      <label className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+        <span>Kiểu tìm kiếm</span>
+        <select className="input w-full py-2 sm:!w-auto" aria-label="Kiểu tìm kiếm kho hàng" value={filter.searchMode}
+          onChange={(event) => setFilter((current) => ({ ...current, searchMode: event.target.value, page: 1 }))}>
+          <option value="contains">Chứa từ / tên sản phẩm</option>
+          <option value="exact">Khớp chính xác (nhanh)</option>
+        </select>
+        <span>{filter.searchMode === 'exact' ? 'Khớp toàn bộ email/login, dữ liệu xem trước hoặc ID; không tìm tên sản phẩm.'
+          : 'Với danh sách email/login đầy đủ, chọn “Khớp chính xác (nhanh)” để tìm nhanh hơn.'}</span>
       </label>
       <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
         <p id="inventory-search-help" className="min-w-0 flex-1 basis-64 text-[11px] leading-5 text-slate-500">Dán tối đa 100 dòng. Với dạng <code>email----password----2fa</code>, hệ thống tự lấy email để tìm. Nhấn Enter để xuống dòng, Ctrl/⌘ + Enter để tìm.</p>

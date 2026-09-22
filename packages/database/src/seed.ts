@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import { loadConfig } from '@store/config';
 import { EncryptionService, createMaskedPreview } from '@store/encryption';
-import { InventoryStatus, ProductStatus, UserStatus } from '@store/shared';
+import { InventoryStatus, ProductStatus, UserStatus, inventorySearchValues } from '@store/shared';
 import { AdminModel, InventoryItemModel, ProductModel, RoleModel, SettingModel, UserModel, WalletTransactionModel } from './schemas';
 
 const config = loadConfig();
@@ -51,8 +51,10 @@ try {
   } }, { upsert: true, new: true, setDefaultsOnInsert: true });
   for (let index = 1; index <= 3; index++) {
     const payload = { login: `demo${index}@example.invalid`, password: `development-${index}` };
+    const maskedPreview = createMaskedPreview(payload, fields);
     await InventoryItemModel.updateOne({ productId: product._id, payloadHash: encryption.normalizedHash(payload) }, {
-      $setOnInsert: { productId: product._id, encryptedPayload: encryption.encrypt(payload), maskedPreview: createMaskedPreview(payload, fields),
+      $setOnInsert: { productId: product._id, encryptedPayload: encryption.encrypt(payload), maskedPreview,
+        searchValues: inventorySearchValues(maskedPreview),
         payloadHash: encryption.normalizedHash(payload), status: InventoryStatus.AVAILABLE, createdBy: admin._id, deletedAt: null },
     }, { upsert: true });
   }

@@ -7,6 +7,7 @@ test('admin inbox queries ignore broadcast delivery records', async () => {
   let countFilter: unknown;
   let aggregatePipeline: unknown[] = [];
   const messages = {
+    collection: { name: 'customer_messages' },
     find: mock((filter: unknown) => { findFilter = filter; return emptyFindChain(); }),
     countDocuments: mock(async (filter: unknown) => { countFilter = filter; return 0; }),
     aggregate: mock(async (pipeline: unknown[]) => { aggregatePipeline = pipeline; return []; }),
@@ -26,5 +27,5 @@ test('admin inbox queries ignore broadcast delivery records', async () => {
 });
 
 function emptyFindChain() {
-  return { sort: () => ({ skip: () => ({ limit: () => ({ lean: async () => [] }) }) }) };
+  return { select: () => ({ sort: () => ({ skip: () => ({ limit: () => ({ lean: async () => [] }) }) }) }) };
 }

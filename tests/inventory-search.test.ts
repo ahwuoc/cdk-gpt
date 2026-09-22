@@ -5,7 +5,7 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { FastifyRequest } from 'fastify';
 import { validate } from 'class-validator';
-import { MAX_INVENTORY_BULK_SEARCH_TERMS, normalizeInventorySearchTerms } from '@store/shared';
+import { MAX_INVENTORY_BULK_SEARCH_TERMS, inventorySearchValues, normalizeInventorySearchTerms } from '@store/shared';
 import { InventoryListQueryDto } from '../apps/api/src/inventory/inventory.dto';
 import { InventoryController } from '../apps/api/src/inventory/inventory.controller';
 import { InventoryAdminService } from '../apps/api/src/inventory/inventory-admin.service';
@@ -14,6 +14,13 @@ import { InventoryReservationService } from '../apps/api/src/inventory/inventory
 import { PermissionsGuard } from '../apps/api/src/auth/permissions.guard';
 
 describe('inventory bulk search', () => {
+  test('exact-search values normalize only short visible primitive preview values', () => {
+    expect(inventorySearchValues({ login: '  ALICE@Example.com ', duplicate: 'alice@example.com', password: 'se****et',
+      nested: { password: 'must-not-be-indexed' }, list: ['must-not-be-indexed'], nothing: null, missing: undefined,
+      long: 'a'.repeat(121), count: 42, enabled: false })).toEqual(['alice@example.com', 'se****et', '42', 'false']);
+    expect(inventorySearchValues(undefined)).toEqual(['']);
+  });
+
   test('extracts the email from bulk credential lines', () => {
     expect(normalizeInventorySearchTerms([
       'first@example.com----password-1----ABC123',
@@ -99,7 +106,7 @@ describe('inventory search API', () => {
     });
     try {
       await app.init();
-      const payload: InventoryListQueryDto = { productId: '66f012345678901234567890', status: 'AVAILABLE', page: 2, limit: 10,
+      const payload: InventoryListQueryDto = { productId: '66f012345678901234567890', status: 'AVAILABLE', searchMode: 'exact', page: 2, limit: 10,
         search: Array.from({ length: 100 }, (_, index) => String(index).padStart(3, '0') + 'a'.repeat(117)).join('\n') };
       for (const permission of ['inventory.manage', 'inventory.import']) {
         const response = await app.inject({ method: 'POST', url: '/admin/inventory/search', payload: { ...payload, page: '2', limit: '10' },
@@ -114,6 +121,9 @@ describe('inventory search API', () => {
       const invalid = await app.inject({ method: 'POST', url: '/admin/inventory/search', payload: { ...payload, limit: 101 },
         headers: { 'x-test-permission': 'inventory.manage' } });
       expect(invalid.statusCode).toBe(400);
+      const invalidMode = await app.inject({ method: 'POST', url: '/admin/inventory/search', payload: { ...payload, searchMode: 'regex' },
+        headers: { 'x-test-permission': 'inventory.manage' } });
+      expect(invalidMode.statusCode).toBe(400);
       expect(forwarded).toHaveLength(2);
     } finally { await app.close(); }
   });

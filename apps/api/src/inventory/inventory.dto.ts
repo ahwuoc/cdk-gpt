@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsEnum, IsInt, IsMongoId, IsObject, IsOptional, IsString, Length, Max, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsMongoId, IsObject, IsOptional, IsString, Length, Max, Min } from 'class-validator';
 import { InventoryStatus, MAX_INVENTORY_SEARCH_QUERY_LENGTH } from '@store/shared';
 
 export class ImportInventoryDto {
@@ -17,6 +17,8 @@ export class InventoryListQueryDto {
   // `search` is kept for the web UI; `query` is the API's documented alias.
   @IsOptional() @IsString() @Length(1, MAX_INVENTORY_SEARCH_QUERY_LENGTH) query?: string;
   @IsOptional() @IsString() @Length(1, MAX_INVENTORY_SEARCH_QUERY_LENGTH) search?: string;
+  // Preserve existing clients' substring search unless they explicitly request indexed equality.
+  @IsOptional() @IsIn(['contains', 'exact']) searchMode?: 'contains' | 'exact';
 
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1_000_000) page = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;

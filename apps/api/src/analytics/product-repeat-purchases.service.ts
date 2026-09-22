@@ -45,8 +45,11 @@ export class ProductRepeatPurchasesService {
     }
     const key = JSON.stringify([range.from, range.to, days, maxDays, page, limit, query.productId?.toLowerCase()]);
     const { result, generatedAt } = await this.reports.get(key, async () => {
+      // Bound the probe: correlated checkout lookups win for small date ranges,
+      // but grouping once is much cheaper than thousands of indexed seeks.
+      const candidates = await this.orders.countDocuments({ createdAt: { $gte: range.start, $lt: range.end } }).limit(101).exec();
       const [report] = await this.orders.aggregate<RepeatPurchaseFacet>(repeatPurchasePipeline(
-        range, days, maxDays, page, limit, query.productId,
+        range, days, maxDays, page, limit, query.productId, candidates <= 100,
       )).option({ maxTimeMS: 20_000, allowDiskUse: true }).exec();
       return { result: report, generatedAt: new Date().toISOString() };
     }, refresh);
@@ -64,7 +67,7 @@ export class ProductRepeatPurchasesService {
 }
 
 function repeatPurchasePipeline(range: InsightsDateRange, days: number, maxDays: number | null, page: number, limit: number,
-  productId?: string): PipelineStage[] {
+  productId?: string, indexedCandidates = false): PipelineStage[] {
   const productFilter: PipelineStage.Match[] = productId
     ? [{ $match: { '_id.product': new Types.ObjectId(productId) } }] : [];
   const qualifies = { $and: [
@@ -72,20 +75,35 @@ function repeatPurchasePipeline(range: InsightsDateRange, days: number, maxDays:
     ...(maxDays === null ? [] : [{ $lte: ['$streak.longest', maxDays] }]),
   ] };
   const qualified: PipelineStage.Match = { $match: { $expr: qualifies } };
-  const delivered = { $eq: ['$status', OrderStatus.DELIVERED] };
-  return [
-    // Group before the range filter: one checkout can straddle midnight and
-    // its deliveries can span days. Include every status in its purchase date
-    // so later fulfillment/refunds cannot move the checkout to another day;
-    // only successfully delivered units contribute spend or quantity.
-    { $group: {
-      _id: { user: '$userId', product: '$productId', purchase: {
-        $ifNull: ['$metadata.paymentRequestId', { $ifNull: ['$metadata.purchaseGroupId', { $toString: '$_id' }] }],
-      } },
-      purchasedAt: { $min: '$createdAt' }, deliveredCount: { $sum: { $cond: [delivered, 1, 0] } },
-      quantity: { $sum: { $cond: [delivered, { $ifNull: ['$quantity', 1] }, 0] } },
-      totalSpent: { $sum: { $cond: [delivered, '$totalAmount', 0] } },
+  const purchaseKey = { $ifNull: ['$metadata.paymentRequestId', {
+    $ifNull: ['$metadata.purchaseGroupId', { $toString: '$_id' }],
+  }] };
+  const groups: PipelineStage[] = indexedCandidates ? [
+    // Use the date index to find candidate checkouts, then load each complete
+    // group: its first unit can precede the range and later units can follow it.
+    { $match: { createdAt: { $gte: range.start, $lt: range.end } } },
+    { $group: { _id: { user: '$userId', product: '$productId', purchase: purchaseKey } } },
+    checkoutTotalsLookup('payment', [{ $eq: ['$metadata.paymentRequestId', '$$purchase'] }]),
+    checkoutTotalsLookup('wallet', [
+      { $eq: [{ $ifNull: ['$metadata.paymentRequestId', null] }, null] },
+      { $eq: ['$metadata.purchaseGroupId', '$$purchase'] },
+    ]),
+    checkoutTotalsLookup('single', [
+      { $eq: [{ $type: '$$purchase' }, 'string'] },
+      { $eq: ['$_id', '$$legacyId'] },
+      { $eq: [{ $ifNull: ['$metadata.paymentRequestId', null] }, null] },
+      { $eq: [{ $ifNull: ['$metadata.purchaseGroupId', null] }, null] },
+    ]),
+    { $project: {
+      _id: 1,
+      purchasedAt: { $min: { $concatArrays: ['$payment.purchasedAt', '$wallet.purchasedAt', '$single.purchasedAt'] } },
+      deliveredCount: { $sum: { $concatArrays: ['$payment.deliveredCount', '$wallet.deliveredCount', '$single.deliveredCount'] } },
+      quantity: { $sum: { $concatArrays: ['$payment.quantity', '$wallet.quantity', '$single.quantity'] } },
+      totalSpent: { $sum: { $concatArrays: ['$payment.totalSpent', '$wallet.totalSpent', '$single.totalSpent'] } },
     } },
+  ] : [checkoutTotalsGroup({ user: '$userId', product: '$productId', purchase: purchaseKey })];
+  return [
+    ...groups,
     { $match: { deliveredCount: { $gt: 0 }, purchasedAt: { $gte: range.start, $lt: range.end } } },
     { $group: {
       _id: { user: '$_id.user', product: '$_id.product', day: {
@@ -156,4 +174,30 @@ function repeatPurchasePipeline(range: InsightsDateRange, days: number, maxDays:
       meta: [...productFilter, qualified, { $count: 'total' }],
     } },
   ];
+}
+
+/** Separate equality lookups use the payment/wallet/ID indexes without changing key precedence. */
+function checkoutTotalsLookup(as: string, conditions: Record<string, unknown>[]): PipelineStage.Lookup {
+  return { $lookup: {
+    from: 'orders', as,
+    let: { user: '$_id.user', product: '$_id.product', purchase: '$_id.purchase',
+      legacyId: { $convert: { input: '$_id.purchase', to: 'objectId', onError: null, onNull: null } } },
+    pipeline: [
+      { $match: { $expr: { $and: [
+        { $eq: ['$userId', '$$user'] }, { $eq: ['$productId', '$$product'] }, ...conditions,
+      ] } } },
+      checkoutTotalsGroup(null),
+    ],
+  } };
+}
+
+function checkoutTotalsGroup(id: Record<string, unknown> | null): PipelineStage.Group {
+  const delivered = { $eq: ['$status', OrderStatus.DELIVERED] };
+  return { $group: {
+    _id: id,
+    purchasedAt: { $min: '$createdAt' },
+    deliveredCount: { $sum: { $cond: [delivered, 1, 0] } },
+    quantity: { $sum: { $cond: [delivered, { $ifNull: ['$quantity', 1] }, 0] } },
+    totalSpent: { $sum: { $cond: [delivered, '$totalAmount', 0] } },
+  } };
 }

@@ -176,8 +176,9 @@ export async function runServerlessMaintenance() {
   // Serverless recovery never auto-cancels paid orders. It only frees unpaid
   // QR holds; pending paid orders stay in the durable outbox until dispatched.
   const released = await reservations.releaseExpiredPaymentHolds(100);
+  const bankPayments = await payments.expireBankTopups(25);
   return { reservations: released, quickCheckouts, pendingDeliveriesRepublished: dispatch.republished,
-    pendingDeliveryPublishFailures: dispatch.failed };
+    pendingDeliveryPublishFailures: dispatch.failed, bankPayments };
 }
 
 async function republishPendingDeliveries(queue: DeliveryQueueClient, orderIds: string[]) {

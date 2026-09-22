@@ -33,5 +33,6 @@ NotificationSchema.index({ userId: 1, status: 1, createdAt: -1 });
 NotificationSchema.index({ adminId: 1, status: 1, createdAt: -1 });
 NotificationSchema.index({ status: 1, createdAt: 1 });
 NotificationSchema.index({ referenceType: 1, referenceId: 1 });
+NotificationSchema.index({ referenceType: 1, channel: 1, createdAt: -1, _id: -1 }, { name: 'admin_broadcast_history' });
 NotificationSchema.index({ deduplicationKey: 1 }, { unique: true, sparse: true });
 export const NotificationModel: Model<Notification> = (models.Notification as Model<Notification> | undefined) ?? model<Notification>('Notification', NotificationSchema, 'notifications');

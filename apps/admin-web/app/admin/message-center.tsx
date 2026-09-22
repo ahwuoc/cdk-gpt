@@ -40,7 +40,7 @@ export function MessageCenter({ authorized, setMessage }: {
   const broadcastRequest = useRef<AbortController | null>(null);
   const refreshCurrentView = useRef<(() => Promise<unknown>) | null>(null);
 
-  const loadConversations = useCallback(async (silent = false) => {
+  const loadConversations = useCallback(async (silent = false, refresh = false) => {
     if (silent && conversationRequest.current && !conversationRequest.current.signal.aborted) return;
     conversationRequest.current?.abort();
     const controller = new AbortController();
@@ -49,6 +49,7 @@ export function MessageCenter({ authorized, setMessage }: {
     try {
       const query = new URLSearchParams({ page: '1', limit: '100' });
       if (conversationSearch.trim()) query.set('search', conversationSearch.trim());
+      if (refresh) query.set('refresh', '1');
       const response = await authorized(`/admin/messages/conversations?${query}`, { signal: controller.signal });
       const body = await json<Page<ConversationRecord>>(response);
       if (controller.signal.aborted) return;
@@ -151,7 +152,7 @@ export function MessageCenter({ authorized, setMessage }: {
   useEffect(() => {
     refreshCurrentView.current = async () => {
       if (document.hidden) return;
-      return mode === 'direct' ? Promise.all([loadConversations(), loadMessages()]) : loadBroadcasts();
+      return mode === 'direct' ? Promise.all([loadConversations(false, true), loadMessages()]) : loadBroadcasts();
     };
     const refresh = () => {
       if (document.hidden) return;
@@ -226,7 +227,7 @@ export function MessageCenter({ authorized, setMessage }: {
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Trả lời từng khách hoặc gửi một thông báo đến cả cửa hàng.</p>
       </div></div>
       <button type="button" onClick={() => void (mode === 'direct'
-        ? Promise.all([loadConversations(), loadMessages()]) : loadBroadcasts())} disabled={refreshing}
+        ? Promise.all([loadConversations(false, true), loadMessages()]) : loadBroadcasts())} disabled={refreshing}
         className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2.5"><RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />Làm mới</button>
     </div>
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800">

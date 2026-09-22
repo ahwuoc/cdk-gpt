@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import mongoose, { type Connection, type Model, Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { plainToInstance } from 'class-transformer';
@@ -392,5 +392,70 @@ integration('product repeat purchases against isolated MongoDB', () => {
     expect((await service.report(range)).summary.repeatBuyers).toBe(0);
     expect((await service.report(range, true)).summary.repeatBuyers).toBe(1);
     expect((await service.report(range)).summary.repeatBuyers).toBe(1);
+  });
+
+  test('a cold report for an empty date range does not scan unrelated order history', async () => {
+    await orders.createIndexes();
+    const buyer = await customer(1);
+    const item = await product();
+    await orders.collection.insertMany(Array.from({ length: 1_000 }, () => {
+      const id = new Types.ObjectId();
+      return { _id: id, orderCode: `ORD-${id}`, userId: buyer, productId: item,
+        inventoryItemId: new Types.ObjectId(), quantity: 1, unitPrice: 100, totalAmount: 100,
+        status: OrderStatus.DELIVERED, metadata: {}, createdAt: new Date('2026-01-01T00:00:00Z') };
+    }));
+    const execute = orders.aggregate.bind(orders);
+    let captured: mongoose.PipelineStage[] = [];
+    const probe = spyOn(orders, 'aggregate').mockImplementation(((pipeline: mongoose.PipelineStage[]) => {
+      captured = pipeline;
+      return execute(pipeline);
+    }) as typeof orders.aggregate);
+    try {
+      expect((await service.report(range, true)).summary.buyers).toBe(0);
+    } finally { probe.mockRestore(); }
+    const plan = await orders.collection.aggregate(captured).explain('executionStats');
+    const cursor = plan.stages?.find((stage: Record<string, unknown>) => '$cursor' in stage)?.$cursor ?? plan;
+    expect(cursor.executionStats.totalDocsExamined).toBe(0);
+  });
+
+  test('matching legacy, QR, and wallet group keys still form one complete checkout', async () => {
+    const buyer = await customer(1);
+    const item = await product();
+    const first = await order(buyer, item, 1);
+    await order(buyer, item, 1, { metadata: { paymentRequestId: first.toString(), purchaseGroupId: 'ignored' }, totalAmount: 300 });
+    await order(buyer, item, 2, { metadata: { purchaseGroupId: first.toString() }, totalAmount: 200 });
+    await order(buyer, item, 2);
+    const result = await service.report(range);
+    expect(result.items[0]).toMatchObject({ purchaseCount: 2, quantity: 4, totalSpent: 700,
+      purchaseDays: ['2026-09-01', '2026-09-02'], longestStreak: 2 });
+  });
+
+  test('a broad cold report reads order history once instead of repeating checkout lookups', async () => {
+    await orders.createIndexes();
+    const buyer = await customer(1);
+    const item = await product();
+    const count = 120;
+    await orders.collection.insertMany(Array.from({ length: count }, (_, index) => {
+      const id = new Types.ObjectId();
+      return { _id: id, orderCode: `ORD-${id}`, userId: buyer, productId: item,
+        inventoryItemId: new Types.ObjectId(), quantity: 1, unitPrice: 100, totalAmount: 100,
+        status: OrderStatus.DELIVERED, metadata: {}, createdAt: date(index % 2 + 1) };
+    }));
+    const execute = orders.aggregate.bind(orders);
+    let captured: mongoose.PipelineStage[] = [];
+    const probe = spyOn(orders, 'aggregate').mockImplementation(((pipeline: mongoose.PipelineStage[]) => {
+      captured = pipeline;
+      return execute(pipeline);
+    }) as typeof orders.aggregate);
+    try {
+      const report = await service.report(range, true);
+      expect(report.items[0]).toMatchObject({ quantity: count, purchaseCount: count, totalSpent: 12_000, longestStreak: 2 });
+    } finally { probe.mockRestore(); }
+    const plan = await orders.collection.aggregate(captured).explain('executionStats');
+    const cursor = plan.stages?.find((stage: Record<string, unknown>) => '$cursor' in stage)?.$cursor ?? plan;
+    const repeatedReads = (plan.stages ?? []).filter((stage: { $lookup?: { from?: string } }) => stage.$lookup?.from === 'orders')
+      .reduce((total: number, stage: { totalDocsExamined: number }) => total + Number(stage.totalDocsExamined), 0);
+    expect(cursor.executionStats.totalDocsExamined).toBe(count);
+    expect(repeatedReads).toBe(0);
   });
 });
