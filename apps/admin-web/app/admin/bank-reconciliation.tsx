@@ -123,14 +123,14 @@ export function BankReconciliation({ authorized, banks, activeBankId }: Props) {
   const serverTotal = queryFilteredItems.length;
   const summary = useMemo(() => {
     if (!data) return {};
-    const scoped = queryFilteredItems;
-    if (!search.trim() && !from && !to) return data.summary || {};
+    const scoped = filteredItems;
+    if (!search.trim() && !from && !to && statusFilter === 'ALL') return data.summary || {};
     const incoming = scoped.filter((item) => item.type !== 'OUT');
     const outgoing = scoped.filter((item) => item.type === 'OUT');
     const count = (status: string) => scoped.filter((item) => item.status === status).length;
     const credited = incoming.reduce((sum, item) => sum + (item.creditedAmount || 0), 0);
     return { incomingCount: incoming.length, incomingAmount: incoming.reduce((sum, item) => sum + (item.amount || 0), 0), outgoingCount: outgoing.length, outgoingAmount: outgoing.reduce((sum, item) => sum + (item.amount || 0), 0), creditedAmount: credited, difference: incoming.reduce((sum, item) => sum + (item.difference || 0), 0), matchedCount: count('MATCHED'), uncreditedCount: incoming.filter((item) => (item.creditedAmount || 0) === 0).length, mismatchCount: count('AMOUNT_MISMATCH'), ambiguousCount: scoped.filter((item) => item.status === 'AMBIGUOUS' || item.status === 'DUPLICATE').length, unmatchedCount: count('UNMATCHED'), rejectedReceivedCount: count('BANK_RECEIVED_REQUEST_REJECTED'), rejectedReceivedAmount: scoped.filter((item) => item.status === 'BANK_RECEIVED_REQUEST_REJECTED').reduce((sum, item) => sum + (item.amount || 0), 0) };
-  }, [data, from, queryFilteredItems, search, to]);
+  }, [data, filteredItems, from, queryFilteredItems, search, statusFilter, to]);
 
   async function runQuery(event?: FormEvent, requestedPage = 1) {
     if (event) event.preventDefault();
