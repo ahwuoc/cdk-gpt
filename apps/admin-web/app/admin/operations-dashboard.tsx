@@ -34,6 +34,7 @@ interface PageResult<T> {
 }
 
 interface Summary {
+  generatedAt?: string;
   orders?: { total?: number; today?: number; completed?: number; pendingDelivery?: number };
   revenue?: { total?: number; today?: number };
   deposits?: { total?: number; today?: number; pending?: number };
@@ -107,6 +108,7 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
   const [orders, setOrders] = useState<PageResult<OrderRecord>>(blankPage);
   const [deposits, setDeposits] = useState<PageResult<DepositRecord>>(blankPage);
   const [summaryBusy, setSummaryBusy] = useState(true);
+  const [summaryError, setSummaryError] = useState('');
   const [spendingRefreshVersion, setSpendingRefreshVersion] = useState(0);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [ordersQuery, setOrdersQuery] = useState({ search: '', userId: '', status: '', from: '', to: '', page: 1 });
@@ -121,7 +123,9 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
       const body = await readApiBody<Summary>(response);
       if (!response.ok) throw new Error(messageFromBody(body, 'Không thể tải thống kê.'));
       setSummary(body);
+      setSummaryError('');
     } catch (error) {
+      setSummaryError(error instanceof Error ? error.message : 'Không thể tải thống kê.');
       setMessage(error instanceof Error ? error.message : 'Không thể tải thống kê.');
     } finally {
       if (!quiet) setSummaryBusy(false);
@@ -186,33 +190,38 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
   }, [loadDeposits, loadOrders, view]);
 
   const stats = useMemo(() => [
-    { label: 'Doanh thu', value: money(summary?.revenue?.total), today: `Hôm nay ${money(summary?.revenue?.today)}`, icon: <CircleDollarSign />, tone: 'indigo' },
+    { label: 'Tổng doanh thu', value: money(summary?.revenue?.total), today: `Hôm nay ${money(summary?.revenue?.today)}`, icon: <CircleDollarSign />, tone: 'indigo' },
     { label: 'Đơn hàng', value: number(summary?.orders?.total), today: `${number(summary?.orders?.today)} đơn hôm nay`, icon: <ClipboardList />, tone: 'sky' },
     { label: 'Nạp tiền', value: money(summary?.deposits?.total), today: `${number(summary?.deposits?.pending)} yêu cầu chờ duyệt`, icon: <WalletCards />, tone: 'emerald' },
     { label: 'Khách hàng', value: number(summary?.users?.total), today: `+${number(summary?.users?.newToday)} khách hôm nay`, icon: <Users />, tone: 'violet' },
   ], [summary]);
 
-  return <section className="space-y-5" aria-label="Vận hành cửa hàng">
-    {view === 'overview' && <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/50 p-5 shadow-xl sm:p-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+  return <section className="space-y-6" aria-label="Vận hành cửa hàng">
+    {view === 'overview' && <>
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-sm font-medium text-indigo-300">Trung tâm vận hành</p>
-          <h2 className="mt-1 text-2xl font-semibold tracking-tight text-white">Theo dõi shop trong một chỗ</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Xem doanh thu, đơn hàng, tiền nạp và tồn kho mà không phải tìm từng mục.</p>
+          <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.2em] text-indigo-300">Không gian của bạn</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-[28px]">Tổng quan cửa hàng</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-400">Mọi hoạt động kinh doanh, trong một góc nhìn.</p>
         </div>
-        <button type="button" onClick={() => { void loadSummary(); setSpendingRefreshVersion((value) => value + 1); }} disabled={summaryBusy} className="button-secondary inline-flex shrink-0 items-center justify-center gap-2 px-3 py-2.5">
+        <div className="flex gap-2"><button type="button" onClick={() => { void loadSummary(); setSpendingRefreshVersion((value) => value + 1); }} disabled={summaryBusy} className="button-secondary inline-flex shrink-0 items-center justify-center gap-2 px-3 py-2.5">
           <RefreshCw size={15} className={summaryBusy ? 'animate-spin' : ''} /> Làm mới
-        </button>
+        </button><button type="button" onClick={onOpenInventory} className="button-primary inline-flex items-center gap-2 py-2.5"><PackageCheck size={16} />Nhập hàng<ArrowUpRight size={15} /></button></div>
       </div>
-      <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map((stat) => <StatCard key={stat.label} {...stat} loading={summaryBusy} />)}
+      {summaryError && <p role="alert" className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{summaryError}{summary ? ' Đang hiển thị dữ liệu của lần tải trước.' : ' Nhấn Làm mới để thử lại.'}</p>}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {stats.map((stat) => <StatCard key={stat.label} {...stat} value={summary ? stat.value : '—'} today={summary ? stat.today : 'Chưa có dữ liệu thống kê'} loading={summaryBusy} />)}
       </div>
-      <div className="mt-5 grid gap-3 lg:grid-cols-3">
-        <QuickAction icon={<PackageCheck size={18} />} title="Thêm sản phẩm" description="Tạo danh mục hoặc sản phẩm mới" action="Mở sản phẩm" onClick={onOpenCatalog} />
-        <QuickAction icon={<Coins size={18} />} title="Nhập hàng vào kho" description={`${number(summary?.inventory?.available)} tài khoản còn sẵn`} action="Nhập kho" onClick={onOpenInventory} />
-        <QuickAction icon={<TriangleAlert size={18} />} title="Cần chú ý" description={`${number(summary?.inventory?.lowStock)} sản phẩm sắp hết hàng`} action="Kiểm tra kho" onClick={onOpenCatalog} danger={Number(summary?.inventory?.lowStock ?? 0) > 0} />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        <FulfillmentOverview summary={summary} loading={summaryBusy} onOrders={onOpenOrders} />
+        <div className="admin-card p-5"><p className="mb-4 text-sm font-semibold text-slate-100">Thao tác nhanh</p><div className="space-y-2">
+          <QuickAction icon={<PackageCheck size={17} />} title="Quản lý sản phẩm" description="Danh mục và sản phẩm đang bán" action="Mở" onClick={onOpenCatalog} />
+          <QuickAction icon={<Coins size={17} />} title="Kho hàng" description={summary ? `${number(summary.inventory?.available)} tài khoản sẵn sàng giao` : 'Xem và bổ sung hàng trong kho'} action="Mở" onClick={onOpenInventory} />
+          <QuickAction icon={<TriangleAlert size={17} />} title="Kiểm tra tồn kho" description={summary ? `${number(summary.inventory?.lowStock)} sản phẩm sắp hết hàng` : 'Theo dõi sản phẩm cần nhập thêm'} action="Xem" onClick={onOpenCatalog} danger={Number(summary?.inventory?.lowStock ?? 0) > 0} />
+        </div></div>
       </div>
-    </div>}
+      {summary?.generatedAt && <p className="text-right text-[11px] text-slate-500">Cập nhật lúc {dateTime(summary.generatedAt)}</p>}
+    </>}
 
     {view === 'overview' && <TopSpenders authorized={authorized} refreshVersion={spendingRefreshVersion} />}
     {view === 'overview' && <Overview
@@ -238,6 +247,26 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
       refresh={loadDeposits}
     />}
   </section>;
+}
+
+function FulfillmentOverview({ summary, loading, onOrders }: { summary: Summary | null; loading: boolean; onOrders(): void }) {
+  const total = summary?.orders?.total ?? 0;
+  const completed = summary?.orders?.completed ?? 0;
+  const pending = summary?.orders?.pendingDelivery ?? 0;
+  const remaining = Math.max(0, total - completed - pending);
+  const ratio = total > 0 ? Math.min(100, completed / total * 100) : 0;
+  const segments = [
+    { label: 'Đã giao', count: completed, color: 'bg-indigo-300' },
+    { label: 'Chờ / đang giao', count: pending, color: 'bg-amber-300' },
+    { label: 'Trạng thái khác', count: remaining, color: 'bg-slate-600' },
+  ];
+  return <div className="admin-card flex flex-col p-5 sm:p-6" aria-busy={loading}>
+    <div className="flex items-center justify-between gap-3"><h2 className="text-sm font-semibold">Tình trạng đơn hàng</h2><button type="button" onClick={onOrders} className="flex items-center gap-1 text-xs text-slate-400 transition hover:text-indigo-300">Chi tiết<ArrowUpRight size={14} /></button></div>
+    <div className="my-7 flex flex-wrap items-end gap-x-4 gap-y-2"><span className="text-5xl font-medium tracking-tight text-indigo-300">{summary && total > 0 ? `${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 1 }).format(ratio)}%` : '—'}</span><p className="pb-1 text-xs leading-5 text-slate-400">{summary ? `${number(completed)} / ${number(total)} đơn đã giao` : 'Đang chờ dữ liệu đơn hàng'}<br /><span className="text-slate-500">Tính trên toàn bộ đơn hàng</span></p></div>
+    <div className="flex h-2.5 overflow-hidden rounded-full bg-slate-800" aria-hidden="true">{segments.map((segment) => <span key={segment.label} className={segment.color} style={{ width: total > 0 ? `${segment.count / total * 100}%` : '0%' }} />)}</div>
+    <div className="mt-5 grid grid-cols-3 gap-3">{segments.map((segment) => <div key={segment.label}><p className="flex items-center gap-1.5 text-[10px] text-slate-400 sm:text-xs"><span className={`size-1.5 shrink-0 rounded-full ${segment.color}`} />{segment.label}</p><p className="mt-2 text-lg font-medium tabular-nums">{summary ? number(segment.count) : '—'}</p></div>)}</div>
+    <p className="mt-auto pt-5 text-[11px] text-slate-500">{!summary ? 'Thống kê sẽ xuất hiện sau khi tải dữ liệu.' : total === 0 ? 'Đơn hàng đầu tiên của bạn sẽ xuất hiện tại đây.' : 'Trạng thái khác gồm đơn lỗi, đã hủy hoặc đã hoàn tiền.'}</p>
+  </div>;
 }
 
 function Overview({ summary, loading, onOrders, onDeposits }: { summary: Summary | null; loading: boolean; onOrders(): void; onDeposits(): void }) {
@@ -433,19 +462,19 @@ function DetailLine({ label, value, mono = false }: { label: string; value: stri
 function Metric({ label, value, accent = false, danger = false }: { label: string; value: string; accent?: boolean; danger?: boolean }) { return <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3"><p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p><p className={`mt-1 text-sm font-semibold ${danger ? 'text-rose-300' : accent ? 'text-emerald-300' : 'text-slate-100'}`}>{value}</p></div>; }
 
 function QuickAction({ icon, title, description, action, onClick, danger = false }: { icon: ReactNode; title: string; description: string; action: string; onClick(): void; danger?: boolean }) {
-  return <button type="button" onClick={onClick} className="group flex items-center gap-3 rounded-2xl border border-slate-700/80 bg-slate-950/50 p-4 text-left transition hover:border-indigo-500/60 hover:bg-slate-950">
-    <span className={`rounded-xl p-2.5 ${danger ? 'bg-amber-400/10 text-amber-300' : 'bg-indigo-500/10 text-indigo-300'}`}>{icon}</span>
+  return <button type="button" onClick={onClick} className="group flex w-full items-center gap-3 rounded-xl border border-transparent p-3 text-left transition hover:border-slate-700 hover:bg-slate-950/50">
+    <span className={`rounded-lg p-2.5 ${danger ? 'bg-amber-400/10 text-amber-300' : 'bg-slate-800 text-slate-300'}`}>{icon}</span>
     <span className="min-w-0 flex-1"><span className="block text-sm font-medium text-slate-100">{title}</span><span className="mt-1 block truncate text-xs text-slate-400">{description}</span></span>
-    <span className="text-xs font-medium text-indigo-300 group-hover:text-indigo-200">{action}</span>
+    <span className="flex items-center gap-1 text-xs text-slate-500 group-hover:text-indigo-300">{action}<ChevronRight size={13} /></span>
   </button>;
 }
 
 function StatCard({ label, value, today, icon, tone, loading }: { label: string; value: string; today: string; icon: ReactNode; tone: string; loading: boolean }) {
   const tones: Record<string, string> = { indigo: 'bg-indigo-500/12 text-indigo-300', sky: 'bg-sky-500/12 text-sky-300', emerald: 'bg-emerald-500/12 text-emerald-300', violet: 'bg-violet-500/12 text-violet-300' };
-  return <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4">
-    <div className="flex items-center justify-between gap-2"><p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p><span className={`rounded-lg p-2 ${tones[tone]}`}>{icon}</span></div>
-    <p className={`mt-5 text-2xl font-semibold tracking-tight text-white ${loading ? 'animate-pulse opacity-45' : ''}`}>{value}</p>
-    <p className="mt-1.5 text-xs text-slate-500">{today}</p>
+  return <div className="dashboard-stat" aria-busy={loading}>
+    <div className="flex items-center justify-between gap-2"><p className="text-xs font-medium text-slate-400">{label}</p><span className={`rounded-lg p-2 [&>svg]:size-[18px] ${tones[tone]}`}>{icon}</span></div>
+    <p className={`mt-5 break-words text-[26px] font-semibold tracking-tight text-white tabular-nums ${loading ? 'animate-pulse opacity-45' : ''}`}>{value}</p>
+    <p className="mt-4 border-t border-slate-700/50 pt-3 text-[11px] text-slate-400">{today}</p>
   </div>;
 }
 

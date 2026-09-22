@@ -1,9 +1,9 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ChartNoAxesCombined, TicketPercent, Bot, Boxes, CheckCircle2, CircleDollarSign, Eye, FileUp, Info, KeyRound, LayoutDashboard,
+import { Activity, ArrowRight, Bell, Bot, Boxes, ChartNoAxesCombined, ChevronRight, CircleDollarSign, Eye, FileUp, KeyRound, LayoutDashboard,
   ListChecks, LogOut, MessagesSquare, MessageSquareWarning, Package, Pencil, Plus, Power, QrCode, RefreshCw, ServerCog,
-  ShoppingCart, Tags, Trash2, TriangleAlert, Users, WalletCards, X } from 'lucide-react';
+  ShoppingBag, ShoppingCart, Tags, TicketPercent, Trash2, TriangleAlert, Users, WalletCards } from 'lucide-react';
 import { inventoryPatternExample, parseInventoryPatternLine, parseInventoryPatternTemplate } from '@store/shared';
 import { CategoryManager } from './category-manager';
 import { ComplaintManager } from './complaint-manager';
@@ -15,6 +15,7 @@ import { MessageCenter } from './message-center';
 import { OperationsDashboard } from './operations-dashboard';
 import { ProductManager, type CategoryRecord, type ProductPagination, type ProductRecord } from './product-manager';
 import { requestId } from './request-id';
+import { showAdminToast as setMessage } from './admin-toast';
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
@@ -77,10 +78,14 @@ interface BotConfig {
 }
 type AdminSection = 'dashboard' | 'orders' | 'reports' | 'deposits' | 'users' | 'categories' | 'products' | 'inventory'
   | 'messages' | 'ledger' | 'audit' | 'bot' | 'payments' | 'system' | 'coupons' | 'analytics';
-type FlashMessageKind = 'success' | 'error' | 'warning' | 'info';
-interface FlashMessageState { id: number; text: string; kind: FlashMessageKind; }
+const sectionLabels: Record<AdminSection, string> = {
+  dashboard: 'Tổng quan', orders: 'Đơn hàng', reports: 'Khiếu nại', deposits: 'Lịch sử nạp tiền',
+  users: 'Khách hàng', categories: 'Danh mục', products: 'Sản phẩm', inventory: 'Kho hàng',
+  messages: 'Tin nhắn & thông báo', ledger: 'Sổ cái ví', audit: 'Nhật ký hoạt động',
+  bot: 'Bot Telegram', payments: 'Thanh toán', system: 'Cấu hình hệ thống',
+  coupons: 'Voucher giảm giá', analytics: 'Phân tích',
+};
 interface PendingDuplicateImport { rows: Record<string, unknown>[]; preview: ImportReport; }
-const flashDurationMs = 6_000;
 
 export default function AdminPage() {
   const [tokens, setTokens] = useState<Tokens | null>(null);
@@ -113,34 +118,9 @@ export default function AdminPage() {
     apiUrl: '', telegramWebhookUrl: '', qstashUrl: 'https://qstash.upstash.io', taskBaseUrl: '' });
   const [qstashToken, setQstashToken] = useState('');
   const [botBusy, setBotBusy] = useState(false);
-  const [flash, setFlash] = useState<FlashMessageState | null>(null);
-  const [flashRemainingMs, setFlashRemainingMs] = useState(flashDurationMs);
   const [pendingDuplicateImport, setPendingDuplicateImport] = useState<PendingDuplicateImport | null>(null);
   const [section, setSection] = useState<AdminSection>('dashboard');
   const selectedProduct = products.find((product) => product._id === productId);
-
-  const setMessage = useCallback((text: string, kind?: FlashMessageKind) => {
-    const normalized = text.trim();
-    if (normalized) setFlashRemainingMs(flashDurationMs);
-    setFlash((current) => normalized
-      ? { id: (current?.id ?? 0) + 1, text: normalized, kind: kind ?? flashMessageKind(normalized) }
-      : null);
-  }, []);
-
-  useEffect(() => {
-    if (!flash) return;
-    const activeId = flash.id;
-    const expiresAt = Date.now() + flashDurationMs;
-    const timer = window.setInterval(() => {
-      const remaining = Math.max(0, expiresAt - Date.now());
-      setFlashRemainingMs(remaining);
-      if (remaining === 0) {
-        window.clearInterval(timer);
-        setFlash((current) => current?.id === activeId ? null : current);
-      }
-    }, 100);
-    return () => window.clearInterval(timer);
-  }, [flash]);
 
   const navigate = useCallback((next: AdminSection) => {
     setSection(next);
@@ -237,7 +217,7 @@ export default function AdminPage() {
     queueMicrotask(() => void Promise.all([loadProducts(controller.signal), loadCategories(controller.signal)])
       .catch((error) => { if (error instanceof Error && error.name !== 'AbortError') setMessage(error.message); }));
     return () => controller.abort();
-  }, [loadCategories, loadProducts, setMessage, tokens?.accessToken]);
+  }, [loadCategories, loadProducts, tokens?.accessToken]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage('');
@@ -381,7 +361,7 @@ export default function AdminPage() {
       setMessage(error instanceof Error ? error.message : 'Không thể tải cấu hình bot', 'error');
     }
     finally { setBotBusy(false); }
-  }, [authorized, loadBankOptions, setMessage]);
+  }, [authorized, loadBankOptions]);
 
   useEffect(() => {
     if (tokens?.accessToken) queueMicrotask(() => void loadBotConfig());
@@ -529,27 +509,28 @@ export default function AdminPage() {
   const bankCallbackUrl = runtimeConfig.apiUrl.trim() && editedBank?.id
     ? `${runtimeConfig.apiUrl.trim().replace(/\/+$/, '')}/api/webhooks/bank/${encodeURIComponent(editedBank.id)}` : '';
 
-  if (!tokens) return <><FlashMessage message={flash} remainingMs={flashRemainingMs} close={() => setMessage('')} />
-    <Login email={email} password={password} busy={busy} setEmail={setEmail} setPassword={setPassword} submit={login} /></>;
+  if (!tokens) return <Login email={email} password={password} busy={busy} setEmail={setEmail} setPassword={setPassword} submit={login} />;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
-      <FlashMessage message={flash} remainingMs={flashRemainingMs} close={() => setMessage('')} />
+    <main className="admin-shell">
       <DuplicateImportDialog pending={pendingDuplicateImport} busy={busy}
         cancel={cancelDuplicateImport} overwrite={() => void resolveDuplicateImport(true)}
         addMissingOnly={() => void resolveDuplicateImport(false)} />
+      <a href="#admin-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-indigo-300 focus:p-3 focus:text-slate-950">Đến nội dung chính</a>
+      <AdminSidebar section={section} navigate={navigate} logout={logout} />
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-none items-center justify-between gap-4 px-4 py-4 sm:px-6 xl:px-8">
-          <button type="button" onClick={() => navigate('dashboard')} className="flex min-w-0 items-center gap-3 text-left">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-indigo-500/15 text-indigo-300"><LayoutDashboard size={21} /></span>
-            <span className="min-w-0"><span className="block truncate font-semibold text-slate-50">Digital Store</span><span className="block truncate text-xs text-slate-500">Trung tâm quản trị</span></span>
-          </button>
-          <button onClick={logout} className="button-secondary inline-flex shrink-0 items-center gap-2 px-3 py-2"><LogOut size={16} /><span className="hidden sm:inline">Đăng xuất</span></button>
+        <div className="flex h-[72px] items-center justify-between gap-4 px-4 sm:px-7 xl:px-9">
+          <div className="flex min-w-0 items-center gap-2 text-sm"><span className="hidden text-slate-500 sm:inline">Không gian làm việc</span><ChevronRight size={14} className="hidden text-slate-600 sm:block" /><span className="truncate font-medium">{sectionLabels[section]}</span></div>
+          <div className="flex shrink-0 items-center gap-4">
+            <span className="hidden rounded-md border border-slate-800 px-2 py-1 text-[10px] font-medium tracking-widest text-slate-400 sm:block">QUẢN TRỊ</span>
+            <button type="button" onClick={() => navigate('messages')} aria-label="Mở trung tâm thông báo" className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-800 hover:text-indigo-300"><Bell size={19} /></button>
+            <span className="h-6 w-px bg-slate-800" />
+            <span className="flex size-8 items-center justify-center rounded-full border border-indigo-300/25 bg-indigo-300/10 text-xs font-semibold text-indigo-300" aria-label="Tài khoản quản trị">AD</span>
+          </div>
         </div>
       </header>
-      <div className="mx-auto grid max-w-none gap-6 px-4 py-5 sm:px-6 xl:px-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:py-7">
-        <AdminSidebar section={section} navigate={navigate} />
-        <div className="min-w-0">
+      <div className="mx-auto max-w-[1680px] px-4 py-6 sm:px-7 lg:py-8 xl:px-9">
+        <div id="admin-content" tabIndex={-1} className="min-w-0">
         {(['dashboard', 'orders', 'deposits'] as AdminSection[]).includes(section) && <OperationsDashboard
           view={section === 'orders' ? 'orders' : section === 'deposits' ? 'deposits' : 'overview'}
           authorized={authorized} setMessage={setMessage}
@@ -576,7 +557,7 @@ export default function AdminPage() {
         </section>}
 
         {section === 'inventory' && <section className="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             <PageHeading eyebrow="Kho hàng" title="Nhập tài khoản nhanh theo từng dòng" description="Chọn sản phẩm, dán dữ liệu theo pattern và xem trước trước khi lưu. Khi nhập thành công, bot tự thông báo hàng mới về." />
             <InventoryManager products={products} authorized={authorized} reloadProducts={loadProducts} onReveal={reveal} setMessage={setMessage} refreshKey={inventoryVersion} />
             <Panel icon={<FileUp />} title="Nhập kho hàng loạt" subtitle="Một dòng là một tài khoản. Dữ liệu được mã hóa trước khi lưu vào kho.">
@@ -746,35 +727,6 @@ export default function AdminPage() {
   );
 }
 
-function FlashMessage({ message, remainingMs, close }: {
-  message: FlashMessageState | null; remainingMs: number; close(): void;
-}) {
-  if (!message) return null;
-  const styles = {
-    success: { icon: <CheckCircle2 size={20} />, border: 'border-emerald-400/40', background: 'bg-emerald-950/95',
-      text: 'text-emerald-50', muted: 'text-emerald-200', progress: 'bg-emerald-400' },
-    error: { icon: <TriangleAlert size={20} />, border: 'border-rose-400/45', background: 'bg-rose-950/95',
-      text: 'text-rose-50', muted: 'text-rose-200', progress: 'bg-rose-400' },
-    warning: { icon: <TriangleAlert size={20} />, border: 'border-amber-400/45', background: 'bg-amber-950/95',
-      text: 'text-amber-50', muted: 'text-amber-200', progress: 'bg-amber-400' },
-    info: { icon: <Info size={20} />, border: 'border-indigo-400/40', background: 'bg-slate-900/95',
-      text: 'text-indigo-50', muted: 'text-indigo-200', progress: 'bg-indigo-400' },
-  }[message.kind];
-  const progress = Math.max(0, Math.min(100, (remainingMs / flashDurationMs) * 100));
-  return <div className="pointer-events-none fixed inset-x-0 top-3 z-[100] flex justify-center px-3 sm:top-5">
-    <div role={message.kind === 'error' ? 'alert' : 'status'} aria-live="polite"
-      className={`flash-message pointer-events-auto relative w-full max-w-xl animate-[flash-in_180ms_ease-out] overflow-hidden rounded-2xl border shadow-2xl shadow-black/40 backdrop-blur-xl ${styles.border} ${styles.background} ${styles.text}`}>
-      <div className="flex items-start gap-3 px-4 py-3.5 sm:px-5">
-        <span className={`mt-0.5 shrink-0 ${styles.muted}`}>{styles.icon}</span>
-        <p className="min-w-0 flex-1 text-sm font-medium leading-5">{message.text}</p>
-        <span className={`min-w-10 rounded-lg bg-black/20 px-2 py-1 text-center font-mono text-[11px] tabular-nums ${styles.muted}`}>{(remainingMs / 1_000).toFixed(1)}s</span>
-        <button type="button" onClick={close} className={`rounded-lg p-1 transition hover:bg-white/10 ${styles.muted}`} aria-label="Đóng thông báo"><X size={17} /></button>
-      </div>
-      <div className="h-1 bg-black/20"><div className={`h-full transition-[width] duration-100 ease-linear ${styles.progress}`} style={{ width: `${progress}%` }} /></div>
-    </div>
-  </div>;
-}
-
 function DuplicateImportDialog({ pending, busy, cancel, overwrite, addMissingOnly }: {
   pending: PendingDuplicateImport | null; busy: boolean; cancel(): void; overwrite(): void; addMissingOnly(): void;
 }) {
@@ -806,23 +758,32 @@ function DuplicateImportDialog({ pending, busy, cancel, overwrite, addMissingOnl
   </div>;
 }
 
-function flashMessageKind(message: string): FlashMessageKind {
-  if (/^(?:đã|✅|thành công)|\bhoạt động\b/iu.test(message)) return 'success';
-  if (/không thể|không hợp lệ|thất bại|\blỗi\b|\bfailed\b|\binvalid\b|access denied|session expired/iu.test(message)) return 'error';
-  if (/^(?:hãy|chưa|phát hiện)|cảnh báo|\btrùng\b/iu.test(message)) return 'warning';
-  return 'info';
-}
-
 function Login(props: { email: string; password: string; busy: boolean; setEmail(value: string): void; setPassword(value: string): void; submit(event: FormEvent): void }) {
-  return <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-slate-100"><form onSubmit={props.submit} className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-8 shadow-2xl">
-    <div className="mb-8 flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-500/15 text-indigo-400"><KeyRound /></div><h1 className="text-2xl font-semibold">Admin sign in</h1><p className="mt-2 text-sm text-slate-400">JWT access and rotating refresh tokens protect this console.</p>
-    <label className="label mt-8">Email</label><input className="input" type="email" value={props.email} onChange={(event) => props.setEmail(event.target.value)} required />
-    <label className="label mt-4">Password</label><input className="input" type="password" value={props.password} onChange={(event) => props.setPassword(event.target.value)} required />
-    <button disabled={props.busy} className="button-primary mt-6 w-full">{props.busy ? 'Signing in…' : 'Sign in'}</button>
-  </form></main>;
+  return <main className="grid min-h-screen bg-slate-950 text-slate-100 lg:grid-cols-2">
+    <section className="login-art relative hidden flex-col justify-between overflow-hidden border-r border-slate-800 p-12 lg:flex xl:p-16">
+      <div className="flex items-center gap-3"><span className="store-mark"><ShoppingBag size={20} /></span><span className="text-lg font-semibold tracking-tight">Digital Store<span className="text-indigo-300">.</span></span></div>
+      <div className="relative z-10 my-16 max-w-lg"><p className="mb-6 text-xs font-medium uppercase tracking-[0.22em] text-indigo-300">Ít thao tác hơn. Nhiều kết nối hơn.</p>
+        <h2 className="text-5xl font-medium leading-[1.15] tracking-tight xl:text-6xl">Cửa hàng của bạn.<br /><span className="text-indigo-300">Trong tầm tay.</span></h2>
+        <p className="mt-6 max-w-sm text-base leading-7 text-slate-400">Từ đơn hàng đầu tiên đến những khách hàng thân thiết. Quản lý tất cả trong một không gian.</p>
+        <div className="mt-12 grid grid-cols-3 gap-3">{[[<Package size={20} key="product" />, 'Kho hàng'], [<Bot size={20} key="bot" />, 'Bot bán hàng'], [<MessagesSquare size={20} key="chat" />, 'Khách hàng']].map(([icon, label], index) => <div key={index} className="rounded-2xl border border-slate-700/60 bg-slate-950/30 p-4"><span className="text-indigo-300">{icon}</span><p className="mt-4 text-xs text-slate-300">{label}</p></div>)}</div>
+      </div>
+      <p className="text-xs text-slate-500">Không gian quản trị dành riêng cho cửa hàng của bạn.</p>
+    </section>
+    <section className="flex flex-col justify-center px-6 py-12 sm:px-12">
+      <form onSubmit={props.submit} className="mx-auto w-full max-w-sm">
+        <div className="mb-10 flex items-center gap-3 lg:hidden"><span className="store-mark"><ShoppingBag size={20} /></span><span className="text-lg font-semibold">Digital Store.</span></div>
+        <span className="mb-6 flex size-11 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-indigo-300"><KeyRound size={20} /></span>
+        <h1 className="text-3xl font-semibold tracking-tight">Chào mừng trở lại</h1><p className="mt-3 text-sm leading-6 text-slate-400">Đăng nhập để tiếp tục quản lý cửa hàng.</p>
+        <label htmlFor="admin-email" className="label mt-9">Địa chỉ email</label><input id="admin-email" className="input" type="email" autoComplete="username" placeholder="ban@cuahang.com" value={props.email} onChange={(event) => props.setEmail(event.target.value)} required />
+        <label htmlFor="admin-password" className="label mt-5">Mật khẩu</label><input id="admin-password" className="input" type="password" autoComplete="current-password" placeholder="Nhập mật khẩu của bạn" value={props.password} onChange={(event) => props.setPassword(event.target.value)} required />
+        <button disabled={props.busy} className="button-primary mt-7 flex w-full items-center justify-center gap-2">{props.busy ? 'Đang đăng nhập…' : 'Đăng nhập'}<ArrowRight size={17} /></button>
+        <p className="mt-7 text-center text-xs leading-5 text-slate-500">Chỉ dành cho quản trị viên được cấp quyền.</p>
+      </form>
+    </section>
+  </main>;
 }
 
-function AdminSidebar({ section, navigate }: { section: AdminSection; navigate(next: AdminSection): void }) {
+function AdminSidebar({ section, navigate, logout }: { section: AdminSection; navigate(next: AdminSection): void; logout(): void }) {
   const groups: Array<{ label: string; items: Array<{ id: AdminSection; label: string; icon: React.ReactNode }> }> = [
     { label: 'Vận hành', items: [
       { id: 'dashboard', label: 'Tổng quan', icon: <LayoutDashboard size={17} /> },
@@ -843,22 +804,23 @@ function AdminSidebar({ section, navigate }: { section: AdminSection; navigate(n
     ] },
     { label: 'Kiểm soát', items: [
       { id: 'ledger', label: 'Sổ cái ví', icon: <CircleDollarSign size={17} /> },
-      { id: 'audit', label: 'Nhật ký & tracing', icon: <Activity size={17} /> },
+      { id: 'audit', label: 'Nhật ký hoạt động', icon: <Activity size={17} /> },
     ] },
     { label: 'Cấu hình', items: [
       { id: 'bot', label: 'Bot Telegram', icon: <Bot size={17} /> },
       { id: 'payments', label: 'Thanh toán', icon: <QrCode size={17} /> },
-      { id: 'system', label: 'Runtime & QStash', icon: <ServerCog size={17} /> },
+      { id: 'system', label: 'Hệ thống', icon: <ServerCog size={17} /> },
     ] },
   ];
   const items = groups.flatMap((group) => group.items);
-  return <aside className="rounded-2xl border border-slate-800 bg-slate-900/80 p-3 shadow-xl lg:sticky lg:top-24 lg:self-start">
-    <label className="flex items-center gap-3 lg:hidden"><ListChecks size={18} className="shrink-0 text-indigo-300" /><span className="sr-only">Chọn chức năng quản trị</span><select value={section} onChange={(event) => navigate(event.target.value as AdminSection)} className="input h-11 flex-1 py-2">{items.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-    <div className="hidden lg:block"><div className="mb-3 flex items-center gap-2 px-2 py-2 text-sm font-medium text-slate-200"><ListChecks size={17} className="text-indigo-300" />Chức năng quản trị</div>
-    <nav className="space-y-4" aria-label="Điều hướng quản trị">
-      {groups.map((group) => <div key={group.label}><p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">{group.label}</p><div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-1">{group.items.map((item) => <button key={item.id} type="button" onClick={() => navigate(item.id)} className={`flex min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${section === item.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-950/50' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}><span className="shrink-0">{item.icon}</span><span className="truncate">{item.label}</span></button>)}</div></div>)}
+  return <aside className="admin-sidebar">
+    <button type="button" onClick={() => navigate('dashboard')} className="mb-6 hidden items-center gap-3 text-left lg:flex"><span className="store-mark"><ShoppingBag size={20} /></span><span className="text-lg font-semibold tracking-tight">Digital Store<span className="text-indigo-300">.</span></span></button>
+    <div className="flex items-center gap-3 lg:hidden"><span className="store-mark"><ShoppingBag size={19} /></span><label className="min-w-0 flex-1"><span className="sr-only">Chọn chức năng quản trị</span><select value={section} onChange={(event) => navigate(event.target.value as AdminSection)} className="input h-11 py-2">{items.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><button type="button" onClick={logout} aria-label="Đăng xuất" className="rounded-lg p-2 text-slate-400"><LogOut size={18} /></button></div>
+    <div className="mb-6 hidden items-center gap-3 rounded-xl border border-slate-700/70 p-3 lg:flex"><span className="flex size-8 items-center justify-center rounded-lg bg-slate-800 text-slate-300"><Bot size={17} /></span><div><p className="text-xs font-medium text-slate-200">Cửa hàng Telegram</p><p className="mt-0.5 text-[11px] text-slate-500">Không gian quản trị</p></div></div>
+    <nav className="hidden min-h-0 flex-1 space-y-5 overflow-y-auto lg:block" aria-label="Điều hướng quản trị">
+      {groups.map((group) => <div key={group.label}><p className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[0.13em] text-slate-500">{group.label}</p><div className="space-y-0.5">{group.items.map((item) => <button key={item.id} type="button" onClick={() => navigate(item.id)} aria-current={section === item.id ? 'page' : undefined} className="admin-nav-link"><span className="shrink-0">{item.icon}</span><span className="truncate">{item.label}</span>{section === item.id && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-indigo-300" />}</button>)}</div></div>)}
     </nav>
-    </div>
+    <div className="mt-5 hidden border-t border-slate-800 pt-4 lg:block"><button type="button" onClick={logout} className="admin-nav-link"><LogOut size={17} />Đăng xuất</button><p className="mt-4 px-3 text-[10px] tracking-wide text-slate-600">DIGITAL STORE · ADMIN CONSOLE</p></div>
   </aside>;
 }
 

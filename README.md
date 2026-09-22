@@ -143,6 +143,10 @@ Admin web nhận JSON array hoặc JSONL. API thực hiện:
 
 Không gửi plaintext vào log, BullMQ job, notification hay audit log.
 
+Trong **Kho hàng**, có thể dán tối đa 100 từ khóa khác nhau (mỗi từ khóa tối đa 120 ký tự), mỗi dòng một email, tên sản phẩm hoặc ID hàng/lô. Dạng `email----password----2fa` chỉ lấy phần email/login để tìm; mật khẩu và 2FA không được gửi trong yêu cầu tìm kiếm. Dữ liệu quá giới hạn hoặc thiếu email/login sẽ báo lỗi và giữ nguyên bộ lọc đang áp dụng.
+
+Giao diện gửi tìm kiếm qua `POST /api/admin/inventory/search` với JSON body để tránh giới hạn độ dài URL. Endpoint dùng cùng bộ lọc, phân trang và quyền `inventory.manage` hoặc `inventory.import` như `GET /api/admin/inventory`; GET vẫn được hỗ trợ.
+
 ## Tốc độ thông báo Telegram
 
 Ba luồng thông báo (admin gửi toàn bộ, hàng về và có khách mua hàng) xử lý tối đa 12 người nhận đồng thời. Chúng dùng chung bộ giới hạn trong collection `telegram_broadcast_rates`: tối đa 25 lần bắt đầu gửi trong mỗi cửa sổ trượt 1 giây, kể cả khi chạy nhiều worker hoặc nhiều instance Vercel. Khoảng cách cho cùng một chat là ít nhất 1 giây (group: 3 giây). Hạn mức này dành riêng cho thông báo hàng loạt, để lại khoảng trống cho tin nhắn giao hàng và tương tác với bot.

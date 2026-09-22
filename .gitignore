@@ -5,6 +5,7 @@ node_modules
 out
 dist
 .next
+.vercel
 *.tgz
 
 # code coverage

@@ -4,7 +4,8 @@ import { Types } from 'mongoose';
 import type { ClientSession, Connection, Model } from 'mongoose';
 import { EncryptionService } from '@store/encryption';
 import { AuditLog, ImportBatch, InventoryItem, Order, Product, User } from '@store/database';
-import { formatInventoryPatternPayload, InventoryStatus, parseInventoryPatternTemplate } from '@store/shared';
+import { formatInventoryPatternPayload, InventoryStatus, normalizeInventorySearchTerms,
+  parseInventoryPatternTemplate } from '@store/shared';
 import type { InventoryListQueryDto } from './inventory.dto';
 
 type InventoryListItem = {
@@ -51,8 +52,14 @@ export class InventoryAdminService {
     if (query.status) filter.status = query.status;
 
     const search = (query.query ?? query.search)?.trim();
-    if (search) {
-      const safePattern = escapeRegex(search);
+    let searchTerms: string[];
+    try {
+      searchTerms = normalizeInventorySearchTerms(search ?? '');
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Từ khóa tìm kiếm không hợp lệ.');
+    }
+    if (searchTerms.length) {
+      const safePattern = searchTerms.map(escapeRegex).join('|');
       const matches: Record<string, unknown>[] = [{
         $expr: {
           $anyElementTrue: {
@@ -72,9 +79,9 @@ export class InventoryAdminService {
       }];
       // The UI commonly pastes one of these IDs. Use exact ObjectId matching rather than
       // applying a regex to identifiers, which keeps this path indexed and predictable.
-      if (Types.ObjectId.isValid(search)) {
-        const id = new Types.ObjectId(search);
-        matches.push({ _id: id }, { importBatchId: id });
+      const ids = searchTerms.filter((term) => Types.ObjectId.isValid(term)).map((term) => new Types.ObjectId(term));
+      if (ids.length) {
+        matches.push({ _id: { $in: ids } }, { importBatchId: { $in: ids } });
       }
       // The inventory page is where admins naturally search by the product's
       // display name. Inventory rows only store productId, so resolve matching

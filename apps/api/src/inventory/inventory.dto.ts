@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsArray, IsBoolean, IsEnum, IsInt, IsMongoId, IsObject, IsOptional, IsString, Length, Max, Min } from 'class-validator';
-import { InventoryStatus } from '@store/shared';
+import { InventoryStatus, MAX_INVENTORY_SEARCH_QUERY_LENGTH } from '@store/shared';
 
 export class ImportInventoryDto {
   @IsMongoId() productId!: string;
@@ -15,8 +15,8 @@ export class InventoryListQueryDto {
   @IsOptional() @IsEnum(InventoryStatus) status?: typeof InventoryStatus[keyof typeof InventoryStatus];
 
   // `search` is kept for the web UI; `query` is the API's documented alias.
-  @IsOptional() @IsString() @Length(1, 120) query?: string;
-  @IsOptional() @IsString() @Length(1, 120) search?: string;
+  @IsOptional() @IsString() @Length(1, MAX_INVENTORY_SEARCH_QUERY_LENGTH) query?: string;
+  @IsOptional() @IsString() @Length(1, MAX_INVENTORY_SEARCH_QUERY_LENGTH) search?: string;
 
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(1_000_000) page = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;

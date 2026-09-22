@@ -1,29 +1,55 @@
 @import "tailwindcss";
 
 :root {
-  --background: #090d16;
-  --foreground: #f3f4f6;
-  --card: #111827;
-  --card-border: #1f293d;
-  --accent: #6366f1;
-  --accent-hover: #4f46e5;
+  color-scheme: dark;
+  --background: #101312;
+  --foreground: #f1f4f1;
+  --card: #191d1b;
+  --card-border: #2a302c;
+  --accent: #c5edaa;
+  --accent-hover: #d8f5c5;
 }
 
-@keyframes flash-in {
-  from { opacity: 0; transform: translateY(-12px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .flash-message { animation: none; }
+@theme {
+  --color-slate-50: #f6f8f5;
+  --color-slate-100: #edf1ed;
+  --color-slate-200: #dce3dd;
+  --color-slate-300: #b8c2ba;
+  --color-slate-400: #96a399;
+  --color-slate-500: #7c8a80;
+  --color-slate-600: #637368;
+  --color-slate-700: #38443b;
+  --color-slate-800: #2a332d;
+  --color-slate-900: #191e1b;
+  --color-slate-950: #101512;
+  --color-indigo-50: #f0f9e9;
+  --color-indigo-100: #e1f3d2;
+  --color-indigo-200: #d8f5c5;
+  --color-indigo-300: #c5edaa;
+  --color-indigo-400: #a9d38e;
+  --color-indigo-500: #6c9957;
+  --color-indigo-600: #426b34;
+  --color-indigo-700: #36562c;
+  --color-indigo-800: #2c4426;
+  --color-indigo-900: #243720;
+  --color-indigo-950: #172615;
 }
 
 @layer components {
+  .label { @apply mb-2 block text-xs font-medium tracking-wide text-slate-300; }
+  .input { @apply w-full rounded-lg border border-slate-700 bg-slate-950/60 px-3.5 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-300/10; }
+  .button-primary { @apply rounded-lg bg-indigo-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-indigo-200 disabled:cursor-not-allowed disabled:opacity-40; }
+  .button-secondary { @apply rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-sm font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40; }
+  .admin-shell { @apply min-h-screen bg-slate-950 text-slate-100 lg:pl-60; }
+  .admin-sidebar { @apply border-b border-slate-800 bg-slate-900 p-4 lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:flex lg:w-60 lg:flex-col lg:border-b-0 lg:border-r lg:p-5; }
+  .store-mark { @apply flex size-9 shrink-0 items-center justify-center rounded-xl bg-indigo-300 text-slate-950; }
+  .admin-nav-link { @apply flex w-full min-w-0 items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-slate-400 transition hover:bg-slate-800/70 hover:text-slate-100; }
+  .admin-nav-link[aria-current="page"] { @apply bg-indigo-300/10 text-indigo-300; }
+  .admin-sidebar nav { scrollbar-width: thin; scrollbar-color: var(--color-slate-700) transparent; }
   .admin-card { @apply rounded-2xl border border-slate-800 bg-slate-900; }
-  .label { @apply mb-2 block text-xs font-medium uppercase tracking-wider text-slate-400; }
-  .input { @apply w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20; }
-  .button-primary { @apply rounded-xl bg-indigo-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50; }
-  .button-secondary { @apply rounded-xl border border-slate-700 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-slate-800 disabled:opacity-50; }
+  .dashboard-stat { @apply min-w-0 rounded-2xl border border-slate-800 bg-slate-900 p-5; }
+  .dashboard-stat:first-child { @apply border-indigo-300/25 bg-indigo-300/5; }
+  .login-art { background: radial-gradient(ellipse at 20% 25%, #c5edaa17, transparent 65%), #191e1b; }
 }
 
 /* Do NOT put margin/padding resets outside @layer — they override Tailwind utilities (mx-auto, p-*, etc.) */
@@ -39,5 +65,11 @@
     color: var(--foreground);
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
   }
+
+  button:not(:disabled), summary, select { cursor: pointer; }
+  button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  ::selection { background: #c5edaa35; color: #f6f8f5; }
 }

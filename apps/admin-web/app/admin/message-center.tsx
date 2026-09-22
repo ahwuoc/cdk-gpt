@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  LoaderCircle, Megaphone, MessageCircle, MessagesSquare, Plus, RefreshCw, Search, Send, Users,
+  CheckCircle2, Clock3, Info, LoaderCircle, Megaphone, MessageCircle, MessagesSquare, Plus, RefreshCw, Search, Send, TriangleAlert, Users,
 } from 'lucide-react';
 import type { AuthorizedRequest } from './operations-dashboard';
 import { requestId } from './request-id';
@@ -146,7 +146,7 @@ export function MessageCenter({ authorized, setMessage }: {
         headers: { 'content-type': 'application/json', 'x-request-id': requestId() }, body: JSON.stringify({ body }) });
       const result = await json<{ queued?: boolean; message?: string | string[] }>(response);
       if (!response.ok) throw new Error(errorMessage(result, 'Không thể xếp hàng thông báo.'));
-      setBroadcastBody(''); setMessage('Đã xếp hàng gửi toàn bộ. QStash/BullMQ sẽ gửi lần lượt và chống gửi trùng.');
+      setBroadcastBody(''); setMessage('Đã đưa thông báo vào hàng đợi. Theo dõi kết quả gửi trong lịch sử bên dưới.');
       await loadBroadcasts();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể gửi thông báo.'); }
     finally { setBusy(false); }
@@ -158,18 +158,21 @@ export function MessageCenter({ authorized, setMessage }: {
 
   return <section className="space-y-5">
     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-      <div className="flex gap-3"><span className="rounded-2xl bg-indigo-500/12 p-3 text-indigo-300"><MessagesSquare /></span><div>
-        <p className="text-sm font-medium text-indigo-300">Chăm sóc khách hàng</p>
-        <h2 className="mt-1 text-2xl font-semibold text-white">Hộp thư Telegram</h2>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Hội thoại mới nhất luôn ở trên. Chọn một khách bên trái để xem và trả lời ngay.</p>
+      <div><div>
+        <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.2em] text-indigo-300">Kết nối với khách hàng</p>
+        <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-[28px]">Tin nhắn & thông báo</h1>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Trả lời từng khách hoặc gửi một thông báo đến cả cửa hàng.</p>
       </div></div>
       <button type="button" onClick={() => void (mode === 'direct'
         ? Promise.all([loadConversations(), loadMessages()]) : loadBroadcasts())} disabled={refreshing}
         className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2.5"><RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />Làm mới</button>
     </div>
-    <div className="flex w-fit rounded-xl border border-slate-800 bg-slate-900 p-1">
-      <button className={`rounded-lg px-4 py-2 text-sm ${mode === 'direct' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`} onClick={() => setMode('direct')}><MessageCircle size={15} className="mr-2 inline" />Hội thoại</button>
-      <button className={`rounded-lg px-4 py-2 text-sm ${mode === 'broadcast' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`} onClick={() => setMode('broadcast')}><Megaphone size={15} className="mr-2 inline" />Nhắn toàn bộ</button>
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800">
+      <div className="flex gap-5">
+        <button type="button" aria-pressed={mode === 'direct'} className={`border-b-2 px-1 pb-3 text-sm transition ${mode === 'direct' ? 'border-indigo-300 text-indigo-300' : 'border-transparent text-slate-400 hover:text-slate-200'}`} onClick={() => setMode('direct')}><MessageCircle size={15} className="mr-2 inline" />Hội thoại</button>
+        <button type="button" aria-pressed={mode === 'broadcast'} className={`border-b-2 px-1 pb-3 text-sm transition ${mode === 'broadcast' ? 'border-indigo-300 text-indigo-300' : 'border-transparent text-slate-400 hover:text-slate-200'}`} onClick={() => setMode('broadcast')}><Megaphone size={15} className="mr-2 inline" />Gửi thông báo</button>
+      </div>
+      <p className="mb-3 flex items-center gap-1.5 text-[11px] text-slate-500"><RefreshCw size={11} />Tự cập nhật mỗi 10 giây</p>
     </div>
 
     {mode === 'direct' ? <div className="overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 xl:grid xl:h-[min(720px,calc(100vh-250px))] xl:min-h-[600px] xl:grid-cols-[340px_minmax(0,1fr)]">
@@ -246,27 +249,48 @@ export function MessageCenter({ authorized, setMessage }: {
           </div>
         </> : <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-slate-500"><MessagesSquare size={40} /><h3 className="text-base font-medium text-slate-300">Chọn một cuộc trò chuyện</h3><p className="max-w-sm text-sm">Chọn khách trong danh sách bên trái để xem lịch sử và trả lời.</p></div>}
       </div>
-    </div> : <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
-      <div className="rounded-3xl border border-amber-500/20 bg-slate-900 p-5">
-        <div className="flex items-center gap-2 text-amber-200"><Users size={18} /><h3 className="font-semibold">Gửi toàn bộ khách</h3></div>
-        <textarea className="input mt-4 min-h-48" value={broadcastBody} onChange={(event) => setBroadcastBody(event.target.value)} maxLength={4_000} placeholder="Thông báo chương trình mới, bảo trì…" />
-        <p className="mt-2 text-right text-xs text-slate-500">{broadcastBody.length}/4.000</p>
-        <button type="button" disabled={busy || !broadcastBody.trim()} onClick={() => void sendBroadcast()}
-          className="button-primary mt-3 flex w-full items-center justify-center gap-2"><Megaphone size={16} />{busy ? 'Đang xếp hàng…' : 'Gửi đến tất cả'}</button>
-        <p className="mt-3 text-xs leading-5 text-slate-500">Hệ thống gửi theo từng lô, giới hạn tốc độ Telegram và chống gửi trùng khi QStash retry.</p>
+    </div> : <div className="space-y-5">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+        <div className="admin-card p-5 sm:p-6">
+          <div className="flex items-center gap-2"><Megaphone size={18} className="text-indigo-300" /><h2 className="font-semibold">Soạn thông báo mới</h2></div>
+          <p className="mt-2 text-xs leading-5 text-slate-400">Gửi qua bot đến những khách hàng đang hoạt động.</p>
+          <label htmlFor="broadcast-body" className="label mt-5">Nội dung thông báo</label>
+          <textarea id="broadcast-body" className="input min-h-44 resize-y leading-6" value={broadcastBody} onChange={(event) => setBroadcastBody(event.target.value)} maxLength={4_000} placeholder="Chia sẻ hàng mới, ưu đãi hoặc lịch bảo trì với khách…" />
+          <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500"><span className="flex items-center gap-1.5"><Users size={12} />Tất cả khách đang hoạt động</span><span>{broadcastBody.length.toLocaleString('vi-VN')} / 4.000</span></div>
+          <button type="button" disabled={busy || !broadcastBody.trim()} onClick={() => void sendBroadcast()} className="button-primary mt-5 flex w-full items-center justify-center gap-2"><Send size={16} />{busy ? 'Đang xếp hàng…' : 'Gửi đến tất cả khách'}</button>
+        </div>
+        <div className="space-y-4">
+          <div className="admin-card p-5"><p className="mb-4 text-xs font-medium text-slate-400">Xem trước nội dung trên Telegram</p>
+            <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs font-semibold text-indigo-300">📢 THÔNG BÁO TỪ SHOP</p><p className={`mt-3 max-h-52 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 ${broadcastBody.trim() ? 'text-slate-200' : 'text-slate-500'}`}>{broadcastBody.trim() || 'Nội dung bạn soạn sẽ xuất hiện ở đây…'}</p><div className="mt-4 rounded-lg bg-slate-800 p-2.5 text-center text-xs text-slate-300">💬 Liên hệ shop</div></div>
+          </div>
+          <div className="rounded-xl border border-indigo-300/15 bg-indigo-300/5 p-4"><p className="flex items-center gap-2 text-xs font-medium text-indigo-300"><Info size={15} />Thông báo được gửi như thế nào?</p><p className="mt-2 text-xs leading-6 text-slate-400">Bot gửi song song; các thông báo hàng loạt dùng chung hạn mức 25 tin/giây. Hệ thống tự chờ và gửi lại khi Telegram giới hạn tốc độ. Khách đăng ký trước thường vẫn được xếp trước; kết quả cập nhật sau mỗi lô.</p></div>
+        </div>
       </div>
-      <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5"><h3 className="font-semibold text-white">Lịch sử broadcast</h3>
-        <div className="mt-4 space-y-3">{broadcasts.map((item) => <article key={item.id} className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-          <div className="flex flex-wrap justify-between gap-2"><Status value={item.status} /><span className="text-xs text-slate-500">{dateTime(item.createdAt)}</span></div>
+      <div className="admin-card p-5 sm:p-6"><div className="flex items-center justify-between gap-3"><h2 className="font-semibold">Lịch sử thông báo</h2><span className="text-xs text-slate-500">30 thông báo gần nhất</span></div>
+        <div className="mt-5 space-y-3">{broadcasts.map((item) => <article key={item.id} className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 sm:p-5">
+          <div className="flex flex-wrap justify-between gap-2"><BroadcastStatus item={item} /><span className="text-[11px] text-slate-500">{dateTime(item.createdAt)}</span></div>
           <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-200">{item.body}</p>
-          <p className="mt-2 text-xs text-slate-500">Đã gửi: {item.metadata?.sent ?? 0} · Lỗi: {item.metadata?.failed ?? 0} · Đã xử lý: {item.metadata?.recipientsProcessed ?? 0}</p>
-        </article>)}{!broadcastLoading && broadcasts.length === 0 && <p className="py-20 text-center text-sm text-slate-500">Chưa có broadcast.</p>}</div>
+          <div className="mt-4 grid grid-cols-3 gap-3 border-t border-slate-800 pt-4">
+            <div><p className="flex items-center gap-1.5 text-[11px] text-slate-400"><CheckCircle2 size={13} className="text-indigo-300" />Đã gửi</p><p className="mt-1 text-lg font-medium text-indigo-300">{(item.metadata?.sent ?? 0).toLocaleString('vi-VN')}</p></div>
+            <div><p className="flex items-center gap-1.5 text-[11px] text-slate-400"><TriangleAlert size={13} />Gửi lỗi</p><p className={`mt-1 text-lg font-medium ${item.metadata?.failed ? 'text-rose-300' : 'text-slate-300'}`}>{(item.metadata?.failed ?? 0).toLocaleString('vi-VN')}</p></div>
+            <div><p className="flex items-center gap-1.5 text-[11px] text-slate-400"><Users size={13} />Đã xử lý</p><p className="mt-1 text-lg font-medium text-slate-300">{(item.metadata?.recipientsProcessed ?? 0).toLocaleString('vi-VN')}</p></div>
+          </div>
+          {item.status === 'SENT' && Number(item.metadata?.failed ?? 0) > 0 && <p className="mt-3 text-xs leading-5 text-amber-200">Lượt gửi đã kết thúc, nhưng có khách chưa nhận được thông báo do lỗi gửi.</p>}
+        </article>)}
+        {broadcastLoading && broadcasts.length === 0 && <div role="status" className="flex justify-center gap-2 py-12 text-sm text-slate-400"><LoaderCircle size={17} className="animate-spin" />Đang tải thông báo…</div>}
+        {!broadcastLoading && broadcasts.length === 0 && <div className="flex flex-col items-center gap-3 py-12 text-center"><span className="rounded-xl bg-slate-800 p-3 text-slate-400"><Megaphone size={22} /></span><p className="text-sm text-slate-300">Chưa có thông báo nào</p><p className="text-xs text-slate-500">Soạn thông báo đầu tiên để kết nối với khách hàng.</p></div>}</div>
       </div>
     </div>}
   </section>;
 }
 
-function Status({ value }: { value: string }) { return <span className={`rounded-full px-2 py-0.5 text-[11px] ${value === 'SENT' ? 'bg-emerald-500/15 text-emerald-300' : value === 'FAILED' ? 'bg-rose-500/15 text-rose-300' : 'bg-amber-500/15 text-amber-300'}`}>{statusLabel(value)}</span>; }
+function BroadcastStatus({ item }: { item: BroadcastRecord }) {
+  const finished = item.status === 'SENT';
+  const hasFailures = Number(item.metadata?.failed ?? 0) > 0;
+  const label = finished ? hasFailures ? 'Kết thúc · có lỗi gửi' : 'Đã kết thúc lượt gửi'
+    : item.status === 'FAILED' ? 'Gửi lỗi' : item.status === 'SENDING' || Number(item.metadata?.recipientsProcessed ?? 0) > 0 ? 'Đang xử lý' : 'Trong hàng đợi';
+  return <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] ${finished && !hasFailures ? 'bg-indigo-300/10 text-indigo-300' : 'bg-amber-500/10 text-amber-200'}`}>{finished ? <CheckCircle2 size={12} /> : <Clock3 size={12} />}{label}</span>;
+}
 function statusLabel(value: string) { return ({ SENT: 'Đã gửi', FAILED: 'Gửi lỗi', PENDING: 'Đang chờ', SENDING: 'Đang gửi', RECEIVED: 'Khách gửi' } as Record<string, string>)[value] ?? value; }
 function person(user: Customer) { return user.displayName || (user.username ? `@${user.username}` : '') || `Telegram ${user.telegramId}`; }
 function initials(user: Customer) {

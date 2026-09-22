@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Boxes, ChevronLeft, ChevronRight, Eye, Filter, LoaderCircle, PackageCheck, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { normalizeInventorySearchTerms } from '@store/shared';
 import type { ProductRecord } from './product-manager';
 import { requestId } from './request-id';
 
@@ -54,6 +55,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
   const [busy, setBusy] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const [filter, setFilter] = useState({ productId: '', status: '', search: '', page: 1 });
+  const [searchDraft, setSearchDraft] = useState('');
   const activeProduct = products.find((product) => product._id === filter.productId);
   const pageStats = pageStatusCounts(data.items);
   const stats = activeProduct ? {
@@ -66,8 +68,11 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
       const query = new URLSearchParams({ page: String(filter.page), limit: String(pageSize) });
       if (filter.productId) query.set('productId', filter.productId);
       if (filter.status) query.set('status', filter.status);
-      if (filter.search.trim()) query.set('search', filter.search.trim());
-      const response = await authorized(`/admin/inventory?${query}`);
+      const search = filter.search.trim();
+      const response = search
+        ? await authorized('/admin/inventory/search', { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...Object.fromEntries(query), search }) })
+        : await authorized(`/admin/inventory?${query}`);
       const body = await readBody<InventoryPage>(response);
       if (!response.ok) throw new Error(apiMessage(body, 'Không thể tải danh sách kho.'));
       const next = normalizePage(body);
@@ -82,6 +87,20 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
   }, [authorized, filter, setMessage]);
 
   useEffect(() => { queueMicrotask(() => void load()); }, [load, refreshKey]);
+
+  function applySearch() {
+    try {
+      const search = normalizeInventorySearchTerms(searchDraft).join('\n');
+      setFilter((current) => ({ ...current, search, page: 1 }));
+    } catch (error) {
+      setMessage(`Không thể tìm kiếm: ${error instanceof Error ? error.message : 'Từ khóa tìm kiếm không hợp lệ.'}`);
+    }
+  }
+
+  function clearFilters() {
+    setSearchDraft('');
+    setFilter({ productId: '', status: '', search: '', page: 1 });
+  }
 
   async function removeItem(item: InventoryRecord) {
     if (!window.confirm('Xóa hàng này khỏi kho? Thao tác chỉ áp dụng cho hàng chưa bán/chưa giữ.')) return;
@@ -109,7 +128,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
     finally { setActionId(null); }
   }
 
-  return <section className="rounded-3xl border border-slate-800 bg-slate-900 p-4 shadow-xl sm:p-5">
+  return <section className="@container min-w-0 rounded-3xl border border-slate-800 bg-slate-900 p-4 shadow-xl sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex gap-3"><span className="rounded-xl bg-indigo-500/10 p-2.5 text-indigo-300"><Boxes size={19} /></span><div><h3 className="font-semibold text-white">Theo dõi kho hàng</h3><p className="mt-1 text-xs leading-5 text-slate-400">Lọc theo sản phẩm, trạng thái, lô nhập và xem nhanh dữ liệu từng dòng.</p></div></div>
       <button type="button" onClick={() => void load()} disabled={busy} className="button-secondary inline-flex items-center gap-2 px-3 py-2"><RefreshCw size={14} className={busy ? 'animate-spin' : ''} />Tải lại</button>
@@ -123,12 +142,23 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
     </div>
 
     <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/40 p-3">
-      <div className="grid gap-2 md:grid-cols-[minmax(180px,260px)_1fr_auto]">
-        <select className="input h-11 py-2" value={filter.productId} onChange={(event) => setFilter((current) => ({ ...current, productId: event.target.value, page: 1 }))} aria-label="Lọc sản phẩm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <select className="input h-11 py-2 sm:w-[260px]" value={filter.productId} onChange={(event) => setFilter((current) => ({ ...current, productId: event.target.value, page: 1 }))} aria-label="Lọc sản phẩm">
           <option value="">Tất cả sản phẩm</option>{products.map((product) => <option key={product._id} value={product._id}>{product.name}</option>)}
         </select>
-        <label className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input className="input h-11 py-2 pl-10 font-mono text-xs" value={filter.search} onChange={(event) => setFilter((current) => ({ ...current, search: event.target.value, page: 1 }))} placeholder="Tìm tên sản phẩm, ID hàng/lô hoặc dữ liệu" /></label>
-        <button type="button" className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2" onClick={() => setFilter({ productId: '', status: '', search: '', page: 1 })}><Filter size={15} />Xóa lọc</button>
+        <button type="button" className="button-secondary inline-flex items-center justify-center gap-2 px-3 py-2" onClick={clearFilters}><Filter size={15} />Xóa lọc</button>
+      </div>
+      <label className="mt-3 block">
+        <span className="mb-2 block text-xs font-medium text-slate-300">Tìm kiếm nhiều dòng</span>
+        <textarea className="input min-h-28 resize-y font-mono text-xs leading-6" rows={4}
+          value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); applySearch(); } }}
+          placeholder={'Dán danh sách cần tìm, mỗi dòng một email hoặc ID:\nuser1@example.com\nuser2@example.com\nuser3@example.com'}
+          aria-label="Tìm kiếm kho hàng" aria-describedby="inventory-search-help" spellCheck={false} autoCapitalize="none" />
+      </label>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+        <p id="inventory-search-help" className="min-w-0 flex-1 basis-64 text-[11px] leading-5 text-slate-500">Dán tối đa 100 dòng. Với dạng <code>email----password----2fa</code>, hệ thống tự lấy email để tìm. Nhấn Enter để xuống dòng, Ctrl/⌘ + Enter để tìm.</p>
+        <button type="button" className="button-primary inline-flex items-center justify-center gap-2 px-4 py-2.5" onClick={applySearch} disabled={busy}><Search size={15} />Tìm kiếm</button>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         {statuses.map((status) => <button key={status.value || 'all'} type="button"
@@ -142,7 +172,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
     </div>
 
     <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
-      <div className="hidden border-b border-slate-800 bg-slate-950/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600 lg:grid lg:grid-cols-[minmax(200px,0.9fr)_minmax(230px,1fr)_minmax(220px,0.95fr)_130px_170px]">
+      <div className="hidden border-b border-slate-800 bg-slate-950/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600 @[1050px]:grid @[1050px]:grid-cols-[minmax(200px,0.9fr)_minmax(230px,1fr)_minmax(220px,0.95fr)_130px_170px]">
         <span>Sản phẩm</span><span>Dữ liệu xem trước</span><span>Bán cho / giá bán</span><span>Lô nhập</span><span className="text-right">Thao tác</span>
       </div>
       <div className="max-h-[min(68vh,720px)] divide-y divide-slate-800 overflow-x-hidden overflow-y-auto overscroll-contain">
@@ -160,7 +190,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
 function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onReveal }: { item: InventoryRecord; product?: ProductRecord; pending: boolean; onRemove(): void; onRemoveBatch?: () => void; onReveal(): void }) {
   const removable = item.status === 'AVAILABLE';
   const productName = item.productName ?? product?.name ?? 'Sản phẩm đã xóa';
-  return <article className="grid gap-3 p-4 transition hover:bg-slate-900/65 lg:grid-cols-[minmax(200px,0.9fr)_minmax(230px,1fr)_minmax(220px,0.95fr)_130px_170px] lg:items-center">
+  return <article className="grid gap-3 p-4 transition hover:bg-slate-900/65 @[1050px]:grid-cols-[minmax(200px,0.9fr)_minmax(230px,1fr)_minmax(220px,0.95fr)_130px_170px] @[1050px]:items-center">
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2"><Status value={item.status} /><span className="truncate text-sm font-medium text-slate-100">{productName}</span></div>
       <div className="mt-2 flex items-center gap-2 text-xs text-slate-500"><PackageCheck size={14} /><code title={item.id}>ID {shortId(item.id)}</code></div>
@@ -174,11 +204,11 @@ function InventoryRow({ item, product, pending, onRemove, onRemoveBatch, onRevea
       <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-600">Lô nhập</p>
       {item.importBatchId ? <code className="mt-1 block truncate text-xs text-slate-400" title={item.importBatchId}>{shortId(item.importBatchId)}</code> : <span className="mt-1 block text-xs text-slate-600">Không có lô</span>}
     </div>
-    <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-1">
+    <div className="grid gap-2 sm:grid-cols-3 @[1050px]:grid-cols-1">
       <button type="button" disabled={pending} onClick={onReveal} className="button-secondary inline-flex w-full items-center justify-center gap-2 px-3 py-2"><Eye size={14} />Xem</button>
       <button type="button" disabled={pending || !removable} onClick={onRemove} title={removable ? 'Xóa riêng dòng kho này' : 'Chỉ xóa được hàng đang có sẵn'} className={`inline-flex w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-55 ${removable ? 'border-rose-900/60 text-rose-300 hover:bg-rose-950/30' : 'border-slate-800 text-slate-600'}`}><Trash2 size={14} />Xóa</button>
       {onRemoveBatch && <button type="button" disabled={pending || !removable} onClick={onRemoveBatch} title={removable ? 'Xóa các hàng chưa bán trong cùng lô nhập' : 'Lô có hàng đã bán/đang giữ sẽ được bảo toàn'} className="button-secondary w-full px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-55">Xóa cả lô</button>}
-      {!removable && <span className="text-center text-[11px] leading-4 text-slate-500 sm:col-span-3 lg:col-span-1">Đã bán/đang giữ nên không cho xóa.</span>}
+      {!removable && <span className="text-center text-[11px] leading-4 text-slate-500 sm:col-span-3 @[1050px]:col-span-1">Đã bán/đang giữ nên không cho xóa.</span>}
     </div>
   </article>;
 }

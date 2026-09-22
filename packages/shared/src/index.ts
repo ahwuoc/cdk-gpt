@@ -19,6 +19,38 @@ export const PaymentRequestStatus = { PENDING: 'PENDING', APPROVED: 'APPROVED', 
 // Keep the inline keyboard compact (1-5), while allowing legitimate bulk
 // purchases through the custom quantity input. The API enforces this too.
 export const MAX_TELEGRAM_QUICK_CHECKOUT_QUANTITY = 100;
+export const MAX_INVENTORY_BULK_SEARCH_TERMS = 100;
+export const MAX_INVENTORY_SEARCH_TERM_LENGTH = 120;
+export const MAX_INVENTORY_SEARCH_QUERY_LENGTH = MAX_INVENTORY_BULK_SEARCH_TERMS
+  * MAX_INVENTORY_SEARCH_TERM_LENGTH + MAX_INVENTORY_BULK_SEARCH_TERMS - 1;
+
+/**
+ * Normalizes inventory searches pasted from credential lists. A line such as
+ * `email----password----2fa` is searched by its email/login portion because
+ * passwords and 2FA secrets are intentionally unavailable to list queries.
+ */
+export function normalizeInventorySearchTerms(value: string) {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  for (const [index, rawLine] of value.split(/\r?\n/u).entries()) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const separator = line.indexOf('----');
+    const term = (separator >= 0 ? line.slice(0, separator) : line).trim();
+    if (!term) throw new Error(`Dòng ${index + 1} thiếu email/login trước dấu ----.`);
+    if (term.length > MAX_INVENTORY_SEARCH_TERM_LENGTH) {
+      throw new Error(`Từ khóa tìm kiếm ở dòng ${index + 1} vượt quá ${MAX_INVENTORY_SEARCH_TERM_LENGTH} ký tự.`);
+    }
+    const key = term.toLocaleLowerCase('en-US');
+    if (seen.has(key)) continue;
+    if (terms.length >= MAX_INVENTORY_BULK_SEARCH_TERMS) {
+      throw new Error(`Chỉ có thể tìm tối đa ${MAX_INVENTORY_BULK_SEARCH_TERMS} từ khóa mỗi lần.`);
+    }
+    seen.add(key);
+    terms.push(term);
+  }
+  return terms;
+}
 
 /** Returns the rounded percentage off, or 0 when the product is not on sale. */
 export function productDiscountPercent(price: number, originalPrice?: number | null) {

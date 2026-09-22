@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Headers, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { RequireAnyPermission, RequirePermissions } from '../auth/permissions.guard';
 import type { AdminClaims } from '../auth/auth.service';
@@ -14,6 +14,10 @@ export class InventoryController {
 
   @Get() @RequireAnyPermission('inventory.manage', 'inventory.import')
   list(@Query() query: InventoryListQueryDto) { return this.admin.list(query); }
+
+  // Bulk searches travel in the body so long account lists do not exceed URL limits.
+  @Post('search') @HttpCode(200) @RequireAnyPermission('inventory.manage', 'inventory.import')
+  search(@Body() query: InventoryListQueryDto) { return this.admin.list(query); }
 
   @Post('import/preview') @RequirePermissions('inventory.import')
   preview(@Body() body: ImportInventoryDto) { return this.importer.preview(body.productId, body.rows); }

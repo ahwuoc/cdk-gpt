@@ -90,14 +90,18 @@ export function TopSpenders({ authorized, refreshVersion = 0 }: {
 
   function applyRange(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const days = (Date.parse(draft.to) - Date.parse(draft.from)) / dayMs + 1;
+    // Native date-picker/autofill values may not yet be reflected in React state.
+    const fields = new FormData(event.currentTarget);
+    const submitted = { from: String(fields.get('from') ?? ''), to: String(fields.get('to') ?? '') };
+    const days = (Date.parse(submitted.to) - Date.parse(submitted.from)) / dayMs + 1;
     if (!Number.isFinite(days) || days < 1 || days > 366) {
       setValidationError('Chọn từ 1 đến 366 ngày, ngày bắt đầu không sau ngày kết thúc.');
       return;
     }
     setValidationError('');
     setPreset(null);
-    setRange({ ...draft });
+    setDraft(submitted);
+    setRange(submitted);
   }
 
   return <section className="admin-card min-w-0 overflow-hidden" aria-labelledby="top-spenders-title">
@@ -125,11 +129,11 @@ export function TopSpenders({ authorized, refreshVersion = 0 }: {
         </div>
         <form onSubmit={applyRange} className="flex flex-wrap items-end gap-2">
           <label className="min-w-[140px] flex-1 text-xs text-slate-400 sm:flex-none">Từ ngày
-            <input type="date" required value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })}
+            <input type="date" name="from" required value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })}
               className="input mt-1 h-10 min-w-0 py-2" />
           </label>
           <label className="min-w-[140px] flex-1 text-xs text-slate-400 sm:flex-none">Đến ngày
-            <input type="date" required value={draft.to} onChange={(event) => setDraft({ ...draft, to: event.target.value })}
+            <input type="date" name="to" required value={draft.to} onChange={(event) => setDraft({ ...draft, to: event.target.value })}
               className="input mt-1 h-10 min-w-0 py-2" />
           </label>
           <button type="submit" className="button-secondary h-10 px-3 py-2 text-xs">Áp dụng</button>
