@@ -393,14 +393,17 @@ function mockProductCampaign(kind: 'stock' | 'purchase') {
   spyOn(InventoryItemModel, 'countDocuments').mockResolvedValue(12 as never);
   spyOn(NotificationModel, 'findOneAndUpdate').mockImplementation((async (
     filter: { _id?: Types.ObjectId; deduplicationKey?: string; status?: { $ne?: string } },
-    update: DeliveryUpdate, options?: { timestamps?: boolean },
+    update: DeliveryUpdate, options?: { timestamps?: boolean; includeResultMetadata?: boolean },
   ) => {
     if (update.$setOnInsert) {
       const key = filter.deduplicationKey!;
       const existing = records.get(key);
       if (!existing) records.set(key, { _id: new Types.ObjectId(), ...update.$setOnInsert });
       else if (options?.timestamps !== false) existing.updatedAt = new Date();
-      return records.get(key)!;
+      const record = records.get(key)!;
+      return options?.includeResultMetadata
+        ? { value: { ...record }, lastErrorObject: { updatedExisting: Boolean(existing), ...(!existing ? { upserted: record._id } : {}) } }
+        : record;
     }
     const record = Array.from(records.values()).find((value) => value._id.equals(filter._id));
     if (record && Array.from(failedBeforeClaim).some((key) => records.get(key) === record)) record.status = NotificationStatus.FAILED;
@@ -421,7 +424,11 @@ function mockProductCampaign(kind: 'stock' | 'purchase') {
   }) as never);
   const recordKey = (index: number) => `${kind === 'purchase' ? 'purchase-proof' : 'restock'}:${eventId}:${recipients[index]!._id}`;
   return { recipients, buyerId, findUsers, deliveryUpdates,
-    failBeforeClaim(index: number) { failedBeforeClaim.add(recordKey(index)); },
+    failBeforeClaim(index: number) {
+      const key = recordKey(index);
+      records.set(key, { _id: customerMessageId(key), status: NotificationStatus.PENDING, updatedAt: new Date() });
+      failedBeforeClaim.add(key);
+    },
     failSentWrite(error: Error) { sentWriteFailure = error; },
     run(bot: TelegramBotClient, sender = immediateSender) {
       return kind === 'purchase'

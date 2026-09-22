@@ -9,6 +9,7 @@ import {
   DeliveryStatus, InventoryStatus, OrderStatus, PaymentRequestStatus, ProductStatus,
 } from '@store/shared';
 import { AuditHistoryQueryDto, DepositHistoryQueryDto, OrderHistoryQueryDto, UserHistoryQueryDto, WalletHistoryQueryDto } from './analytics.dto';
+import { ReportCache } from './report-cache';
 
 const RECENT_ACTIVITY_LIMIT = 8;
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1_000;
@@ -85,6 +86,8 @@ interface CountResult { total: number; }
 
 @Injectable()
 export class AnalyticsService {
+  private readonly summaryCache = new ReportCache<Awaited<ReturnType<AnalyticsService['loadSummary']>>>();
+
   constructor(
     @InjectModel('Order') private readonly orderModel: Model<Order>,
     @InjectModel('PaymentRequest') private readonly paymentRequestModel: Model<PaymentRequest>,
@@ -95,7 +98,11 @@ export class AnalyticsService {
     @InjectModel('AuditLog') private readonly auditLogModel: Model<AuditLog>,
   ) {}
 
-  async summary() {
+  summary(refresh = false) {
+    return this.summaryCache.get(startOfVietnamDay().toISOString(), () => this.loadSummary(), refresh);
+  }
+
+  private async loadSummary() {
     const todayStart = startOfVietnamDay();
     const delivered = { status: OrderStatus.DELIVERED } satisfies FilterQuery<Order>;
     const approved = { status: PaymentRequestStatus.APPROVED, deletedAt: null } satisfies FilterQuery<PaymentRequest>;
@@ -108,7 +115,7 @@ export class AnalyticsService {
       inventoryAvailable, inventoryLowStock,
       recentOrders, recentDeposits,
     ] = await Promise.all([
-      this.orderModel.countDocuments({}),
+      this.orderModel.countDocuments({}).hint('_id_'),
       this.orderModel.countDocuments({ createdAt: { $gte: todayStart } }),
       this.orderModel.countDocuments(delivered),
       this.orderModel.countDocuments({ status: { $in: [OrderStatus.PENDING_DELIVERY, OrderStatus.DELIVERING] } }),
@@ -153,11 +160,15 @@ export class AnalyticsService {
     if (query.deliveryStatus) match.deliveryStatus = query.deliveryStatus;
     this.addCreatedAtRange(match, query.from, query.to);
 
-    const pipeline = this.orderJoinPipeline(match, query.search, page, limit);
-    const [result] = await this.orderModel.aggregate<FacetResult<OrderHistoryRecord>>(pipeline).exec();
-    const total = result?.meta[0]?.total ?? 0;
+    const regex = searchRegex(query.search);
+    const usernameRegex = usernameSearchRegex(query.search) ?? regex;
+    const { items, total } = await this.historyPage<Order, OrderHistoryRecord>(this.orderModel, match,
+      orderJoinStages(), page, limit, regex ? { $or: [
+        { orderCode: regex }, { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
+        { 'product.name': regex }, { 'product.slug': regex },
+      ] } : undefined);
     return {
-      items: (result?.items ?? []).map((order) => toOrderHistoryItem(order)),
+      items: items.map((order) => toOrderHistoryItem(order)),
       page,
       limit,
       total,
@@ -221,11 +232,15 @@ export class AnalyticsService {
     if (query.provider) match.provider = query.provider.trim();
     this.addCreatedAtRange(match, query.from, query.to);
 
-    const pipeline = this.depositJoinPipeline(match, query.search, page, limit);
-    const [result] = await this.paymentRequestModel.aggregate<FacetResult<DepositHistoryRecord>>(pipeline).exec();
-    const total = result?.meta[0]?.total ?? 0;
+    const regex = searchRegex(query.search);
+    const usernameRegex = usernameSearchRegex(query.search) ?? regex;
+    const { items, total } = await this.historyPage<PaymentRequest, DepositHistoryRecord>(this.paymentRequestModel,
+      match, userJoinStages(), page, limit, regex ? { $or: [
+        { requestCode: regex }, { provider: regex }, { providerReference: regex },
+        { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
+      ] } : undefined);
     return {
-      items: (result?.items ?? []).map((deposit) => toDepositHistoryItem(deposit)),
+      items: items.map((deposit) => toDepositHistoryItem(deposit)),
       page,
       limit,
       total,
@@ -244,16 +259,9 @@ export class AnalyticsService {
     if (regex) Object.assign(match, { $or: [
       { telegramId: regex }, { username: usernameRegex }, { displayName: regex }, { referralCode: regex },
     ] });
-    const [result] = await this.userModel.aggregate<FacetResult<UserHistoryRecord>>([
-      { $match: match },
-      { $facet: {
-        items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit }],
-        meta: [{ $count: 'total' }],
-      } },
-    ]).exec();
-    const total = result?.meta[0]?.total ?? 0;
+    const { items, total } = await this.historyPage<User, UserHistoryRecord>(this.userModel, match, [], page, limit);
     return {
-      items: (result?.items ?? []).map((user) => ({
+      items: items.map((user) => ({
         id: user._id.toString(), telegramId: user.telegramId, username: user.username ?? null,
         displayName: user.displayName ?? null, status: user.status, walletBalance: user.walletBalance,
         referralCode: user.referralCode, purchaseCount: user.purchaseCount, createdAt: user.createdAt, updatedAt: user.updatedAt,
@@ -270,24 +278,15 @@ export class AnalyticsService {
     if (query.type) match.type = query.type;
     if (query.actorType) match.actorType = query.actorType;
     this.addCreatedAtRange(match, query.from, query.to);
-    const pipeline: PipelineStage[] = [];
-    if (Object.keys(match).length) pipeline.push({ $match: match });
-    const joins = userJoinStages();
     const regex = searchRegex(query.search);
     const usernameRegex = usernameSearchRegex(query.search) ?? regex;
-    if (regex) pipeline.push(...joins, { $match: { $or: [
+    const { items, total } = await this.historyPage<WalletTransaction, WalletHistoryRecord>(this.walletTransactionModel,
+      match, userJoinStages(), page, limit, regex ? { $or: [
         { reason: regex }, { idempotencyKey: regex }, { referenceType: regex },
         { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
-      ] } });
-    pipeline.push({ $facet: {
-      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
-        ...(!regex ? joins : [])],
-      meta: [{ $count: 'total' }],
-    } });
-    const [result] = await this.walletTransactionModel.aggregate<FacetResult<WalletHistoryRecord>>(pipeline).exec();
-    const total = result?.meta[0]?.total ?? 0;
+      ] } : undefined);
     return {
-      items: (result?.items ?? []).map((entry) => ({
+      items: items.map((entry) => ({
         id: entry._id.toString(), amount: entry.amount, balanceBefore: entry.balanceBefore, balanceAfter: entry.balanceAfter,
         type: entry.type, reason: entry.reason, referenceType: entry.referenceType,
         referenceId: entry.referenceId?.toString() ?? null, idempotencyKey: entry.idempotencyKey,
@@ -307,25 +306,16 @@ export class AnalyticsService {
     if (query.resourceType) match.resourceType = query.resourceType.trim();
     if (query.requestId) match.requestId = query.requestId.trim();
     this.addCreatedAtRange(match, query.from, query.to);
-    const pipeline: PipelineStage[] = [];
-    if (Object.keys(match).length) pipeline.push({ $match: match });
-    const joins = auditActorJoinStages();
     const regex = searchRegex(query.search);
     const usernameRegex = usernameSearchRegex(query.search) ?? regex;
-    if (regex) pipeline.push(...joins, { $match: { $or: [
+    const { items, total } = await this.historyPage<AuditLog, AuditHistoryRecord>(this.auditLogModel,
+      match, auditActorJoinStages(), page, limit, regex ? { $or: [
         { action: regex }, { resourceType: regex }, { requestId: regex },
         { 'adminActor.username': usernameRegex }, { 'adminActor.email': regex },
         { 'userActor.displayName': regex }, { 'userActor.username': usernameRegex }, { 'userActor.telegramId': regex },
-      ] } });
-    pipeline.push({ $facet: {
-      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
-        ...(!regex ? joins : [])],
-      meta: [{ $count: 'total' }],
-    } });
-    const [result] = await this.auditLogModel.aggregate<FacetResult<AuditHistoryRecord>>(pipeline).exec();
-    const total = result?.meta[0]?.total ?? 0;
+      ] } : undefined);
     return {
-      items: (result?.items ?? []).map((entry) => ({
+      items: items.map((entry) => ({
         id: entry._id.toString(), actorType: entry.actorType, action: entry.action,
         resourceType: entry.resourceType, resourceId: entry.resourceId?.toString() ?? null,
         requestId: entry.requestId ?? null, createdAt: entry.createdAt,
@@ -335,44 +325,28 @@ export class AnalyticsService {
     };
   }
 
-  private orderJoinPipeline(match: FilterQuery<Order>, search: string | undefined, page: number, limit: number): PipelineStage[] {
+  private async historyPage<T, Row>(model: Model<T>, match: FilterQuery<T>, joins: PipelineStage.FacetPipelineStage[],
+    page: number, limit: number, joinedSearch?: Record<string, unknown>): Promise<{ items: Row[]; total: number }> {
     const pipeline: PipelineStage[] = [];
-    if (Object.keys(match).length > 0) pipeline.push({ $match: match });
-    const joins = orderJoinStages();
-    const regex = searchRegex(search);
-    const usernameRegex = usernameSearchRegex(search) ?? regex;
-    if (regex) {
-      pipeline.push(...joins, { $match: { $or: [
-        { orderCode: regex }, { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
-        { 'product.name': regex }, { 'product.slug': regex },
-      ] } });
+    if (Object.keys(match).length) pipeline.push({ $match: match });
+    const pagination: PipelineStage.FacetPipelineStage[] = [
+      { $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
+    ];
+    if (joinedSearch) {
+      const [result] = await model.aggregate<FacetResult<Row>>([
+        ...pipeline, ...joins, { $match: joinedSearch },
+        { $facet: { items: pagination, meta: [{ $count: 'total' }] } },
+      ]).exec();
+      return { items: result?.items ?? [], total: result?.meta[0]?.total ?? 0 };
     }
-    pipeline.push({ $facet: {
-      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
-        ...(!regex ? joins : [])],
-      meta: [{ $count: 'total' }],
-    } });
-    return pipeline;
-  }
-
-  private depositJoinPipeline(match: FilterQuery<PaymentRequest>, search: string | undefined, page: number, limit: number): PipelineStage[] {
-    const pipeline: PipelineStage[] = [];
-    if (Object.keys(match).length > 0) pipeline.push({ $match: match });
-    const joins = userJoinStages();
-    const regex = searchRegex(search);
-    const usernameRegex = usernameSearchRegex(search) ?? regex;
-    if (regex) {
-      pipeline.push(...joins, { $match: { $or: [
-        { requestCode: regex }, { provider: regex }, { providerReference: regex },
-        { 'user.displayName': regex }, { 'user.username': usernameRegex }, { 'user.telegramId': regex },
-      ] } });
-    }
-    pipeline.push({ $facet: {
-      items: [{ $sort: { createdAt: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
-        ...(!regex ? joins : [])],
-      meta: [{ $count: 'total' }],
-    } });
-    return pipeline;
+    // Keep sort/limit at the collection cursor so an index can serve just this page.
+    // A first-stage $facet would scan every record even when only eight recent rows are requested.
+    const count = model.countDocuments(match);
+    if (!Object.keys(match).length) count.hint('_id_');
+    const [items, total] = await Promise.all([
+      model.aggregate<Row>([...pipeline, ...pagination, ...joins]).exec(), count.exec(),
+    ]);
+    return { items, total };
   }
 
   private addCreatedAtRange<T>(match: FilterQuery<T>, from?: string, to?: string) {

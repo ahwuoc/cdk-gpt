@@ -35,52 +35,81 @@ export function MessageCenter({ authorized, setMessage }: {
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [broadcasts, setBroadcasts] = useState<BroadcastRecord[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const conversationRequest = useRef<AbortController | null>(null);
+  const messageRequest = useRef<AbortController | null>(null);
+  const broadcastRequest = useRef<AbortController | null>(null);
+  const refreshCurrentView = useRef<(() => Promise<unknown>) | null>(null);
 
   const loadConversations = useCallback(async (silent = false) => {
+    if (silent && conversationRequest.current && !conversationRequest.current.signal.aborted) return;
+    conversationRequest.current?.abort();
+    const controller = new AbortController();
+    conversationRequest.current = controller;
     if (!silent) setConversationLoading(true);
     try {
       const query = new URLSearchParams({ page: '1', limit: '100' });
       if (conversationSearch.trim()) query.set('search', conversationSearch.trim());
-      const response = await authorized(`/admin/messages/conversations?${query}`);
+      const response = await authorized(`/admin/messages/conversations?${query}`, { signal: controller.signal });
       const body = await json<Page<ConversationRecord>>(response);
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(errorMessage(body, 'Không thể tải danh sách hội thoại.'));
       setConversations(Array.isArray(body.items) ? body.items : []);
-    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể tải danh sách hội thoại.'); }
-    finally { if (!silent) setConversationLoading(false); }
+    } catch (error) {
+      if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : 'Không thể tải danh sách hội thoại.');
+    } finally {
+      if (conversationRequest.current === controller) { conversationRequest.current = null; setConversationLoading(false); }
+    }
   }, [authorized, conversationSearch, setMessage]);
 
   const loadMessages = useCallback(async (silent = false) => {
+    if (silent && messageRequest.current && !messageRequest.current.signal.aborted) return;
+    messageRequest.current?.abort();
     const selectedId = telegramId.trim();
-    if (!selectedId) { setMessages([]); return; }
+    if (!selectedId) { messageRequest.current = null; setMessages([]); setMessageLoading(false); return; }
+    const controller = new AbortController();
+    messageRequest.current = controller;
     if (!silent) setMessageLoading(true);
     try {
       const query = new URLSearchParams({ page: '1', limit: '100', telegramId: selectedId });
-      const response = await authorized(`/admin/messages?${query}`);
+      const response = await authorized(`/admin/messages?${query}`, { signal: controller.signal });
       const body = await json<Page<MessageRecord>>(response);
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(errorMessage(body, 'Không thể tải hội thoại.'));
       setMessages(Array.isArray(body.items) ? body.items : []);
-    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể tải hội thoại.'); }
-    finally { if (!silent) setMessageLoading(false); }
+    } catch (error) {
+      if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : 'Không thể tải hội thoại.');
+    } finally {
+      if (messageRequest.current === controller) { messageRequest.current = null; setMessageLoading(false); }
+    }
   }, [authorized, setMessage, telegramId]);
 
   const loadBroadcasts = useCallback(async (silent = false) => {
+    if (silent && broadcastRequest.current && !broadcastRequest.current.signal.aborted) return;
+    broadcastRequest.current?.abort();
+    const controller = new AbortController();
+    broadcastRequest.current = controller;
     if (!silent) setBroadcastLoading(true);
     try {
-      const response = await authorized('/admin/messages/broadcasts?page=1&limit=30');
+      const response = await authorized('/admin/messages/broadcasts?page=1&limit=30', { signal: controller.signal });
       const body = await json<Page<BroadcastRecord>>(response);
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(errorMessage(body, 'Không thể tải lịch sử gửi toàn bộ.'));
       setBroadcasts(Array.isArray(body.items) ? body.items : []);
-    } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể tải lịch sử gửi toàn bộ.'); }
-    finally { if (!silent) setBroadcastLoading(false); }
+    } catch (error) {
+      if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : 'Không thể tải lịch sử gửi toàn bộ.');
+    } finally {
+      if (broadcastRequest.current === controller) { broadcastRequest.current = null; setBroadcastLoading(false); }
+    }
   }, [authorized, setMessage]);
 
   const selectConversation = useCallback((id: string) => {
+    if (id !== telegramId) { messageRequest.current?.abort(); setMessages([]); }
     setTelegramId(id);
     setManualTelegramId('');
     const url = new URL(window.location.href);
     url.searchParams.set('telegramId', id);
     window.history.replaceState(null, '', url);
-  }, []);
+  }, [telegramId]);
 
   useEffect(() => {
     const value = new URL(window.location.href).searchParams.get('telegramId')?.trim() ?? '';
@@ -88,31 +117,64 @@ export function MessageCenter({ authorized, setMessage }: {
     return () => window.clearTimeout(timer);
   }, []);
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadConversations(), 250);
-    return () => window.clearTimeout(timer);
-  }, [loadConversations]);
+    if (mode !== 'direct') return;
+    const timer = window.setTimeout(() => { if (!document.hidden) void loadConversations(); }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      conversationRequest.current?.abort();
+      conversationRequest.current = null;
+    };
+  }, [loadConversations, mode]);
   useEffect(() => {
     if (!selectionReady || telegramId || conversations.length === 0) return;
     const timer = window.setTimeout(() => selectConversation(conversations[0].user.telegramId), 0);
     return () => window.clearTimeout(timer);
   }, [conversations, selectConversation, selectionReady, telegramId]);
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadMessages(), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadMessages]);
+    if (mode !== 'direct') return;
+    const timer = window.setTimeout(() => { if (!document.hidden) void loadMessages(); }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      messageRequest.current?.abort();
+      messageRequest.current = null;
+    };
+  }, [loadMessages, mode]);
   useEffect(() => {
     if (mode !== 'broadcast') return;
-    const timer = window.setTimeout(() => void loadBroadcasts(), 0);
-    return () => window.clearTimeout(timer);
+    const timer = window.setTimeout(() => { if (!document.hidden) void loadBroadcasts(); }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      broadcastRequest.current?.abort();
+      broadcastRequest.current = null;
+    };
   }, [loadBroadcasts, mode]);
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    refreshCurrentView.current = async () => {
+      if (document.hidden) return;
+      return mode === 'direct' ? Promise.all([loadConversations(), loadMessages()]) : loadBroadcasts();
+    };
+    const refresh = () => {
+      if (document.hidden) return;
       if (mode === 'direct') { void loadConversations(true); void loadMessages(true); }
       else void loadBroadcasts(true);
-    }, 10_000);
-    return () => window.clearInterval(timer);
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        conversationRequest.current?.abort();
+        messageRequest.current?.abort();
+        broadcastRequest.current?.abort();
+      } else refresh();
+    };
+    const timer = window.setInterval(refresh, 10_000);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      refreshCurrentView.current = null;
+    };
   }, [loadBroadcasts, loadConversations, loadMessages, mode]);
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ block: 'end' }); }, [messages]);
+  const lastMessageId = messages.at(-1)?.id;
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ block: 'end' }); }, [lastMessageId, telegramId]);
 
   async function sendDirect() {
     if (!/^-?\d{1,32}$/.test(telegramId.trim())) { setMessage('Hãy chọn khách hoặc nhập Telegram ID dạng số.'); return; }
@@ -125,7 +187,7 @@ export function MessageCenter({ authorized, setMessage }: {
       const body = await json<{ status?: string; message?: string | string[] }>(response);
       if (!response.ok) throw new Error(errorMessage(body, 'Không thể gửi tin nhắn.'));
       setDirectBody(''); setMessage('Đã gửi tin nhắn riêng qua Telegram.');
-      await Promise.all([loadMessages(true), loadConversations(true)]);
+      await refreshCurrentView.current?.();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể gửi tin nhắn.'); }
     finally { setBusy(false); }
   }
@@ -147,7 +209,7 @@ export function MessageCenter({ authorized, setMessage }: {
       const result = await json<{ queued?: boolean; message?: string | string[] }>(response);
       if (!response.ok) throw new Error(errorMessage(result, 'Không thể xếp hàng thông báo.'));
       setBroadcastBody(''); setMessage('Đã đưa thông báo vào hàng đợi. Theo dõi kết quả gửi trong lịch sử bên dưới.');
-      await loadBroadcasts();
+      await refreshCurrentView.current?.();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể gửi thông báo.'); }
     finally { setBusy(false); }
   }

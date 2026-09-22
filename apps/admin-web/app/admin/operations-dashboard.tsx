@@ -116,10 +116,10 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
   const historyRequest = useRef<AbortController | null>(null);
   const urlFilterApplied = useRef(false);
 
-  const loadSummary = useCallback(async (quiet = false) => {
+  const loadSummary = useCallback(async (quiet = false, refresh = false) => {
     if (!quiet) setSummaryBusy(true);
     try {
-      const response = await authorized('/admin/analytics/summary');
+      const response = await authorized(`/admin/analytics/summary${refresh ? '?refresh=1' : ''}`);
       const body = await readApiBody<Summary>(response);
       if (!response.ok) throw new Error(messageFromBody(body, 'Không thể tải thống kê.'));
       setSummary(body);
@@ -204,7 +204,7 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
           <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-[28px]">Tổng quan cửa hàng</h1>
           <p className="mt-2 text-sm leading-6 text-slate-400">Mọi hoạt động kinh doanh, trong một góc nhìn.</p>
         </div>
-        <div className="flex gap-2"><button type="button" onClick={() => { void loadSummary(); setSpendingRefreshVersion((value) => value + 1); }} disabled={summaryBusy} className="button-secondary inline-flex shrink-0 items-center justify-center gap-2 px-3 py-2.5">
+        <div className="flex gap-2"><button type="button" onClick={() => { void loadSummary(false, true); setSpendingRefreshVersion((value) => value + 1); }} disabled={summaryBusy} className="button-secondary inline-flex shrink-0 items-center justify-center gap-2 px-3 py-2.5">
           <RefreshCw size={15} className={summaryBusy ? 'animate-spin' : ''} /> Làm mới
         </button><button type="button" onClick={onOpenInventory} className="button-primary inline-flex items-center gap-2 py-2.5"><PackageCheck size={16} />Nhập hàng<ArrowUpRight size={15} /></button></div>
       </div>

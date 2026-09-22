@@ -1,8 +1,11 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsMongoId, IsOptional, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsMongoId, IsOptional, Max, Min } from 'class-validator';
 import { AnalyticsInsightsQueryDto } from './insights.dto';
 
 export class ProductRepeatPurchasesQueryDto extends AnalyticsInsightsQueryDto {
+  @IsOptional() @IsIn(['1'])
+  refresh?: '1';
+
   @IsOptional() @Type(() => Number) @IsInt() @Min(2) @Max(366)
   days = 2;
 

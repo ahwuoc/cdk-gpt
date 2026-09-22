@@ -18,4 +18,5 @@ AuditLogSchema.index({ actorType: 1, actorId: 1, createdAt: -1 });
 AuditLogSchema.index({ resourceType: 1, resourceId: 1, createdAt: -1 });
 AuditLogSchema.index({ requestId: 1 }, { sparse: true });
 AuditLogSchema.index({ createdAt: -1 });
+AuditLogSchema.index({ createdAt: -1, _id: -1 }, { name: 'admin_history_created_id' });
 export const AuditLogModel: Model<AuditLog> = (models.AuditLog as Model<AuditLog> | undefined) ?? model<AuditLog>('AuditLog', AuditLogSchema, 'audit_logs');

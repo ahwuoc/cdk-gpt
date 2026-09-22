@@ -5,6 +5,7 @@ import type { Order } from '@store/database';
 import { OrderStatus } from '@store/shared';
 import { insightsDateRange, type InsightsDateRange } from './insights.service';
 import type { ProductRepeatPurchasesQueryDto } from './product-repeat-purchases.dto';
+import { ReportCache } from './report-cache';
 
 const TIMEZONE = 'Asia/Ho_Chi_Minh';
 const DAY_MS = 86_400_000;
@@ -24,9 +25,11 @@ interface RepeatPurchaseFacet {
 
 @Injectable()
 export class ProductRepeatPurchasesService {
+  private readonly reports = new ReportCache<{ result: RepeatPurchaseFacet | undefined; generatedAt: string }>();
+
   constructor(@InjectModel('Order') private readonly orders: Model<Order>) {}
 
-  async report(query: Partial<ProductRepeatPurchasesQueryDto>) {
+  async report(query: Partial<ProductRepeatPurchasesQueryDto>, refresh = false) {
     const range = insightsDateRange(query);
     const days = query.days ?? 2;
     const maxDays = query.maxDays ?? null;
@@ -40,12 +43,17 @@ export class ProductRepeatPurchasesService {
       || (query.productId !== undefined && !/^[a-fA-F0-9]{24}$/.test(query.productId))) {
       throw new BadRequestException('Chọn số ngày liên tiếp từ 2 đến 366, số ngày tối đa không nhỏ hơn tối thiểu, sản phẩm và phân trang hợp lệ.');
     }
-    const [result] = await this.orders.aggregate<RepeatPurchaseFacet>(repeatPurchasePipeline(
-      range, days, maxDays, page, limit, query.productId,
-    )).option({ maxTimeMS: 20_000, allowDiskUse: true }).exec();
+    const key = JSON.stringify([range.from, range.to, days, maxDays, page, limit, query.productId?.toLowerCase()]);
+    const { result, generatedAt } = await this.reports.get(key, async () => {
+      const [report] = await this.orders.aggregate<RepeatPurchaseFacet>(repeatPurchasePipeline(
+        range, days, maxDays, page, limit, query.productId,
+      )).option({ maxTimeMS: 20_000, allowDiskUse: true }).exec();
+      return { result: report, generatedAt: new Date().toISOString() };
+    }, refresh);
     const summary = result?.summary[0] ?? { buyers: 0, repeatBuyers: 0 };
     const total = result?.meta[0]?.total ?? 0;
     return {
+      generatedAt,
       range: { from: range.from, to: range.to, days: range.days }, timezone: TIMEZONE, days, maxDays,
       summary: { buyers: summary.buyers, repeatBuyers: summary.repeatBuyers,
         repeatRate: summary.buyers ? summary.repeatBuyers / summary.buyers * 100 : null },

@@ -1,6 +1,6 @@
 'use client';
 
-import { type FormEvent, useEffect, useId, useState } from 'react';
+import { type FormEvent, useEffect, useId, useRef, useState } from 'react';
 import { ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, Info, LoaderCircle, Repeat2 } from 'lucide-react';
 import type { AuthorizedRequest } from './operations-dashboard';
 
@@ -37,6 +37,7 @@ export function ProductRepeatPurchases({ authorized, from, to, refreshVersion }:
   const productId = selection.rangeKey === rangeKey ? selection.productId : '';
   const page = selection.rangeKey === rangeKey ? selection.page : 1;
   const [retry, setRetry] = useState(0);
+  const lastRefresh = useRef({ refreshVersion, retry });
   const [choices, setChoices] = useState<{ rangeKey: string; products: ProductChoice[] }>({ rangeKey: '', products: [] });
   const [state, setState] = useState<ReportState>({ key: '', loading: true, error: '', data: null });
   const requestKey = `${rangeKey}:${days}:${maxDays ?? ''}:${productId}:${page}:${refreshVersion}:${retry}`;
@@ -49,12 +50,15 @@ export function ProductRepeatPurchases({ authorized, from, to, refreshVersion }:
     const controller = new AbortController();
     queueMicrotask(async () => {
       if (controller.signal.aborted) return;
+      const refresh = lastRefresh.current.refreshVersion !== refreshVersion || lastRefresh.current.retry !== retry;
+      lastRefresh.current = { refreshVersion, retry };
       setSelection((current) => current.rangeKey === rangeKey ? current : { rangeKey, productId: '', page: 1 });
       setState({ key: requestKey, loading: true, error: '', data: null });
       try {
         const query = new URLSearchParams({ from, to, days: String(days), page: String(page), limit: '20' });
         if (maxDays !== null) query.set('maxDays', String(maxDays));
         if (productId) query.set('productId', productId);
+        if (refresh) query.set('refresh', '1');
         const response = await authorized(`/admin/analytics/product-repeat-purchases?${query}`, { signal: controller.signal });
         const body: unknown = await response.json().catch(() => null);
         if (!response.ok) {
@@ -77,7 +81,7 @@ export function ProductRepeatPurchases({ authorized, from, to, refreshVersion }:
       }
     });
     return () => controller.abort();
-  }, [authorized, from, to, days, maxDays, productId, page, rangeKey, requestKey]);
+  }, [authorized, from, to, days, maxDays, productId, page, rangeKey, requestKey, refreshVersion, retry]);
 
   function applyDays(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

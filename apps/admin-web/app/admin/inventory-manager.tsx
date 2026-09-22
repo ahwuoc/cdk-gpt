@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Boxes, ChevronLeft, ChevronRight, Eye, Filter, LoaderCircle, PackageCheck, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { normalizeInventorySearchTerms } from '@store/shared';
 import type { ProductRecord } from './product-manager';
@@ -56,6 +56,8 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
   const [actionId, setActionId] = useState<string | null>(null);
   const [filter, setFilter] = useState({ productId: '', status: '', search: '', page: 1 });
   const [searchDraft, setSearchDraft] = useState('');
+  const activeRequest = useRef<AbortController | null>(null);
+  const refreshCurrentFilter = useRef<(() => Promise<void>) | null>(null);
   const activeProduct = products.find((product) => product._id === filter.productId);
   const pageStats = pageStatusCounts(data.items);
   const stats = activeProduct ? {
@@ -63,6 +65,9 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
   } : { available: pageStats.AVAILABLE ?? 0, reserved: pageStats.RESERVED ?? 0, sold: pageStats.SOLD ?? 0 };
 
   const load = useCallback(async () => {
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
     setBusy(true);
     try {
       const query = new URLSearchParams({ page: String(filter.page), limit: String(pageSize) });
@@ -71,9 +76,10 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
       const search = filter.search.trim();
       const response = search
         ? await authorized('/admin/inventory/search', { method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ...Object.fromEntries(query), search }) })
-        : await authorized(`/admin/inventory?${query}`);
+          body: JSON.stringify({ ...Object.fromEntries(query), search }), signal: controller.signal })
+        : await authorized(`/admin/inventory?${query}`, { signal: controller.signal });
       const body = await readBody<InventoryPage>(response);
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(apiMessage(body, 'Không thể tải danh sách kho.'));
       const next = normalizePage(body);
       if (next.totalPages > 0 && filter.page > next.totalPages) {
@@ -82,11 +88,22 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
       }
       setData(next);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Không thể tải danh sách kho.');
-    } finally { setBusy(false); }
+      if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : 'Không thể tải danh sách kho.');
+    } finally {
+      if (activeRequest.current === controller) { activeRequest.current = null; setBusy(false); }
+    }
   }, [authorized, filter, setMessage]);
 
-  useEffect(() => { queueMicrotask(() => void load()); }, [load, refreshKey]);
+  useEffect(() => {
+    refreshCurrentFilter.current = load;
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+      refreshCurrentFilter.current = null;
+    };
+  }, [load, refreshKey]);
 
   function applySearch() {
     try {
@@ -110,7 +127,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
       const body = await readBody<{ message?: string }>(response);
       if (!response.ok) throw new Error(apiMessage(body, 'Không thể xóa hàng khỏi kho.'));
       setMessage('Đã xóa hàng khỏi kho.');
-      await reloadProducts(); await load();
+      await reloadProducts(); await refreshCurrentFilter.current?.();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể xóa hàng khỏi kho.'); }
     finally { setActionId(null); }
   }
@@ -123,7 +140,7 @@ export function InventoryManager({ products, authorized, reloadProducts, onRevea
       const body = await readBody<{ removedCount?: number; protectedCount?: number; message?: string }>(response);
       if (!response.ok) throw new Error(apiMessage(body, 'Không thể xóa lô hàng.'));
       setMessage(`Đã xóa ${body.removedCount ?? 0} hàng trong lô${body.protectedCount ? `; giữ lại ${body.protectedCount} hàng đã bán/đang xử lý` : ''}.`);
-      await reloadProducts(); await load();
+      await reloadProducts(); await refreshCurrentFilter.current?.();
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Không thể xóa lô hàng.'); }
     finally { setActionId(null); }
   }

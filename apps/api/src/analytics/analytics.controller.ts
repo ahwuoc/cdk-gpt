@@ -6,7 +6,7 @@ import { AnalyticsInsightsService } from './insights.service';
 import { AnalyticsInsightsQueryDto } from './insights.dto';
 import { ProductRepeatPurchasesQueryDto } from './product-repeat-purchases.dto';
 import { ProductRepeatPurchasesService } from './product-repeat-purchases.service';
-import { AuditHistoryQueryDto, DepositHistoryQueryDto, OrderHistoryQueryDto, UserHistoryQueryDto, WalletHistoryQueryDto } from './analytics.dto';
+import { AnalyticsRefreshQueryDto, AuditHistoryQueryDto, DepositHistoryQueryDto, OrderHistoryQueryDto, UserHistoryQueryDto, WalletHistoryQueryDto } from './analytics.dto';
 
 @ApiTags('admin-analytics')
 @Controller('admin')
@@ -17,7 +17,7 @@ export class AnalyticsController {
   @Get('analytics/product-repeat-purchases')
   @RequirePermissions('analytics.read')
   @ApiOperation({ summary: 'Customers purchasing the same product on consecutive Vietnam calendar days' })
-  repeatPurchases(@Query() query: ProductRepeatPurchasesQueryDto) { return this.productRepeatPurchases.report(query); }
+  repeatPurchases(@Query() query: ProductRepeatPurchasesQueryDto) { return this.productRepeatPurchases.report(query, query.refresh === '1'); }
 
   @Get('analytics/insights')
   @RequirePermissions('analytics.read')
@@ -27,7 +27,7 @@ export class AnalyticsController {
   @Get('analytics/summary')
   @RequirePermissions('analytics.read')
   @ApiOperation({ summary: 'Dashboard KPI summary and recent activity' })
-  summary() { return this.analytics.summary(); }
+  summary(@Query() query: AnalyticsRefreshQueryDto) { return this.analytics.summary(query.refresh === '1'); }
 
   @Get('orders')
   @RequirePermissions('analytics.read')

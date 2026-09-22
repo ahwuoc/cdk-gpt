@@ -15,15 +15,19 @@ test('broadcast rate configuration keeps the free limit and validates cooldowns'
 integration('MongoDB shared broadcast rate gate', () => {
   let server: MongoMemoryServer;
   let connection: Connection;
+  let permitCommands = 0;
   const states = () => connection.db!.collection('telegram_broadcast_rates');
   const gate = (limit = 25) => new MongoBroadcastRateGate('test-bot', limit, connection);
 
   beforeAll(async () => {
     server = await MongoMemoryServer.create();
     connection = await new mongoose.Mongoose().createConnection(server.getUri('broadcast_rates'),
-      { autoIndex: false }).asPromise();
+      { autoIndex: false, monitorCommands: true }).asPromise();
+    connection.getClient().on('commandStarted', (event) => {
+      if (event.commandName === 'findAndModify' && event.command.findAndModify === 'telegram_broadcast_rates') permitCommands++;
+    });
   }, 120_000);
-  beforeEach(async () => { await states().deleteMany({}); });
+  beforeEach(async () => { await states().deleteMany({}); permitCommands = 0; });
   afterAll(async () => { await connection?.close(); await server?.stop(); }, 30_000);
 
   test('independent workers race on the first insert without exceeding a shared window', async () => {
@@ -87,5 +91,27 @@ integration('MongoDB shared broadcast rate gate', () => {
       events: [{ chatId: '123', at: { $subtract: ['$$NOW', 1_100] } }],
     } }]);
     expect((await gate(1).acquire('456')).granted).toBe(true);
+  });
+
+  test('a full global window avoids repeated database writes, then rechecks before allowing a send', async () => {
+    const worker = gate(1);
+    expect((await worker.acquire('first')).granted).toBe(true);
+    const denied = await worker.acquire('second');
+    expect(denied.granted).toBe(false);
+    const writes = permitCommands;
+    const waiting = await Promise.all(Array.from({ length: 40 }, (_, index) => worker.acquire(`waiting-${index}`)));
+    expect(waiting.every((decision) => !decision.granted && decision.retryAfterMs > 0)).toBe(true);
+    expect(permitCommands).toBe(writes);
+    await new Promise((resolve) => setTimeout(resolve, denied.retryAfterMs + 10));
+    expect((await worker.acquire('second')).granted).toBe(true);
+    expect(permitCommands).toBe(writes + 1);
+  });
+
+  test('one chat cooling down does not hold up unrelated recipients in the same worker', async () => {
+    const worker = gate();
+    expect((await worker.acquire('-100123')).granted).toBe(true);
+    expect((await worker.acquire('-100123')).granted).toBe(false);
+    expect((await worker.acquire('unrelated')).granted).toBe(true);
+    expect(permitCommands).toBe(3);
   });
 });

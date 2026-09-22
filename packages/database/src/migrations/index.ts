@@ -9,8 +9,10 @@ import { quickCheckoutReservationsMigration } from './007-quick-checkout-reserva
 import { customerMessageIndexesMigration } from './008-customer-message-indexes';
 import { couponIndexesMigration } from './009-coupon-indexes';
 import { customerAnalyticsIndexesMigration } from './010-customer-analytics-indexes';
+import { adminHistoryIndexesMigration } from './011-admin-history-indexes';
 
 export const migrations: MongoMigration[] = [createIndexesMigration, backfillSafeDefaultsMigration, categoryProductIndexesMigration,
   repairLegacyCollectionNamesMigration, serverlessRuntimeIndexesMigration, orderReportIndexesMigration,
-  quickCheckoutReservationsMigration, customerMessageIndexesMigration, couponIndexesMigration, customerAnalyticsIndexesMigration];
+  quickCheckoutReservationsMigration, customerMessageIndexesMigration, couponIndexesMigration, customerAnalyticsIndexesMigration,
+  adminHistoryIndexesMigration];
 export type { MongoMigration } from './types';

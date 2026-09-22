@@ -10,12 +10,16 @@ import { OrderStatus } from '@store/shared';
 import { AnalyticsController } from '../apps/api/src/analytics/analytics.controller';
 import { ProductRepeatPurchasesQueryDto } from '../apps/api/src/analytics/product-repeat-purchases.dto';
 import { ProductRepeatPurchasesService } from '../apps/api/src/analytics/product-repeat-purchases.service';
+import { AnalyticsRefreshQueryDto } from '../apps/api/src/analytics/analytics.dto';
 
 describe('product repeat-purchase query boundaries', () => {
   test('transforms query strings and validates threshold, product identity, dates, and pagination', async () => {
     const defaults = plainToInstance(ProductRepeatPurchasesQueryDto, {});
     expect(defaults).toMatchObject({ days: 2, page: 1, limit: 20 });
     expect(await validate(defaults)).toHaveLength(0);
+    expect(await validate(plainToInstance(ProductRepeatPurchasesQueryDto, { refresh: '1' }))).toHaveLength(0);
+    expect(await validate(plainToInstance(AnalyticsRefreshQueryDto, { refresh: '1' }))).toHaveLength(0);
+    expect(await validate(plainToInstance(AnalyticsRefreshQueryDto, { refresh: 'invalid' }))).not.toHaveLength(0);
     const valid = plainToInstance(ProductRepeatPurchasesQueryDto, {
       from: '2026-09-01', to: '2026-09-30', days: '3', maxDays: '7', page: '2', limit: '100', productId: new Types.ObjectId().toString(),
     });
@@ -30,7 +34,7 @@ describe('product repeat-purchase query boundaries', () => {
       { maxDays: '2.5' }, { maxDays: 'bad' }, { productId: 'bad' }, { productId: '' },
       { page: '0' }, { page: '1.5' }, { page: Number.MAX_SAFE_INTEGER + 1 },
       { limit: '0' }, { limit: '101' }, { from: '2026-09-01T00:00:00Z' }, { to: 'bad' },
-      { unexpected: 'field' },
+      { unexpected: 'field' }, { refresh: 'invalid' },
     ]) expect((await validate(plainToInstance(ProductRepeatPurchasesQueryDto, payload), {
       whitelist: true, forbidNonWhitelisted: true,
     })).length).toBeGreaterThan(0);
@@ -76,7 +80,10 @@ integration('product repeat purchases against isolated MongoDB', () => {
     service = new ProductRepeatPurchasesService(orders);
   }, 120_000);
 
-  beforeEach(async () => { await Promise.all([orders.deleteMany({}), products.deleteMany({}), users.deleteMany({})]); });
+  beforeEach(async () => {
+    await Promise.all([orders.deleteMany({}), products.deleteMany({}), users.deleteMany({})]);
+    service = new ProductRepeatPurchasesService(orders);
+  });
   afterAll(async () => { await connection?.close(); await server?.stop(); }, 30_000);
 
   async function customer(index: number) {
@@ -107,6 +114,7 @@ integration('product repeat purchases against isolated MongoDB', () => {
   test('empty periods return zero counts, null rate, defaults, and no fabricated customers', async () => {
     const result = await service.report(range);
     expect(result).toEqual({
+      generatedAt: expect.any(String),
       range: { ...range, days: 7 }, timezone: 'Asia/Ho_Chi_Minh', days: 2, maxDays: null,
       summary: { buyers: 0, repeatBuyers: 0, repeatRate: null }, products: [], items: [],
       pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
@@ -295,13 +303,13 @@ integration('product repeat purchases against isolated MongoDB', () => {
     // The successful checkout belongs to day 1, leaving a gap before day 3.
     for (const status of [OrderStatus.PENDING_DELIVERY, OrderStatus.DELIVERY_FAILED, OrderStatus.REFUNDED, OrderStatus.DELIVERED]) {
       await orders.updateOne({ _id: first }, { $set: { status } });
-      expect((await service.report(range)).summary).toEqual({ buyers: 1, repeatBuyers: 0, repeatRate: 0 });
-      expect((await service.report({ from: '2026-09-02', to: '2026-09-03' })).items).toEqual([]);
+      expect((await service.report(range, true)).summary).toEqual({ buyers: 1, repeatBuyers: 0, repeatRate: 0 });
+      expect((await service.report({ from: '2026-09-02', to: '2026-09-03' }, true)).items).toEqual([]);
     }
 
     await orders.updateOne({ _id: first }, { $set: { status: OrderStatus.REFUNDED } });
     await order(buyer, item, 2, { totalAmount: 300 });
-    const result = await service.report(range);
+    const result = await service.report(range, true);
     expect(result.items[0]).toMatchObject({ longestStreak: 3, purchaseCount: 3, quantity: 3, totalSpent: 600,
       purchaseDays: ['2026-09-01', '2026-09-02', '2026-09-03'] });
   });
@@ -373,5 +381,16 @@ integration('product repeat purchases against isolated MongoDB', () => {
       telegramId: null, username: null, displayName: null, productName: 'Sản phẩm đã xóa', longestStreak: 2 });
     expect(result.products).toEqual([{ productId: item.toString(), name: 'Sản phẩm đã xóa' }]);
     expect(result.summary).toEqual({ buyers: 1, repeatBuyers: 1, repeatRate: 100 });
+  });
+
+  test('normal repeats reuse the report while explicit refresh sees newly delivered purchases', async () => {
+    const buyer = await customer(1);
+    const item = await product();
+    await order(buyer, item, 1);
+    expect((await service.report(range)).summary.repeatBuyers).toBe(0);
+    await order(buyer, item, 2);
+    expect((await service.report(range)).summary.repeatBuyers).toBe(0);
+    expect((await service.report(range, true)).summary.repeatBuyers).toBe(1);
+    expect((await service.report(range)).summary.repeatBuyers).toBe(1);
   });
 });

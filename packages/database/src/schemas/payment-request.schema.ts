@@ -26,4 +26,5 @@ PaymentRequestSchema.index({ provider: 1, providerReference: 1 }, { unique: true
   partialFilterExpression: { providerReference: { $type: 'string' } } });
 PaymentRequestSchema.index({ userId: 1, status: 1, createdAt: -1 });
 PaymentRequestSchema.index({ status: 1, createdAt: 1 });
+PaymentRequestSchema.index({ deletedAt: 1, createdAt: -1, _id: -1 }, { name: 'admin_history_active_created_id' });
 export const PaymentRequestModel: Model<PaymentRequest> = (models.PaymentRequest as Model<PaymentRequest> | undefined) ?? model<PaymentRequest>('PaymentRequest', PaymentRequestSchema, 'payment_requests');

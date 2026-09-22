@@ -145,6 +145,8 @@ Không gửi plaintext vào log, BullMQ job, notification hay audit log.
 
 Trong **Kho hàng**, có thể dán tối đa 100 từ khóa khác nhau (mỗi từ khóa tối đa 120 ký tự), mỗi dòng một email, tên sản phẩm hoặc ID hàng/lô. Dạng `email----password----2fa` chỉ lấy phần email/login để tìm; mật khẩu và 2FA không được gửi trong yêu cầu tìm kiếm. Dữ liệu quá giới hạn hoặc thiếu email/login sẽ báo lỗi và giữ nguyên bộ lọc đang áp dụng.
 
+Nếu mọi dòng đều là ObjectId (24 ký tự hex), tìm kiếm chỉ khớp chính xác ID hàng hoặc ID lô và dùng các index có sẵn, không quét dữ liệu xem trước. Khi có dòng văn bản, tìm kiếm vẫn khớp một phần dữ liệu xem trước/tên sản phẩm, không phân biệt hoa thường, đồng thời tìm các ID đi kèm. Tìm email/login theo chuỗi con vẫn có thể chậm trên kho lớn; tối ưu này không giải mã hoặc lưu thêm dữ liệu nhạy cảm.
+
 Giao diện gửi tìm kiếm qua `POST /api/admin/inventory/search` với JSON body để tránh giới hạn độ dài URL. Endpoint dùng cùng bộ lọc, phân trang và quyền `inventory.manage` hoặc `inventory.import` như `GET /api/admin/inventory`; GET vẫn được hỗ trợ.
 
 ## Tốc độ thông báo Telegram
@@ -152,6 +154,8 @@ Giao diện gửi tìm kiếm qua `POST /api/admin/inventory/search` với JSON 
 Ba luồng thông báo (admin gửi toàn bộ, hàng về và có khách mua hàng) xử lý tối đa 12 người nhận đồng thời. Chúng dùng chung bộ giới hạn trong collection `telegram_broadcast_rates`: tối đa 25 lần bắt đầu gửi trong mỗi cửa sổ trượt 1 giây, kể cả khi chạy nhiều worker hoặc nhiều instance Vercel. Khoảng cách cho cùng một chat là ít nhất 1 giây (group: 3 giây). Hạn mức này dành riêng cho thông báo hàng loạt, để lại khoảng trống cho tin nhắn giao hàng và tương tác với bot.
 
 Collection giới hạn tốc độ chỉ giữ một document cho cửa hàng, với tối đa khoảng 75 lượt gửi gần nhất. MongoDB dùng đồng hồ máy chủ và index `_id` có sẵn; không cần Redis hoặc migration bổ sung. Tốc độ thực tế còn phụ thuộc độ trễ Telegram/MongoDB và lưu lượng tương tác khác.
+
+Worker ghi nhớ thời điểm hạn mức chung chưa mở để tránh hỏi lại MongoDB liên tục; mọi lần được phép gửi vẫn phải được MongoDB cấp quyền. Thông báo mua hàng mới tạo và giữ quyền gửi trong cùng một thao tác, giảm từ ba xuống hai lần ghi trạng thái cho mỗi người nhận, giữ nguyên khóa chống gửi trùng và cơ chế retry.
 
 Danh sách người nhận vẫn phân trang theo `_id` tăng dần, nên khách có bản ghi được tạo sớm thường được xếp trước. Đây là thứ tự trong mã nguồn, không phải Telegram ưu tiên người đăng ký trước. Các lượt gửi được xử lý song song trong mỗi trang nên thứ tự nhận thực tế không được bảo đảm. Nếu duy trì 25 tin/giây, 1.000 người nhận tương ứng khoảng 40 giây; đây là ước tính công suất, không phải cam kết thời gian giao tin. Nhiều chiến dịch đồng thời chia sẻ hạn mức này.
 
@@ -187,7 +191,9 @@ API `GET /admin/analytics/product-repeat-purchases` dùng quyền `analytics.rea
 
 Thống kê hành vi gồm khách hoạt động, khách mới/quay lại/mua lặp, lượt khách xem sản phẩm/bắt đầu thanh toán, tỷ lệ mua sau hành vi và QR hết hạn chưa thanh toán. Bot chỉ ghi loại sự kiện, khách, sản phẩm, mã update và thời gian máy chủ; không ghi nội dung tin nhắn, mật khẩu hoặc hội thoại hỗ trợ. Dữ liệu hành vi bắt đầu từ khi triển khai tính năng; không dựng lịch sử lượt xem từ đơn hàng cũ. Tỷ lệ chuyển đổi dùng khách có đơn giao sau hành vi trong cùng kỳ, không phải mô hình quy kết quảng cáo.
 
-Trước khi triển khai, chạy `bun run migration:up` bằng cấu hình đúng của môi trường đích để thêm indexes `009-coupon-indexes` và `010-customer-analytics-indexes`. Lệnh này chưa được chạy trên production trong quá trình phát triển.
+Trước khi triển khai, chạy `bun run migration:up` bằng cấu hình đúng của môi trường đích để thêm các index còn thiếu, gồm `009-coupon-indexes`, `010-customer-analytics-indexes` và `011-admin-history-indexes`. Migration 011 thêm index phục vụ phân trang lịch sử đơn/nạp/ví/khách/audit và bảo đảm index tra cứu lô kho đã tồn tại.
+
+Dashboard và báo cáo mua liên tiếp dùng cache 15 giây trong mỗi tiến trình, tối đa 32 bộ lọc; các yêu cầu trùng đang chạy dùng chung kết quả. Nút tải lại/thử lại gửi `refresh=1` để lấy dữ liệu mới. Cache chỉ áp dụng cho báo cáo đọc, không tham gia thanh toán hay cập nhật số dư. Phân trang lịch sử không tìm từ khóa lấy trang trước rồi mới nối dữ liệu liên quan; tìm từ khóa vẫn giữ đầy đủ kết quả và tổng đếm. Trung tâm tin nhắn ngừng tải nền khi tab ẩn, tránh request chồng nhau và bỏ kết quả của request đã bị thay thế.
 
 Kiểm tra bằng dữ liệu tạm, không gửi Telegram/ngân hàng thật:
 

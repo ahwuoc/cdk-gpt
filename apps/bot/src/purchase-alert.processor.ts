@@ -52,15 +52,17 @@ export class PurchaseAlertProcessor {
     const hasMore = requestedLimit > 0 && users.length > requestedLimit;
     const page = hasMore ? users.slice(0, requestedLimit) : users;
     await forEachBroadcastRecipient(page, async (user) => {
-      const notification = await createPurchaseNotification(user._id, productId, groupId, input.quantity);
+      const { notification, created } = await createPurchaseNotification(user._id, productId, groupId, input.quantity);
       if (notification.status === NotificationStatus.SENT) { skipped++; return; }
       if (notification.status === NotificationStatus.FAILED) { failed++; return; }
-      const claimed = await NotificationModel.findOneAndUpdate({ _id: notification._id,
-        status: { $ne: NotificationStatus.FAILED }, ...claimableNotificationDelivery() },
-        { $set: { status: NotificationStatus.SENDING }, $unset: { errorCode: 1 } }, { new: true });
-      if (!claimed) throw new BroadcastRetryError('Purchase announcement recipient is being delivered by another worker', {
-        retryAfterMs: broadcastClaimRetryAfter(notification.updatedAt),
-      });
+      if (!created) {
+        const claimed = await NotificationModel.findOneAndUpdate({ _id: notification._id,
+          status: { $ne: NotificationStatus.FAILED }, ...claimableNotificationDelivery() },
+          { $set: { status: NotificationStatus.SENDING }, $unset: { errorCode: 1 } }, { new: true });
+        if (!claimed) throw new BroadcastRetryError('Purchase announcement recipient is being delivered by another worker', {
+          retryAfterMs: broadcastClaimRetryAfter(notification.updatedAt),
+        });
+      }
       try {
         await this.sender.send(user.telegramId, () => this.bot.telegram.sendMessage(user.telegramId, message, { parse_mode: 'Markdown', ...keyboard }));
       } catch (error) {
@@ -87,18 +89,21 @@ async function createPurchaseNotification(userId: Types.ObjectId, productId: Typ
   const filter = { deduplicationKey: `purchase-proof:${groupId.toString()}:${userId.toString()}` };
   const createdAt = new Date();
   try {
-    return await NotificationModel.findOneAndUpdate(filter, { $setOnInsert: {
+    // The inserting worker owns the fresh claim; retries must still claim an existing row.
+    const result = await NotificationModel.findOneAndUpdate(filter, { $setOnInsert: {
       _id: customerMessageId(filter.deduplicationKey),
       userId, channel: NotificationChannel.TELEGRAM, title: 'Vừa có khách mua hàng',
       body: `Anonymous purchase announcement for ${productId.toString()}`,
-      status: NotificationStatus.PENDING, referenceType: 'PURCHASE_SOCIAL_PROOF', referenceId: groupId,
+      status: NotificationStatus.SENDING, referenceType: 'PURCHASE_SOCIAL_PROOF', referenceId: groupId,
       deduplicationKey: filter.deduplicationKey, metadata: { productId: productId.toString(), quantity }, createdAt, updatedAt: createdAt,
-    } }, { upsert: true, new: true, setDefaultsOnInsert: true, timestamps: false });
+    } }, { upsert: true, new: true, setDefaultsOnInsert: true, timestamps: false, includeResultMetadata: true });
+    if (!result.value) throw new Error('Purchase notification upsert returned no document');
+    return { notification: result.value, created: Boolean(result.lastErrorObject?.upserted) };
   } catch (error) {
     if (!isMongoDuplicateKey(error)) throw error;
     const existing = await NotificationModel.findOne(filter);
     if (!existing) throw error;
-    return existing;
+    return { notification: existing, created: false };
   }
 }
 

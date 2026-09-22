@@ -59,39 +59,40 @@ export class InventoryAdminService {
       throw new BadRequestException(error instanceof Error ? error.message : 'Từ khóa tìm kiếm không hợp lệ.');
     }
     if (searchTerms.length) {
-      const safePattern = searchTerms.map(escapeRegex).join('|');
-      const matches: Record<string, unknown>[] = [{
-        $expr: {
-          $anyElementTrue: {
-            $map: {
-              input: { $objectToArray: { $ifNull: ['$maskedPreview', {}] } },
-              as: 'field',
-              in: {
-                $regexMatch: {
-                  input: { $convert: { input: '$$field.v', to: 'string', onError: '', onNull: '' } },
-                  regex: safePattern,
-                  options: 'i',
-                },
-              },
-            },
-          },
-        },
-      }];
-      // The UI commonly pastes one of these IDs. Use exact ObjectId matching rather than
-      // applying a regex to identifiers, which keeps this path indexed and predictable.
+      const matches: Record<string, unknown>[] = [];
       const ids = searchTerms.filter((term) => Types.ObjectId.isValid(term)).map((term) => new Types.ObjectId(term));
       if (ids.length) {
         matches.push({ _id: { $in: ids } }, { importBatchId: { $in: ids } });
       }
-      // The inventory page is where admins naturally search by the product's
-      // display name. Inventory rows only store productId, so resolve matching
-      // product ids before querying inventory instead of requiring a dropdown.
-      if (this.products) {
-        const matchingProducts = await this.products.find({
-          name: { $regex: safePattern, $options: 'i' },
-        }).select('_id').lean();
-        if (matchingProducts.length) {
-          matches.push({ productId: { $in: matchingProducts.map((product) => product._id) } });
+      // ID-only searches must not include the unindexed preview expression in $or:
+      // it forces MongoDB to inspect every row even when the IDs have indexes.
+      if (ids.length !== searchTerms.length) {
+        const safePattern = searchTerms.map(escapeRegex).join('|');
+        matches.push({
+          $expr: {
+            $anyElementTrue: {
+              $map: {
+                input: { $objectToArray: { $ifNull: ['$maskedPreview', {}] } },
+                as: 'field',
+                in: {
+                  $regexMatch: {
+                    input: { $convert: { input: '$$field.v', to: 'string', onError: '', onNull: '' } },
+                    regex: safePattern,
+                    options: 'i',
+                  },
+                },
+              },
+            },
+          },
+        });
+        // Mixed ID/text input retains substring and product-name matches.
+        if (this.products) {
+          const matchingProducts = await this.products.find({
+            name: { $regex: safePattern, $options: 'i' },
+          }).select('_id').lean();
+          if (matchingProducts.length) {
+            matches.push({ productId: { $in: matchingProducts.map((product) => product._id) } });
+          }
         }
       }
       filter.$or = matches;
@@ -104,21 +105,23 @@ export class InventoryAdminService {
     ]);
     const orderIds = items.flatMap((item) => item.soldOrderId ? [item.soldOrderId] : []);
     const soldInventoryIds = items.flatMap((item) => item.status === InventoryStatus.SOLD ? [item._id] : []);
-    // Some historical SOLD rows predate soldOrderId/soldToUserId. Orders have
-    // always retained inventoryItemId, so use it as a backwards-compatible link.
-    const orders = orderIds.length || soldInventoryIds.length ? await this.items.db.model<Order>('Order').find({
-      $or: [
-        ...(orderIds.length ? [{ _id: { $in: orderIds } }] : []),
-        ...(soldInventoryIds.length ? [{ inventoryItemId: { $in: soldInventoryIds } }] : []),
-      ],
-    }).select('orderCode userId inventoryItemId unitPrice totalAmount paymentMethod createdAt').lean() : [];
-    const orderById = new Map(orders.map((order) => [order._id.toString(), order]));
-    const orderByInventoryId = new Map(orders.map((order) => [order.inventoryItemId.toString(), order]));
     const productIds = [...new Set(items.map((item) => item.productId.toString()))]
       .map((id) => new Types.ObjectId(id));
-    const products = this.products && productIds.length
-      ? await this.products.find({ _id: { $in: productIds } }).select('name').lean()
-      : [];
+    // Some historical SOLD rows predate soldOrderId/soldToUserId. Orders have
+    // always retained inventoryItemId, so use it as a backwards-compatible link.
+    const [orders, products] = await Promise.all([
+      orderIds.length || soldInventoryIds.length ? this.items.db.model<Order>('Order').find({
+        $or: [
+          ...(orderIds.length ? [{ _id: { $in: orderIds } }] : []),
+          ...(soldInventoryIds.length ? [{ inventoryItemId: { $in: soldInventoryIds } }] : []),
+        ],
+      }).select('orderCode userId inventoryItemId unitPrice totalAmount paymentMethod createdAt').lean() : [],
+      this.products && productIds.length
+        ? this.products.find({ _id: { $in: productIds } }).select('name').lean()
+        : [],
+    ]);
+    const orderById = new Map(orders.map((order) => [order._id.toString(), order]));
+    const orderByInventoryId = new Map(orders.map((order) => [order.inventoryItemId.toString(), order]));
     const productById = new Map(products.map((product) => [product._id.toString(), product.name]));
     const userIds = new Set<string>();
     for (const item of items) {

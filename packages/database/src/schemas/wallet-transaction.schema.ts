@@ -26,6 +26,7 @@ export const WalletTransactionSchema = new Schema<WalletTransaction>({
 }, baseSchemaOptions);
 WalletTransactionSchema.index({ idempotencyKey: 1 }, { unique: true });
 WalletTransactionSchema.index({ userId: 1, createdAt: -1 });
+WalletTransactionSchema.index({ createdAt: -1, _id: -1 }, { name: 'admin_history_created_id' });
 WalletTransactionSchema.index({ referenceType: 1, referenceId: 1 });
 WalletTransactionSchema.index({ actorType: 1, actorId: 1, createdAt: -1 });
 export const WalletTransactionModel: Model<WalletTransaction> = (models.WalletTransaction as Model<WalletTransaction> | undefined) ?? model<WalletTransaction>('WalletTransaction', WalletTransactionSchema, 'wallet_transactions');

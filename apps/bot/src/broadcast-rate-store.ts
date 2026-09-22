@@ -13,6 +13,7 @@ interface BroadcastRateState {
   blockedUntil: Date;
   decisionToken?: string;
   retryAt: Date;
+  globalRetryAt: Date;
   serverNow: Date;
 }
 
@@ -22,6 +23,7 @@ const EPOCH = new Date(0);
 
 /** A bounded, atomic rate window shared by every worker using this database. */
 export class MongoBroadcastRateGate implements BroadcastRateGate {
+  private globallyBlockedUntil = 0;
   constructor(private readonly namespace = 'store-broadcast', private readonly limit = 25,
     private readonly connection: Connection = mongoose.connection) {
     if (!namespace || namespace.length > 100) throw new Error('Invalid broadcast rate namespace');
@@ -31,6 +33,9 @@ export class MongoBroadcastRateGate implements BroadcastRateGate {
   }
 
   async acquire(chatId: string) {
+    const remaining = this.globallyBlockedUntil - performance.now();
+    // Cache only rejections. Every grant still goes through the shared atomic gate.
+    if (remaining > 0) return { granted: false, retryAfterMs: Math.ceil(remaining) };
     const token = randomUUID();
     const chatInterval = chatId.startsWith('-') ? GROUP_INTERVAL_MS : WINDOW_MS;
     const pipeline = [
@@ -48,10 +53,13 @@ export class MongoBroadcastRateGate implements BroadcastRateGate {
           { $gt: ['$$event.at', { $subtract: ['$$NOW', chatInterval] }] },
         ] } } },
       } },
-      { $set: { retryAt: { $max: [
+      { $set: { globalRetryAt: { $max: [
         '$$NOW', '$blockedUntil',
         { $cond: [{ $gte: [{ $size: '$recent' }, this.limit] },
           { $add: [{ $min: '$recent.at' }, WINDOW_MS] }, '$$NOW'] },
+      ] } } },
+      { $set: { retryAt: { $max: [
+        '$globalRetryAt',
         { $cond: [{ $gt: [{ $size: '$chatRecent' }, 0] },
           { $add: [{ $max: '$chatRecent.at' }, chatInterval] }, '$$NOW'] },
       ] } } },
@@ -66,9 +74,13 @@ export class MongoBroadcastRateGate implements BroadcastRateGate {
     const result = await this.retryInsertRace(() => this.collection().findOneAndUpdate(
       { _id: this.namespace }, pipeline,
       { upsert: true, returnDocument: 'after', includeResultMetadata: false,
-        projection: { decisionToken: 1, retryAt: 1, serverNow: 1 } },
+        projection: { decisionToken: 1, retryAt: 1, globalRetryAt: 1, serverNow: 1 } },
     ));
     if (!result) throw new Error('Broadcast rate decision was not persisted');
+    const globalDelay = result.globalRetryAt.getTime() - result.serverNow.getTime();
+    if (globalDelay > 0) {
+      this.globallyBlockedUntil = Math.max(this.globallyBlockedUntil, performance.now() + globalDelay);
+    }
     // Use MongoDB's clock for both dates; worker clock skew cannot shorten a wait.
     return { granted: result.decisionToken === token,
       retryAfterMs: Math.max(0, result.retryAt.getTime() - result.serverNow.getTime()) };

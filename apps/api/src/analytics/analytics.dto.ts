@@ -2,6 +2,11 @@ import { Type } from 'class-transformer';
 import { IsDateString, IsIn, IsInt, IsMongoId, IsOptional, IsString, Length, Max, Min } from 'class-validator';
 import { DeliveryStatus, OrderStatus, PaymentRequestStatus, UserStatus, WalletTransactionType } from '@store/shared';
 
+export class AnalyticsRefreshQueryDto {
+  @IsOptional() @IsIn(['1'])
+  refresh?: '1';
+}
+
 class PaginatedHistoryQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1)
   page = 1;
