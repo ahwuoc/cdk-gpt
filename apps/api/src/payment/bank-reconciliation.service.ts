@@ -272,8 +272,12 @@ export class BankReconciliationService {
     const metadataTransaction = String(metadata.transactionId ?? '').trim();
     if (metadataTransaction && metadataTransaction !== transactionId) return false;
     const direct = expectedKeys.has(wallet.idempotencyKey);
-    if (direct) return true;
+    const rawLegacyKey = bankConfigId === LEGACY_BANK_ID && wallet.idempotencyKey === `deposit:bank:${transactionId}`;
+    if (direct && !(rawLegacyKey && metadataBank && metadataBank !== LEGACY_BANK_ID)) return true;
     if (metadataBank ? metadataBank !== bankConfigId : bankConfigId !== LEGACY_BANK_ID) return false;
+    // A different bank-scoped key must never be rescued by a shared requestId.
+    // Only legacy/non-bank keys can use the metadata fallback below.
+    if (wallet.idempotencyKey.startsWith('deposit:bank:')) return false;
     const byRequest = Boolean(wallet.referenceId && requestIds.has(wallet.referenceId.toString()) && metadataTransaction === transactionId);
     return direct || byRequest;
   }
