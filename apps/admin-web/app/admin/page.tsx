@@ -105,6 +105,7 @@ export default function AdminPage() {
   const [welcomeMessage, setWelcomeMessage] = useState('');
   const [bankConfigs, setBankConfigs] = useState<BankConfig[]>([]);
   const [activeBankId, setActiveBankId] = useState('');
+  const [bankFormMode, setBankFormMode] = useState<'create' | 'edit'>('create');
   const [bankEditId, setBankEditId] = useState('');
   const [bankLabel, setBankLabel] = useState('');
   const [bankProvider, setBankProvider] = useState<BankProvider>('CAKE_V2');
@@ -311,6 +312,7 @@ export default function AdminPage() {
   }, [authorized]);
 
   function editBank(config?: BankConfig) {
+    setBankFormMode(config ? 'edit' : 'create');
     setBankEditId(config?.id ?? '');
     setBankLabel(config?.label ?? '');
     setBankProvider(config?.provider === 'BIDV_V4' || config?.provider === 'BIDV_V2' ? 'BIDV_V4' : 'CAKE_V2');
@@ -404,22 +406,22 @@ export default function AdminPage() {
     event.preventDefault(); setBotBusy(true); setMessage('');
     try {
       if (!bankId.trim() || !bankAccountNo.trim() || !bankAccountName.trim()) throw new Error('Hãy nhập đủ mã ngân hàng, số tài khoản và tên tài khoản.');
+      const editing = bankFormMode === 'edit' && Boolean(bankEditId);
       const payload = {
-        ...(bankEditId ? { id: bankEditId } : {}),
+        ...(editing ? { id: bankEditId } : {}),
         label: bankLabel.trim() || undefined,
         provider: bankProvider,
         tokenApiBank: bankToken.trim(), bankId: bankId.trim(), accountNo: bankAccountNo.trim(),
         template: bankTemplate, accountName: bankAccountName.trim(), amount: bankAmount, description: bankDescription.trim(),
         // The first saved bank is activated by the API. Additional banks stay
         // disabled until the administrator explicitly selects one below.
-        active: !activeBankId || bankEditId === activeBankId,
+        active: !activeBankId || (editing && bankEditId === activeBankId),
       };
       const response = await authorized('/admin/bot-config/bank', { method: 'PUT',
         headers: { 'content-type': 'application/json', 'x-request-id': requestId() },
         body: JSON.stringify(payload), });
       const body = (await readApiBody(response)) as { bank?: BankConfig; banks?: BankConfig[]; activeBankId?: string; savedBankId?: string; reloadWithinSeconds?: number; message?: string };
       if (!response.ok || (!body.bank && !body.banks)) throw new Error(apiErrorMessage(body, 'Không thể lưu cấu hình ngân hàng'));
-      const editing = Boolean(bankEditId);
       applyBankResponse(body, editing ? body.savedBankId : undefined);
       if (!editing) editBank();
       setMessage(`${editing ? 'Đã cập nhật' : 'Đã thêm'} cấu hình ngân hàng. Token được mã hóa và không hiển thị lại.`, 'success');
@@ -626,6 +628,7 @@ export default function AdminPage() {
             description="Lưu nhiều tài khoản ngân hàng, nhưng chỉ một tài khoản được bật để nhận mã QR mới. BIDV V4 callback vẫn nhận giao dịch của các mã QR đang chờ." />
           <BankReconciliation authorized={authorized} banks={bankConfigs} activeBankId={activeBankId} />
           <Panel icon={<ListChecks />} title="Danh sách ngân hàng" subtitle="Thêm ngân hàng ở biểu mẫu bên dưới; chọn Sửa để cập nhật. Chỉ một tài khoản được bật cho đơn mới.">
+            <div className="mb-3 flex justify-end"><button type="button" disabled={botBusy} onClick={() => editBank()} className="button-primary inline-flex items-center gap-1.5 px-3 py-2 text-xs"><Plus size={14} />Thêm ngân hàng mới</button></div>
             {bankConfigs.length === 0
               ? <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-5 text-sm text-slate-400">Chưa có cấu hình nào. Hãy thêm tài khoản bên dưới.</div>
               : <div className="space-y-3">{bankConfigs.map((config) => {
@@ -651,7 +654,7 @@ export default function AdminPage() {
                 </div>;
               })}</div>}
           </Panel>
-          <Panel icon={bankEditId ? <Pencil /> : <Plus />} title={bankEditId ? 'Cập nhật cấu hình ngân hàng' : 'Thêm cấu hình ngân hàng'}
+          <Panel icon={bankFormMode === 'edit' ? <Pencil /> : <Plus />} title={bankFormMode === 'edit' ? 'Cập nhật cấu hình ngân hàng' : 'Thêm cấu hình ngân hàng'}
             subtitle="SECRET KEY được mã hóa trên server và không hiển thị lại sau khi lưu.">
             <form onSubmit={saveBankConfig} className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
@@ -675,7 +678,7 @@ export default function AdminPage() {
               </div>
               {bankQrUrl && <div className="rounded-xl border border-slate-800 bg-slate-950 p-3"><p className="text-xs text-slate-400">Quick Link VietQR xem trước</p><a className="mt-2 block break-all text-xs text-indigo-300 underline" href={bankQrUrl} target="_blank" rel="noreferrer">{bankQrUrl}</a></div>}
               <div className="grid gap-3 sm:grid-cols-3">
-                <button type="submit" disabled={botBusy || bankTesting} className="button-primary flex w-full items-center justify-center gap-2"><Plus size={16} />{botBusy ? 'Đang lưu…' : bankEditId ? 'Lưu thay đổi' : 'Thêm ngân hàng'}</button>
+                <button type="submit" disabled={botBusy || bankTesting} className="button-primary flex w-full items-center justify-center gap-2"><Plus size={16} />{botBusy ? 'Đang lưu…' : bankFormMode === 'edit' ? 'Lưu thay đổi' : 'Thêm ngân hàng'}</button>
                 <button type="button" disabled={botBusy || bankTesting} onClick={() => editBank()} className="button-secondary w-full">Nhập mới</button>
                 <button type="button" disabled={botBusy || bankTesting || !bankEditId} onClick={() => void testBankQuery()}
                   className="button-secondary flex w-full items-center justify-center gap-2"><Activity size={16} />{bankTesting ? 'Đang query…' : `Test ${bankProviderLabel(bankProvider)}`}</button>

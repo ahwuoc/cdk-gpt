@@ -580,13 +580,30 @@ function isStoredBankCollection(value: unknown): value is StoredBankCollection {
   return candidate.version === 2 && typeof candidate.activeBankId === 'string' && Array.isArray(candidate.banks);
 }
 
-function isStoredBankAccount(value: unknown): value is StoredBankAccount {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const bank = value as Partial<StoredBankAccount>;
-  return typeof bank.id === 'string' && Boolean(bank.id) && typeof bank.label === 'string' &&
-    (bank.provider === 'CAKE_V2' || bank.provider === 'BIDV_V4' || bank.provider === 'BIDV_V2') &&
-    typeof bank.bankId === 'string' && typeof bank.accountNo === 'string' && typeof bank.template === 'string' &&
-    typeof bank.accountName === 'string' && typeof bank.amount === 'number' && typeof bank.description === 'string';
+function normalizeStoredBankAccount(value: unknown, fallbackId?: string): StoredBankAccount | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const bank = value as Record<string, unknown>;
+  const bankId = typeof bank.bankId === 'string' ? bank.bankId.trim() : '';
+  const accountNo = typeof bank.accountNo === 'string' ? bank.accountNo.trim() : '';
+  if (!bankId || !accountNo) return undefined;
+  const provider = bank.provider === 'BIDV_V4' || bank.provider === 'BIDV_V2' ? 'BIDV_V4' : 'CAKE_V2';
+  const amount = Number(bank.amount ?? 0);
+  const id = typeof bank.id === 'string' && bank.id.trim() ? bank.id.trim() : fallbackId || `${provider}:${bankId}:${accountNo}`;
+  return {
+    id,
+    label: typeof bank.label === 'string' && bank.label.trim() ? bank.label.trim() : `${bankId} · ${accountNo.slice(-4)}`,
+    provider,
+    ...(typeof bank.encryptedToken === 'string' && bank.encryptedToken ? { encryptedToken: bank.encryptedToken } : {}),
+    ...(Number.isSafeInteger(bank.encryptionKeyVersion) ? { encryptionKeyVersion: Number(bank.encryptionKeyVersion) } : {}),
+    ...(typeof bank.lastFour === 'string' ? { lastFour: bank.lastFour } : {}),
+    bankId,
+    accountNo,
+    template: ['compact', 'compact2', 'qr_only', 'print', 'loax'].includes(String(bank.template)) ? String(bank.template) : 'compact2',
+    accountName: typeof bank.accountName === 'string' ? bank.accountName.trim() : '',
+    amount: Number.isSafeInteger(amount) && amount >= 0 ? amount : 0,
+    description: typeof bank.description === 'string' ? bank.description : '',
+    ...(typeof bank.archivedAt === 'string' ? { archivedAt: bank.archivedAt } : {}),
+  };
 }
 
 function emptyBankCollection(): StoredBankCollection {
@@ -596,24 +613,15 @@ function emptyBankCollection(): StoredBankCollection {
 /** Read both the old singleton and the v2 collection without a destructive migration. */
 function storedBankCollection(value: unknown): StoredBankCollection | undefined {
   if (isStoredBankCollection(value)) {
-    const banks = value.banks.filter(isStoredBankAccount).map((bank) => ({
-      ...bank, provider: bank.provider === 'BIDV_V2' ? 'BIDV_V4' as const : bank.provider,
-    }));
+    const banks = value.banks.map((bank, index) => normalizeStoredBankAccount(bank, `bank-${index + 1}`))
+      .filter((bank): bank is StoredBankAccount => Boolean(bank));
     const requested = banks.find((bank) => bank.id === value.activeBankId && !bank.archivedAt);
     const activeBankId = requested?.id ?? banks.find((bank) => !bank.archivedAt)?.id ?? '';
     return { version: 2, activeBankId, banks };
   }
   if (!isStoredBankConfig(value)) return undefined;
-  const bank: StoredBankAccount = {
-    ...value,
-    id: LEGACY_BANK_CONFIG_ID,
-    label: `${value.bankId} · ${value.accountNo.slice(-4)}`,
-    provider: 'CAKE_V2',
-    amount: Number.isSafeInteger(value.amount) ? value.amount : 0,
-    description: typeof value.description === 'string' ? value.description : '',
-    template: value.template || 'compact2',
-    accountName: value.accountName || '',
-  };
+  const bank = normalizeStoredBankAccount({ ...value, id: LEGACY_BANK_CONFIG_ID, provider: 'CAKE_V2' });
+  if (!bank) return undefined;
   return { version: 2, activeBankId: bank.id, banks: [bank] };
 }
 
