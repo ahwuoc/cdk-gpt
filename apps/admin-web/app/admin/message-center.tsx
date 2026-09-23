@@ -324,7 +324,7 @@ export function MessageCenter({ authorized, setMessage }: {
         </div>
         <div className="space-y-4">
           <div className="admin-card p-5"><p className="mb-4 text-xs font-medium text-slate-400">Xem trước nội dung trên Telegram</p>
-            <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs font-semibold text-indigo-300">📢 THÔNG BÁO TỪ SHOP</p><p className={`mt-3 max-h-52 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 ${broadcastBody.trim() ? 'text-slate-200' : 'text-slate-500'}`}>{broadcastBody.trim() || 'Nội dung bạn soạn sẽ xuất hiện ở đây…'}</p><div className="mt-4 rounded-lg bg-slate-800 p-2.5 text-center text-xs text-slate-300">💬 Liên hệ shop</div></div>
+            <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-4"><p className="text-xs font-semibold text-indigo-300">📢 THÔNG BÁO TỪ SHOP</p><p className={`mt-3 max-h-52 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 ${broadcastBody.trim() ? 'text-slate-200' : 'text-slate-500'}`}>{broadcastBody.trim() || 'Nội dung bạn soạn sẽ xuất hiện ở đây…'}</p><div className="mt-4 rounded-lg bg-slate-800 p-2.5 text-center text-xs text-slate-300">🛍 Mua ngay</div></div>
           </div>
           <div className="rounded-xl border border-indigo-300/15 bg-indigo-300/5 p-4"><p className="flex items-center gap-2 text-xs font-medium text-indigo-300"><Info size={15} />Thông báo được gửi như thế nào?</p><p className="mt-2 text-xs leading-6 text-slate-400">Bot gửi song song; các thông báo hàng loạt dùng chung hạn mức 25 tin/giây. Hệ thống tự chờ và gửi lại khi Telegram giới hạn tốc độ. Khách đăng ký trước thường vẫn được xếp trước; kết quả cập nhật sau mỗi lô.</p></div>
         </div>

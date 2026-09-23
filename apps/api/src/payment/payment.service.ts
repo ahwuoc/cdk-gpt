@@ -264,6 +264,14 @@ export class PaymentService {
       cancelled: wasUserCancelled(request), checkout: publicQuickCheckout(quickCheckoutFrom(request)), historyCheck };
   }
 
+  async checkBankDepositForAdmin(requestId: string) {
+    if (!Types.ObjectId.isValid(requestId)) throw new BadRequestException('Invalid payment request');
+    const request = await this.requests.findOne({ _id: requestId, provider: BANK_PROVIDER, deletedAt: null })
+      .select('_id userId').lean();
+    if (!request) throw new NotFoundException('Payment request not found');
+    return this.checkBankDeposit(requestId, request.userId.toString());
+  }
+
   /** Admin-only, read-only probe for diagnosing one saved bank history token. */
   async testCakeHistoryConnection(bankConfigId?: string) {
     const bank = await this.bankConfig?.getBankConfigForRuntime?.(bankConfigId);

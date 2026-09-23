@@ -18,7 +18,7 @@ export class TelegramMessenger {
   async sendBroadcastMessage(telegramId: string, body: string) {
     const runtime = await this.config.getRuntimeBotToken();
     return new Telegram(runtime.token).sendMessage(telegramId, `📢 THÔNG BÁO TỪ SHOP\n\n${body}`, {
-      ...Markup.inlineKeyboard([[Markup.button.callback('💬 Liên hệ shop', 'support:direct')]]),
+      ...Markup.inlineKeyboard([[Markup.button.callback('🛍 Mua ngay', 'menu:products')]]),
     });
   }
 }

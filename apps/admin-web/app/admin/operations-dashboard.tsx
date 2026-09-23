@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { TopSpenders } from './top-spenders';
+import { requestId } from './request-id';
 
 export type AuthorizedRequest = (path: string, init?: RequestInit) => Promise<Response>;
 export type OperationsView = 'overview' | 'orders' | 'deposits';
@@ -102,7 +103,7 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
   onOpenInventory(): void;
   onOpenOrders(): void;
   onOpenDeposits(): void;
-  setMessage(message: string): void;
+  setMessage(message: string, kind?: 'success' | 'error' | 'warning' | 'info'): void;
 }) {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [orders, setOrders] = useState<PageResult<OrderRecord>>(blankPage);
@@ -111,6 +112,7 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
   const [summaryError, setSummaryError] = useState('');
   const [spendingRefreshVersion, setSpendingRefreshVersion] = useState(0);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [checkingDepositId, setCheckingDepositId] = useState('');
   const [ordersQuery, setOrdersQuery] = useState({ search: '', userId: '', status: '', from: '', to: '', page: 1 });
   const [depositsQuery, setDepositsQuery] = useState({ search: '', userId: '', status: '', provider: '', from: '', to: '', page: 1 });
   const historyRequest = useRef<AbortController | null>(null);
@@ -167,6 +169,28 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
       if (historyRequest.current === controller) { historyRequest.current = null; setHistoryBusy(false); }
     }
   }, [authorized, depositsQuery, setMessage]);
+
+  async function checkDeposit(deposit: DepositRecord) {
+    setCheckingDepositId(deposit.id);
+    try {
+      const response = await authorized(`/admin/payment-requests/${encodeURIComponent(deposit.id)}/check`, {
+        method: 'POST', headers: { 'x-request-id': requestId() },
+      });
+      const body = await readApiBody<{ status: string; amount: number; historyCheck?: { status: string; retryAfterSeconds?: number } }>(response);
+      if (!response.ok) throw new Error(messageFromBody(body, 'Không thể tra cứu giao dịch nạp tiền.'));
+      await loadDeposits();
+      if (body.status === 'APPROVED') setMessage(`Đã xác nhận ${money(body.amount)} được cộng vào ví.`, 'success');
+      else if (body.status === 'REJECTED') setMessage('Yêu cầu nạp tiền đã bị từ chối.');
+      else if (body.historyCheck?.status === 'COOLDOWN') setMessage(`Vừa tra cứu gần đây. Thử lại sau ${body.historyCheck.retryAfterSeconds ?? 10} giây.`);
+      else if (body.historyCheck?.status === 'UNAVAILABLE') setMessage('API ngân hàng đang tạm thời không truy cập được.');
+      else if (body.historyCheck?.status === 'NOT_FOUND') setMessage(body.status === 'EXPIRED'
+        ? 'Yêu cầu đã hết hạn; chưa thấy tiền vào ngân hàng.' : 'Chưa thấy tiền vào ngân hàng; yêu cầu vẫn đang chờ.');
+      else if (body.status === 'EXPIRED') setMessage('Yêu cầu đã hết hạn; trạng thái ngân hàng chưa xác định.');
+      else setMessage('Đã kiểm tra trạng thái nạp tiền.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Không thể tra cứu giao dịch nạp tiền.');
+    } finally { setCheckingDepositId(''); }
+  }
 
   useEffect(() => {
     if (urlFilterApplied.current) return;
@@ -245,6 +269,8 @@ export function OperationsDashboard({ view, authorized, onOpenCatalog, onOpenInv
       query={depositsQuery}
       setQuery={setDepositsQuery}
       refresh={loadDeposits}
+      checkingDepositId={checkingDepositId}
+      checkDeposit={checkDeposit}
     />}
   </section>;
 }
@@ -323,12 +349,14 @@ function OrdersHistory({ data, loading, query, setQuery, refresh, authorized, se
   </HistoryPanel>{detail && <OrderDetailDialog order={detail} close={() => setDetail(null)} />}</>;
 }
 
-function DepositsHistory({ data, loading, query, setQuery, refresh }: {
+function DepositsHistory({ data, loading, query, setQuery, refresh, checkingDepositId, checkDeposit }: {
   data: PageResult<DepositRecord>;
   loading: boolean;
   query: { search: string; userId: string; status: string; provider: string; from: string; to: string; page: number };
   setQuery: Dispatch<SetStateAction<{ search: string; userId: string; status: string; provider: string; from: string; to: string; page: number }>>;
   refresh(): Promise<void>;
+  checkingDepositId: string;
+  checkDeposit(deposit: DepositRecord): Promise<void>;
 }) {
   return <HistoryPanel title="Lịch sử nạp tiền" subtitle="Theo dõi các yêu cầu nạp và trạng thái đã cộng tiền." icon={<WalletCards size={19} />} loading={loading} refresh={refresh}>
     {query.userId && <ScopedUserFilter userId={query.userId} clear={() => { clearUrlUserFilter(); setQuery((current) => ({ ...current, userId: '', page: 1 })); }} />}
@@ -342,7 +370,8 @@ function DepositsHistory({ data, loading, query, setQuery, refresh }: {
       <DateField label="Đến ngày" value={query.to} onChange={(to) => setQuery((current) => ({ ...current, to, page: 1 }))} />
     </FilterBar>
     <div className="mt-4 divide-y divide-slate-800 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60">
-      {data.items.map((deposit) => <DepositRow key={deposit.id} deposit={deposit} />)}
+      {data.items.map((deposit) => <DepositRow key={deposit.id} deposit={deposit}
+        checking={checkingDepositId === deposit.id} disabled={Boolean(checkingDepositId)} onCheck={() => void checkDeposit(deposit)} />)}
       {!loading && data.items.length === 0 && <EmptyState icon={<WalletCards />} text="Không tìm thấy lịch sử nạp tiền phù hợp." />}
       {loading && <LoadingRows />}
     </div>
@@ -386,7 +415,9 @@ function OrderRow({ order, compact = false, onOpen, opening = false }: { order: 
   </article>;
 }
 
-function DepositRow({ deposit, compact = false }: { deposit: DepositRecord; compact?: boolean }) {
+function DepositRow({ deposit, compact = false, checking = false, disabled = false, onCheck }: {
+  deposit: DepositRecord; compact?: boolean; checking?: boolean; disabled?: boolean; onCheck?: () => void;
+}) {
   return <article className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${compact ? 'px-5' : ''}`}>
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-2"><code className="text-xs font-semibold text-indigo-200">{deposit.requestCode}</code><StatusBadge value={deposit.status} type="deposit" /></div>
@@ -394,7 +425,7 @@ function DepositRow({ deposit, compact = false }: { deposit: DepositRecord; comp
       <p className="mt-1 truncate text-xs text-slate-500">{deposit.provider ?? 'BANK'}{deposit.providerReference ? ` · ${deposit.providerReference}` : ''}{deposit.transferContent ? ` · ${deposit.transferContent}` : ''} · {dateTime(deposit.createdAt)}</p>
       {deposit.rejectionReason && <p className="mt-1 truncate text-xs text-rose-300">Lý do: {deposit.rejectionReason}</p>}
     </div>
-    <div className="flex items-center justify-between gap-3 sm:block sm:text-right"><p className="font-semibold text-emerald-300">+{money(deposit.amount)}</p><p className="mt-1 text-xs text-slate-500">{deposit.reviewedAt ? `Duyệt ${dateTime(deposit.reviewedAt)}` : 'Chưa duyệt'}</p></div>
+    <div className="flex items-center justify-between gap-3 sm:justify-end"><div className="sm:text-right"><p className="font-semibold text-emerald-300">+{money(deposit.amount)}</p><p className="mt-1 text-xs text-slate-500">{deposit.reviewedAt ? `Duyệt ${dateTime(deposit.reviewedAt)}` : 'Chưa duyệt'}</p></div>{onCheck && <button type="button" disabled={disabled} onClick={onCheck} className="button-secondary inline-flex shrink-0 items-center gap-1.5 px-3 py-2 text-xs"><RefreshCw size={13} className={checking ? 'animate-spin' : ''} />{checking ? 'Đang tra…' : 'Tra cứu'}</button>}</div>
   </article>;
 }
 

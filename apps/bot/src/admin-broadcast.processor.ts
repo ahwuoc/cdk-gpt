@@ -49,7 +49,7 @@ export class AdminBroadcastProcessor {
       let delivered: { message_id: number };
       try {
         delivered = await this.sender.send(user.telegramId, () => this.bot.telegram.sendMessage(user.telegramId, `📢 THÔNG BÁO TỪ SHOP\n\n${campaign.body}`, {
-          ...Markup.inlineKeyboard([[Markup.button.callback('💬 Liên hệ shop', 'support:direct')]]),
+          ...Markup.inlineKeyboard([[Markup.button.callback('🛍 Mua ngay', 'menu:products')]]),
         }));
       } catch (error) {
         await CustomerMessageModel.updateOne({ _id: record._id }, { $set: {

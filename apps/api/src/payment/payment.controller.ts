@@ -22,6 +22,8 @@ export class PaymentController {
   approve(@Param('id') id: string, @Body() body: ApprovePaymentRequestDto, @Req() req: FastifyRequest & { admin: AdminClaims }) {
     return this.payments.approve(id, req.admin.sub, body.idempotencyKey);
   }
+  @Post('admin/payment-requests/:id/check') @RequirePermissions('payments.approve')
+  checkAdminDeposit(@Param('id') id: string) { return this.payments.checkBankDepositForAdmin(id); }
   @Post('admin/payments/bank/test') @RequirePermissions('payments.approve')
   testCakeHistory(@Body() body?: TestBankHistoryDto) { return this.payments.testCakeHistoryConnection(body?.bankConfigId); }
   @Post('admin/payments/bank/reconcile') @RequirePermissions('payments.approve')

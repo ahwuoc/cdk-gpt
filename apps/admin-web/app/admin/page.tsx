@@ -311,7 +311,7 @@ export default function AdminPage() {
   }, [authorized]);
 
   function editBank(config?: BankConfig) {
-    setBankEditId(config?.source === 'environment' ? '' : config?.id ?? '');
+    setBankEditId(config?.id ?? '');
     setBankLabel(config?.label ?? '');
     setBankProvider(config?.provider === 'BIDV_V4' || config?.provider === 'BIDV_V2' ? 'BIDV_V4' : 'CAKE_V2');
     setBankToken('');
@@ -352,8 +352,7 @@ export default function AdminPage() {
       const nextActive = body.activeBankId?.trim() || configs.find((config) => config.active)?.id ||
         (body.bank?.active ? body.bank.id : undefined) || '';
       setActiveBankId(nextActive);
-      const selectedBank = configs.find((config) => bankConfigKey(config) === nextActive) ?? configs[0];
-      editBank(selectedBank);
+      editBank();
       if (body.runtime) setRuntimeConfig(runtimeWithPublicDefaults(body.runtime));
       setQstashToken('');
       await loadBankOptions();
@@ -420,8 +419,10 @@ export default function AdminPage() {
         body: JSON.stringify(payload), });
       const body = (await readApiBody(response)) as { bank?: BankConfig; banks?: BankConfig[]; activeBankId?: string; savedBankId?: string; reloadWithinSeconds?: number; message?: string };
       if (!response.ok || (!body.bank && !body.banks)) throw new Error(apiErrorMessage(body, 'Không thể lưu cấu hình ngân hàng'));
-      applyBankResponse(body, body.savedBankId);
-      setMessage(`${bankEditId ? 'Đã cập nhật' : 'Đã thêm'} cấu hình ngân hàng. Token được mã hóa và không hiển thị lại.`, 'success');
+      const editing = Boolean(bankEditId);
+      applyBankResponse(body, editing ? body.savedBankId : undefined);
+      if (!editing) editBank();
+      setMessage(`${editing ? 'Đã cập nhật' : 'Đã thêm'} cấu hình ngân hàng. Token được mã hóa và không hiển thị lại.`, 'success');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Không thể lưu cấu hình ngân hàng', 'error');
     }
@@ -505,8 +506,7 @@ export default function AdminPage() {
 
   const bankQrUrl = buildBankQrUrl({ bankId, accountNo: bankAccountNo, template: bankTemplate,
     accountName: bankAccountName, amount: bankAmount, description: bankDescription });
-  const editedBank = bankConfigs.find((config) => bankConfigKey(config) === bankEditId) ??
-    (!bankEditId ? bankConfigs.find((config) => config.source === 'environment') : undefined);
+  const editedBank = bankConfigs.find((config) => bankConfigKey(config) === bankEditId);
   const bankCallbackUrl = runtimeConfig.apiUrl.trim() && editedBank?.id
     ? `${runtimeConfig.apiUrl.trim().replace(/\/+$/, '')}/api/webhooks/bank/${encodeURIComponent(editedBank.id)}` : '';
 
@@ -625,7 +625,7 @@ export default function AdminPage() {
           <PageHeading eyebrow="Thanh toán" title="Nạp tiền & VietQR"
             description="Lưu nhiều tài khoản ngân hàng, nhưng chỉ một tài khoản được bật để nhận mã QR mới. BIDV V4 callback vẫn nhận giao dịch của các mã QR đang chờ." />
           <BankReconciliation authorized={authorized} banks={bankConfigs} activeBankId={activeBankId} />
-          <Panel icon={<ListChecks />} title="Danh sách BIDV" subtitle="Bật một tài khoản để dùng cho đơn mới. Khi bật tài khoản khác, tài khoản hiện tại sẽ tự tắt.">
+          <Panel icon={<ListChecks />} title="Danh sách ngân hàng" subtitle="Thêm ngân hàng ở biểu mẫu bên dưới; chọn Sửa để cập nhật. Chỉ một tài khoản được bật cho đơn mới.">
             {bankConfigs.length === 0
               ? <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-5 text-sm text-slate-400">Chưa có cấu hình nào. Hãy thêm tài khoản bên dưới.</div>
               : <div className="space-y-3">{bankConfigs.map((config) => {

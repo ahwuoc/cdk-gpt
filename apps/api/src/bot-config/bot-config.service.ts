@@ -219,7 +219,11 @@ export class BotConfigService {
   private async updateBankConfigUnlocked(input: UpdateBankConfigDto, adminId: string, requestId?: string) {
     const adminObjectId = new Types.ObjectId(adminId);
     const current = await this.settings.findOne({ key: 'bank.api_config' }).select('value').lean();
-    const collection = storedBankCollection(current?.value) ?? emptyBankCollection();
+    const stored = storedBankCollection(current?.value);
+    const environment = !stored ? environmentBankAccount(this.encryption) : undefined;
+    const collection = stored ?? (environment
+      ? { version: 2 as const, activeBankId: environment.encryptedToken && environment.bankId && environment.accountNo && environment.accountName ? environment.id : '', banks: [environment] }
+      : emptyBankCollection());
     const legacyStyleUpdate = !input.id && input.provider === undefined && input.label === undefined &&
       input.active === undefined && input.enabled === undefined;
     const existingId = legacyStyleUpdate ? collection.activeBankId : input.id;
@@ -723,6 +727,25 @@ function environmentBankConfig(): RuntimeBankConfig | undefined {
   return { id: ENVIRONMENT_BANK_CONFIG_ID, label: `${bankId} · ${accountNo.slice(-4)}`,
     provider: environmentBankProvider(), token, bankId, accountNo,
     template: process.env.BANK_QR_TEMPLATE?.trim() || 'compact2', accountName };
+}
+
+function environmentBankAccount(encryption: EncryptionService): StoredBankAccount | undefined {
+  const token = process.env.TOKEN_API_BANK?.trim() ?? '';
+  const bankId = process.env.BANK_ID?.trim() ?? '';
+  const accountNo = process.env.BANK_ACCOUNT_NO?.trim() ?? '';
+  const accountName = process.env.BANK_ACCOUNT_NAME?.trim() ?? '';
+  if (!token && !bankId && !accountNo) return undefined;
+  const amount = Number(process.env.BANK_QR_AMOUNT ?? 0);
+  return {
+    id: ENVIRONMENT_BANK_CONFIG_ID,
+    label: `${bankId || 'Ngân hàng'} · ${accountNo.slice(-4)}`,
+    provider: environmentBankProvider(),
+    ...(token ? { encryptedToken: encryption.encrypt(token), encryptionKeyVersion: encryption.currentVersion,
+      lastFour: token.slice(-4) } : {}),
+    bankId, accountNo, template: process.env.BANK_QR_TEMPLATE?.trim() || 'compact2', accountName,
+    amount: Number.isSafeInteger(amount) && amount >= 0 ? amount : 0,
+    description: process.env.BANK_QR_DESCRIPTION ?? '',
+  };
 }
 
 function secretsEqual(candidate: string, expected: string) {
