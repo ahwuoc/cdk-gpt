@@ -26,3 +26,14 @@ export class CouponQueryDto {
   @IsOptional() @IsString() @Length(0, 100) q?: string;
   @IsOptional() @IsIn(['true', 'false']) active?: 'true' | 'false';
 }
+
+/** Query used by the bot; the user id is trusted only after normal DTO validation. */
+export class BotCouponQueryDto {
+  @IsMongoId() userId!: string;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100000)
+  page = 1;
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(5)
+  limit = 5;
+}

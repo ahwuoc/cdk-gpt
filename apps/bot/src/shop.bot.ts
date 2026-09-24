@@ -38,6 +38,7 @@ const defaultDataContext: ShopBotDataContext = {
 const inlineMenu = () => Markup.inlineKeyboard([
   [Markup.button.callback('🛍 Sản phẩm', 'menu:products'), Markup.button.callback('💰 Số dư', 'menu:balance')],
   [Markup.button.callback('💳 Nạp tiền', 'menu:deposit')],
+  [Markup.button.callback('🎟 Voucher', 'menu:coupons')],
   [Markup.button.callback('📦 Đơn hàng của tôi', 'menu:orders'), Markup.button.callback('ℹ️ Hướng dẫn', 'menu:help')],
   [Markup.button.callback('🚨 Báo lỗi / Khiếu nại đơn', 'menu:reports')],
   [Markup.button.callback('💬 Liên hệ hỗ trợ', 'support:direct')],
@@ -179,6 +180,10 @@ export function createShopBot(
   bot.command('nap', (ctx) => showDepositOptions(ctx));
   bot.hears('💳 Nạp tiền', (ctx) => showDepositOptions(ctx));
   bot.action('menu:deposit', async (ctx) => { await ctx.answerCbQuery(); await showDepositOptions(ctx); });
+  bot.command('voucher', (ctx) => showCoupons(ctx, apiUrl, botApiSecret, data));
+  bot.command('vouchers', (ctx) => showCoupons(ctx, apiUrl, botApiSecret, data));
+  bot.hears('🎟 Voucher', (ctx) => showCoupons(ctx, apiUrl, botApiSecret, data));
+  bot.action('menu:coupons', async (ctx) => { await ctx.answerCbQuery(); await showCoupons(ctx, apiUrl, botApiSecret, data); });
   bot.action(/^deposit:(\d{4,13})$/, async (ctx) => {
     await ctx.answerCbQuery('Đang tạo mã nạp tiền…');
     await createDeposit(ctx, Number(ctx.match[1]), apiUrl, botApiSecret, data);
@@ -718,6 +723,57 @@ async function showBalance(ctx: Context, data: ShopBotDataContext) {
   await ctx.reply(`💰 Số dư ví của bạn: *${formatMoney(user.walletBalance)}*`, { parse_mode: 'Markdown', ...inlineMenu() });
 }
 
+interface AvailableCoupon {
+  code: string;
+  type: 'PERCENT' | 'FIXED';
+  value: number;
+  minSubtotal: number;
+  maxDiscount?: number | null;
+  endsAt?: string | null;
+  remainingUses?: number | null;
+  remainingUserUses: number;
+  productIds?: string[];
+  products?: Array<{ id: string; name: string }>;
+}
+
+async function showCoupons(ctx: Context, apiUrl: string, botApiSecret: string, data: ShopBotDataContext) {
+  if (!ctx.from) return;
+  try {
+    const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
+    const query = new URLSearchParams({ userId: user._id.toString(), page: '1', limit: '5' });
+    const response = await fetch(`${apiUrl}/api/bot/coupons?${query.toString()}`, {
+      headers: { 'x-bot-secret': botApiSecret }, signal: AbortSignal.timeout(10_000),
+    });
+    const body = await response.json() as { items?: AvailableCoupon[]; message?: string | string[] };
+    if (!response.ok) throw new Error(readErrorMessage(body.message, 'Không thể tải danh sách voucher.'));
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) {
+      await ctx.reply('🎟 Hiện chưa có voucher phù hợp với tài khoản của bạn.', inlineMenu());
+      return;
+    }
+    const lines = items.map((coupon) => {
+      const discount = coupon.type === 'PERCENT'
+        ? `Giảm ${coupon.value}%${coupon.maxDiscount ? ` tối đa ${formatMoney(coupon.maxDiscount)}` : ''}`
+        : `Giảm ${formatMoney(coupon.value)}`;
+      const minimum = coupon.minSubtotal > 0 ? ` · Đơn từ ${formatMoney(coupon.minSubtotal)}` : '';
+      const expiry = coupon.endsAt ? ` · HSD ${formatDeadline(coupon.endsAt)}` : '';
+      const remaining = Number.isSafeInteger(coupon.remainingUserUses) ? ` · Còn ${coupon.remainingUserUses} lượt` : '';
+      const scope = coupon.productIds?.length
+        ? `\n   Áp dụng: ${coupon.products?.length ? coupon.products.map((product) => markdownEscape(product.name)).join(', ') : 'sản phẩm được chọn'}`
+        : '\n   Áp dụng cho mọi sản phẩm';
+      return `🎟 *${markdownEscape(coupon.code)}* — ${discount}${minimum}${expiry}${remaining}${scope}`;
+    });
+    await ctx.reply(`🎟 *Voucher đang có*\n\n${lines.join('\n\n')}\n\nKhi mua hàng, bấm *Nhập mã giảm giá* rồi gửi mã voucher.`, {
+      parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+        [Markup.button.callback('🛍 Xem sản phẩm', 'menu:products')],
+        [Markup.button.callback('🏠 Menu chính', 'menu:home')],
+      ]),
+    });
+  } catch (error) {
+    await ctx.reply(`❌ ${error instanceof Error ? error.message : 'Không thể tải danh sách voucher.'}`, inlineMenu());
+  }
+}
+
 async function showOrders(ctx: Context, data: ShopBotDataContext, reporting = false) {
   if (!ctx.from) return;
   const user = await ensureUser(data, ctx.from.id.toString(), ctx.from.username, ctx.from.first_name);
@@ -950,7 +1006,7 @@ async function recordShoppingEvent(ctx: Context, apiUrl: string, botApiSecret: s
   const callback = ctx.callbackQuery && 'data' in ctx.callbackQuery ? ctx.callbackQuery.data : '';
   const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
   const product = /^select:([a-f\d]{24}):/.exec(callback);
-  const menu = ['menu:home', 'menu:products'].includes(callback)
+  const menu = ['menu:home', 'menu:products', 'menu:coupons'].includes(callback)
     || /^\/(?:start|products)(?:@\w+)?(?:\s|$)/.test(text) || text === '🛍 Sản phẩm';
   const type = explicit?.type ?? (product ? 'PRODUCT_VIEW' : menu ? 'MENU_VIEW' : undefined);
   if (!type) return;

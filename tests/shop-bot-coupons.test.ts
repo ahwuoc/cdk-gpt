@@ -17,6 +17,16 @@ test('quantity selection quotes without charging and offers coupon entry', async
   });
 });
 
+test('voucher menu shows currently available codes and product scope', async () => {
+  const f = setup();
+  await f.callback('menu:coupons');
+  const reply = f.replies.at(-1);
+  expect(reply?.text).toContain('SAVE20');
+  expect(reply?.text).toContain('Demo');
+  expect(reply?.text).toContain('Giảm 20%');
+  expect(reply?.extra).toContain('menu:products');
+});
+
 test('coupon preview updates total and repeated confirmations reuse one wallet purchase', async () => {
   const f = setup();
   await f.callback('qty:' + f.productId + ':2');
@@ -259,7 +269,7 @@ function setup(balance = 100_000) {
   } as unknown as ShopBotDataContext;
   spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const path = new URL(String(url)).pathname;
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
     calls.push({ path, body });
     if (heldRequest && path.endsWith(heldRequest.suffix)) {
       const held = heldRequest;
@@ -274,6 +284,10 @@ function setup(balance = 100_000) {
       return Response.json({ productId, productName: 'Demo', quantity: body.quantity, unitPrice: 10_000,
         subtotal, discountAmount, totalAmount: subtotal - discountAmount, couponCode: body.couponCode, available: 10 });
     }
+    if (path.endsWith('/bot/coupons')) return Response.json({ items: [{ code: 'SAVE20', type: 'PERCENT', value: 20,
+      minSubtotal: 0, maxDiscount: null, endsAt: null, remainingUses: null, remainingUserUses: 2,
+      productIds: [productId],
+      products: [{ id: productId, name: 'Demo' }] }], page: 1, limit: 5, total: 1, totalPages: 1 });
     if (path.endsWith('/purchases/batch')) {
       if (failPurchase) { failPurchase = false; throw new Error('connection lost'); }
       return Response.json([{ orderCode: 'ORD-FIXTURE' }]);

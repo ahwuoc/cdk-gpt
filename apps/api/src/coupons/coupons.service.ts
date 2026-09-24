@@ -3,7 +3,7 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Types, type ClientSession, type Connection, type Model } from 'mongoose';
 import type { AuditLog, Product, Coupon, CouponRedemption } from '@store/database';
 import { isMongoDuplicateKey } from '@store/shared';
-import type { CouponQueryDto, CreateCouponDto, UpdateCouponDto } from './coupons.dto';
+import type { BotCouponQueryDto, CouponQueryDto, CreateCouponDto, UpdateCouponDto } from './coupons.dto';
 
 export class CouponUnavailableError extends BadRequestException {
   readonly code = 'COUPON_UNAVAILABLE';
@@ -28,6 +28,74 @@ export class CouponsService {
     const [items, total] = await Promise.all([this.coupons.find(filter).sort({ createdAt: -1, _id: -1 })
       .skip((page - 1) * limit).limit(limit).lean(), this.coupons.countDocuments(filter)]);
     return { items, page, limit, total, totalPages: Math.ceil(total / limit) };
+  }
+
+  /**
+   * List coupons the bot can show to one user. User redemption filtering is
+   * intentionally done before slicing the page, otherwise a full coupon can
+   * hide a later coupon that is still usable by this user.
+   */
+  async listAvailable(query: BotCouponQueryDto) {
+    const now = new Date();
+    const storedCoupons = await this.coupons.find({
+      active: true,
+      $and: [
+        { $or: [{ startsAt: null }, { startsAt: { $exists: false } }, { startsAt: { $lte: now } }] },
+        { $or: [{ endsAt: null }, { endsAt: { $exists: false } }, { endsAt: { $gt: now } }] },
+        { $or: [{ usageLimit: null }, { usageLimit: { $exists: false } }, { $expr: { $lt: ['$usageCount', '$usageLimit'] } }] },
+      ],
+    }).sort({ createdAt: -1, _id: -1 }).lean();
+    const candidates = storedCoupons.filter((coupon) =>
+      coupon.active && (!coupon.startsAt || coupon.startsAt.getTime() <= now.getTime()) &&
+      (!coupon.endsAt || coupon.endsAt.getTime() > now.getTime()) &&
+      (coupon.usageLimit == null || coupon.usageCount < coupon.usageLimit));
+    if (!candidates.length) return { items: [], page: query.page, limit: query.limit, total: 0, totalPages: 0 };
+
+    const userId = this.objectId(query.userId);
+    const couponIds = candidates.map((coupon) => coupon._id);
+    const redemptionCounts = await this.redemptions.aggregate<{ _id: Types.ObjectId; count: number }>([
+      { $match: { couponId: { $in: couponIds }, userId } },
+      { $group: { _id: '$couponId', count: { $sum: 1 } } },
+    ]);
+    const usedByCoupon = new Map(redemptionCounts.map((row) => [row._id.toString(), row.count]));
+    const available = candidates.filter((coupon) => {
+      const perUserLimit = coupon.perUserLimit ?? 1;
+      return (usedByCoupon.get(coupon._id.toString()) ?? 0) < perUserLimit;
+    });
+    const total = available.length;
+    const pageItems = available.slice((query.page - 1) * query.limit, query.page * query.limit);
+    const scopedProductIds = [...new Set(pageItems.flatMap((coupon) => (coupon.productIds ?? []).map((id) => id.toString())))];
+    const productRows = scopedProductIds.length
+      ? await this.products.find({ _id: { $in: scopedProductIds }, deletedAt: null }).select('_id name').lean()
+      : [];
+    const productNames = new Map(productRows.map((product) => [product._id.toString(), { id: product._id.toString(), name: product.name }]));
+
+    return {
+      items: pageItems.map((coupon) => {
+        const used = usedByCoupon.get(coupon._id.toString()) ?? 0;
+        const remainingUses = coupon.usageLimit == null ? null : Math.max(0, coupon.usageLimit - coupon.usageCount);
+        const productIds = (coupon.productIds ?? []).map((id) => id.toString());
+        return {
+          code: coupon.code,
+          type: coupon.type,
+          value: coupon.value,
+          minSubtotal: coupon.minSubtotal,
+          maxDiscount: coupon.maxDiscount ?? null,
+          endsAt: coupon.endsAt ?? null,
+          remainingUses,
+          remainingUserUses: Math.max(0, (coupon.perUserLimit ?? 1) - used),
+          productIds,
+          products: productIds.flatMap((id) => {
+            const product = productNames.get(id);
+            return product ? [product] : [];
+          }),
+        };
+      }),
+      page: query.page,
+      limit: query.limit,
+      total,
+      totalPages: Math.ceil(total / query.limit),
+    };
   }
 
   async create(input: CreateCouponDto, adminId: string, requestId?: string) {
