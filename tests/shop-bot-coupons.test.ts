@@ -24,6 +24,7 @@ test('voucher menu shows currently available codes and product scope', async () 
   expect(reply?.text).toContain('SAVE20');
   expect(reply?.text).toContain('MÃ VOUCHER');
   expect(reply?.text).toContain('`SAVE20`');
+  expect(reply?.text).not.toContain('\\_');
   expect(reply?.text).toContain('Demo');
   expect(reply?.text).toContain('Giảm 20%');
   expect(reply?.extra).toContain('menu:products');

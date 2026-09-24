@@ -784,7 +784,7 @@ async function showCoupons(ctx: Context, apiUrl: string, botApiSecret: string, d
       const scope = coupon.productIds?.length
         ? `\n   Áp dụng: ${coupon.products?.length ? coupon.products.map((product) => markdownEscape(product.name)).join(', ') : 'sản phẩm được chọn'}`
         : '\n   Áp dụng cho mọi sản phẩm';
-      return `🎟 *MÃ VOUCHER:* \`${markdownEscape(coupon.code)}\`\n💸 ${discount}${minimum}${expiry}${remaining}${scope}`;
+      return `🎟 *MÃ VOUCHER:* \`${coupon.code}\`\n💸 ${discount}${minimum}${expiry}${remaining}${scope}`;
     });
     await ctx.reply(`🎟 *Voucher đang có*\n\n${lines.join('\n\n')}\n\nKhi mua hàng, bấm *Nhập mã giảm giá* rồi gửi mã voucher.`, {
       parse_mode: 'Markdown', ...Markup.inlineKeyboard([
