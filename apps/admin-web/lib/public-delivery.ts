@@ -1,7 +1,7 @@
 import { Types } from 'mongoose';
 import { InventoryItemModel, OrderModel, ProductModel } from '@store/database';
 import { EncryptionService } from '@store/encryption';
-import { formatCustomerInventoryPayload } from '@store/shared';
+import { formatCustomerInventoryPayload, formatWarrantyDuration } from '@store/shared';
 import { getServerlessApi } from '../../api/src/serverless';
 
 export interface PublicDeliveryData {
@@ -12,6 +12,7 @@ export interface PublicDeliveryData {
   instructions: string;
   warrantyPolicy: string;
   warrantyDays: number;
+  warrantyHours: number;
   deliveredAt: string | null;
   formatted: string;
   payload: Record<string, unknown>;
@@ -35,7 +36,7 @@ export async function getPublicDelivery(orderId: string, token: string): Promise
   if (!groupedOrders.some((item) => item._id.equals(order._id))) return null;
 
   const [product, inventories] = await Promise.all([
-    ProductModel.findById(order.productId).select('name description instructions warrantyPolicy warrantyDays deliveryTemplate inventoryPattern fieldDefinitions').lean(),
+    ProductModel.findById(order.productId).select('name description instructions warrantyPolicy warrantyDays warrantyHours deliveryTemplate inventoryPattern fieldDefinitions').lean(),
     InventoryItemModel.find({ _id: { $in: groupedOrders.map((item) => item.inventoryItemId) } }).select('+encryptedPayload').lean(),
   ]);
   if (!product || inventories.length !== groupedOrders.length) return null;
@@ -59,6 +60,7 @@ export async function getPublicDelivery(orderId: string, token: string): Promise
     instructions: product.instructions ?? '',
     warrantyPolicy: product.warrantyPolicy ?? '',
     warrantyDays: product.warrantyDays ?? 0,
+    warrantyHours: product.warrantyHours ?? 0,
     deliveredAt: order.deliveredAt ? order.deliveredAt.toISOString() : null,
     formatted: formattedItems.join('\n\n'),
     payload: {},
@@ -74,8 +76,9 @@ export function deliveryTextFile(data: PublicDeliveryData) {
     data.formatted,
   ];
   if (data.instructions.trim()) blocks.push('', '=== HƯỚNG DẪN SỬ DỤNG ===', data.instructions.trim());
-  if (data.warrantyPolicy.trim() || data.warrantyDays > 0) blocks.push('', '=== BẢO HÀNH ===', [
-    data.warrantyDays > 0 ? `Số ngày bảo hành: ${data.warrantyDays}` : '',
+  const warrantyDuration = formatWarrantyDuration(data.warrantyDays, data.warrantyHours);
+  if (data.warrantyPolicy.trim() || warrantyDuration) blocks.push('', '=== BẢO HÀNH ===', [
+    warrantyDuration ? `Thời gian bảo hành: ${warrantyDuration}` : '',
     data.warrantyPolicy.trim(),
   ].filter(Boolean).join('\n'));
   return `${blocks.join('\n')}\n`;

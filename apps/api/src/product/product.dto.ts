@@ -4,7 +4,7 @@ import {
   IsMongoId, IsString, IsUrl, Length, Matches, Max, Min, ValidateNested,
 } from 'class-validator';
 import { ProductFieldType } from '@store/database';
-import { ProductStatus } from '@store/shared';
+import { MAX_WARRANTY_HOURS, ProductStatus } from '@store/shared';
 
 export class ProductFieldDefinitionDto {
   @IsString() @Length(1, 100)
@@ -59,6 +59,10 @@ export class SaveProductDto {
 
   @IsInt() @Min(0) @Max(3650)
   warrantyDays!: number;
+
+  /** Optional so legacy clients that only send warrantyDays keep working. */
+  @IsOptional() @IsInt() @Min(0) @Max(MAX_WARRANTY_HOURS)
+  warrantyHours?: number;
 
   @IsString() @Length(1, 20_000)
   deliveryTemplate!: string;

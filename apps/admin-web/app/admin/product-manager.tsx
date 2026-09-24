@@ -3,7 +3,7 @@
 import { FormEvent, useState } from 'react';
 import { Boxes, FileText, PackagePlus, Pencil, Plus, RefreshCw, Save, Settings2, ShoppingBag, Trash2, X } from 'lucide-react';
 import { requestId } from './request-id';
-import { productDiscountPercent } from '@store/shared';
+import { formatWarrantyDuration, productDiscountPercent } from '@store/shared';
 import { missingDeliveryTemplateKeys, normalizeProductFieldKey, synchronizedInventoryFormat,
   unknownDeliveryTemplateKeys } from './product-form-utils';
 
@@ -18,7 +18,7 @@ interface ProductField {
 interface ProductInput {
   name: string; slug: string; description: string; price: number; status: ProductStatus; imageUrls: string[];
   categoryId?: string;
-  instructions: string; warrantyPolicy: string; warrantyDays: number; deliveryTemplate: string;
+  instructions: string; warrantyPolicy: string; warrantyDays: number; warrantyHours: number; deliveryTemplate: string;
   fieldDefinitions: ProductField[]; inventoryPattern: string;
   purchaseLimitPerUser: number; lowStockThreshold: number; sortOrder: number;
 }
@@ -33,7 +33,7 @@ export interface ProductPagination { page: number; limit: number; total: number;
 
 const emptyProduct: ProductInput = {
   name: '', slug: '', description: '', price: 0, status: 'DRAFT', imageUrls: [], categoryId: undefined, instructions: '',
-  warrantyPolicy: '', warrantyDays: 0, deliveryTemplate: '{{login}}----{{password}}',
+  warrantyPolicy: '', warrantyDays: 0, warrantyHours: 0, deliveryTemplate: '{{login}}----{{password}}',
   fieldDefinitions: [
     { name: 'login', key: 'login', type: 'STRING', sensitive: false, visibleToCustomer: true, required: true, sortOrder: 1 },
     { name: 'password', key: 'password', type: 'STRING', sensitive: true, visibleToCustomer: true, required: true, sortOrder: 2 },
@@ -190,11 +190,13 @@ export function ProductManager({ products, categories, pagination, authorized, r
             <Field label="Hướng dẫn sử dụng"><textarea className="input min-h-24" value={draft.instructions} onChange={(event) => setDraft({ ...draft, instructions: event.target.value })} placeholder="Đăng nhập, đổi mật khẩu, lưu 2FA..." /></Field>
             <Field label="Chính sách bảo hành"><textarea className="input min-h-24" value={draft.warrantyPolicy} onChange={(event) => setDraft({ ...draft, warrantyPolicy: event.target.value })} placeholder="Điều kiện đổi trả, thời gian xử lý..." /></Field>
           </div>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Field label="Số ngày bảo hành"><NumberInput value={draft.warrantyDays} min={0} onChange={(value) => setDraft({ ...draft, warrantyDays: value })} /></Field>
+            <Field label="Số giờ bảo hành"><NumberInput value={draft.warrantyHours} min={0} onChange={(value) => setDraft({ ...draft, warrantyHours: value })} /><p className="mt-1 text-[10px] text-slate-500">Ví dụ nhập 2 cho bảo hành 2 giờ.</p></Field>
             <Field label="Giới hạn mỗi khách"><NumberInput value={draft.purchaseLimitPerUser} min={0} onChange={(value) => setDraft({ ...draft, purchaseLimitPerUser: value })} /></Field>
             <Field label="Cảnh báo tồn kho"><NumberInput value={draft.lowStockThreshold} min={0} onChange={(value) => setDraft({ ...draft, lowStockThreshold: value })} /></Field>
           </div>
+          {(draft.warrantyDays > 0 || draft.warrantyHours > 0) && <p className="text-xs text-emerald-300">Thời gian bảo hành: {formatWarrantyDuration(draft.warrantyDays, draft.warrantyHours)}</p>}
         </FormSection>
 
         <FormSection icon={<Settings2 size={18} />} title="Cấu trúc dữ liệu kho" subtitle="Định nghĩa các cột khi nhập hàng, ví dụ email, password, 2fa, link-payment.">
@@ -337,7 +339,7 @@ function productInput(product: ProductRecord): ProductInput {
   return {
     name: product.name, slug: product.slug, description: product.description, price: product.price, status: product.status, categoryId: product.categoryId,
     imageUrls: product.imageUrls ?? [], instructions: product.instructions ?? '', warrantyPolicy: product.warrantyPolicy ?? '',
-    warrantyDays: product.warrantyDays, deliveryTemplate: product.deliveryTemplate,
+    warrantyDays: product.warrantyDays ?? 0, warrantyHours: product.warrantyHours ?? 0, deliveryTemplate: product.deliveryTemplate,
     fieldDefinitions: product.fieldDefinitions.map((field) => ({ ...field, name: field.key, type: 'STRING' })),
     inventoryPattern: product.inventoryPattern ?? synchronizedInventoryFormat(product.fieldDefinitions).inventoryPattern,
     purchaseLimitPerUser: product.purchaseLimitPerUser,

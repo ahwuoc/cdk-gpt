@@ -35,15 +35,27 @@ const defaultDataContext: ShopBotDataContext = {
   users: UserModel,
 };
 
-const inlineMenu = () => Markup.inlineKeyboard([
-  [Markup.button.callback('🛍 Sản phẩm', 'menu:products'), Markup.button.callback('💰 Số dư', 'menu:balance')],
-  [Markup.button.callback('💳 Nạp tiền', 'menu:deposit')],
-  [Markup.button.callback('🎟 Voucher', 'menu:coupons')],
-  [Markup.button.callback('📦 Đơn hàng của tôi', 'menu:orders'), Markup.button.callback('ℹ️ Hướng dẫn', 'menu:help')],
-  [Markup.button.callback('🚨 Báo lỗi / Khiếu nại đơn', 'menu:reports')],
-  [Markup.button.callback('💬 Liên hệ hỗ trợ', 'support:direct')],
-]);
+const inlineMenu = (language: BotLanguage = 'vi') => {
+  const english = language === 'en';
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(english ? '🛍 Products' : '🛍 Sản phẩm', 'menu:products'), Markup.button.callback(english ? '💰 Balance' : '💰 Số dư', 'menu:balance')],
+    [Markup.button.callback(english ? '💳 Deposit' : '💳 Nạp tiền', 'menu:deposit')],
+    [Markup.button.callback(english ? '🎟 Vouchers' : '🎟 Voucher', 'menu:coupons')],
+    [Markup.button.callback(english ? '📦 My orders' : '📦 Đơn hàng của tôi', 'menu:orders'), Markup.button.callback(english ? 'ℹ️ Help' : 'ℹ️ Hướng dẫn', 'menu:help')],
+    [Markup.button.callback(english ? '🚨 Report / Warranty' : '🚨 Báo lỗi / Khiếu nại đơn', 'menu:reports')],
+    [Markup.button.callback(english ? '💬 Contact support' : '💬 Liên hệ hỗ trợ', 'support:direct')],
+    [Markup.button.callback(english ? '🌐 Language' : '🌐 Ngôn ngữ', 'menu:language')],
+  ]);
+};
 
+function languagePicker() {
+  return Markup.inlineKeyboard([[
+    Markup.button.callback('🇻🇳 Tiếng Việt (mặc định)', 'language:vi'),
+    Markup.button.callback('🇬🇧 English', 'language:en'),
+  ]]);
+}
+
+type BotLanguage = 'vi' | 'en';
 type PendingQuantity = { productId: string; categoryKey: string };
 type PendingComplaint = { orderId: string; category: ComplaintCategoryValue };
 type PendingComplaintReply = { reportId: string };
@@ -114,10 +126,21 @@ export function createShopBot(
 
   bot.start(async (ctx) => {
     await ensureUser(data, ctx.from.id.toString(), ctx.from.username, [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '));
+    await ctx.reply('🌐 Chọn ngôn ngữ / Choose language\n\nMặc định: Tiếng Việt', languagePicker());
+  });
+
+  bot.command('language', (ctx) => ctx.reply('🌐 Chọn ngôn ngữ / Choose language', languagePicker()));
+  bot.action('menu:language', async (ctx) => { await ctx.answerCbQuery(); await ctx.reply('🌐 Chọn ngôn ngữ / Choose language', languagePicker()); });
+  bot.action(/^language:(vi|en)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!ctx.from) return;
+    const language = ctx.match[1] as BotLanguage;
+    await data.users.updateOne({ telegramId: String(ctx.from.id), deletedAt: null }, { $set: { language } });
     const welcomeSetting = await data.settings.findOne({ key: 'shop.welcome_message' }).select('value').lean();
-    const welcome = typeof welcomeSetting?.value === 'string' && welcomeSetting.value.trim()
-      ? welcomeSetting.value.trim() : `👋 Chào mừng bạn đến với ${shopName}!`;
-    await ctx.reply(`${welcome}\n\nChọn chức năng bên dưới để bắt đầu.`, inlineMenu());
+    const welcome = language === 'en'
+      ? `👋 Welcome to ${shopName}!`
+      : typeof welcomeSetting?.value === 'string' && welcomeSetting.value.trim() ? welcomeSetting.value.trim() : `👋 Chào mừng bạn đến với ${shopName}!`;
+    await ctx.reply(language === 'en' ? `${welcome}\n\nChoose an option below to start.` : `${welcome}\n\nChọn chức năng bên dưới để bắt đầu.`, inlineMenu(language));
   });
 
   bot.command('products', (ctx) => showProductCategories(ctx, data));
@@ -1111,5 +1134,6 @@ async function ensureUser(models: ShopBotDataContext, telegramId: string, userna
     ...(!normalizedUsername ? { $unset: { username: 1 } } : {}),
     $setOnInsert: {
     status: UserStatus.ACTIVE, walletBalance: 0, referralCode: `TG${telegramId.replace('-', '')}`, purchaseCount: 0, deletedAt: null,
+    language: 'vi',
   } }, { upsert: true, new: true, setDefaultsOnInsert: true });
 }

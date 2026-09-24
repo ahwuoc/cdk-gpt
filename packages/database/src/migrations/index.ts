@@ -13,9 +13,11 @@ import { adminHistoryIndexesMigration } from './011-admin-history-indexes';
 import { operationalQueryIndexesMigration } from './012-operational-query-indexes';
 import { messageQueryIndexesMigration } from './014-message-query-indexes';
 import { inventorySearchMigration } from './013-inventory-search';
+import { warrantyHoursMigration } from './015-warranty-hours';
 
 export const migrations: MongoMigration[] = [createIndexesMigration, backfillSafeDefaultsMigration, categoryProductIndexesMigration,
   repairLegacyCollectionNamesMigration, serverlessRuntimeIndexesMigration, orderReportIndexesMigration,
   quickCheckoutReservationsMigration, customerMessageIndexesMigration, couponIndexesMigration, customerAnalyticsIndexesMigration,
-  adminHistoryIndexesMigration, operationalQueryIndexesMigration, inventorySearchMigration, messageQueryIndexesMigration];
+  adminHistoryIndexesMigration, operationalQueryIndexesMigration, inventorySearchMigration, messageQueryIndexesMigration,
+  warrantyHoursMigration];
 export type { MongoMigration } from './types';

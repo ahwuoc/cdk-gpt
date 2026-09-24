@@ -5,7 +5,7 @@ import type { Connection, FilterQuery, Model, PipelineStage, Types as MongooseTy
 import { AuditLog, CustomerConversationType, CustomerMessage, CustomerMessageAudience, CustomerMessageDirection,
   CustomerMessageStatus, Order, Product, User, WarrantyRequest, WarrantyStatus,
   claimableCustomerMessageDelivery, customerMessageId } from '@store/database';
-import { ComplaintCategory, isMongoDuplicateKey } from '@store/shared';
+import { ComplaintCategory, isMongoDuplicateKey, warrantyDurationHours } from '@store/shared';
 import type { CreateOrderReportDto, OrderReportQueryDto, UpdateOrderReportDto } from './warranty.dto';
 import { WarrantyNotifier, type ReportResolutionNotification } from './warranty.notifier';
 import { TelegramMessenger } from '../messaging/telegram-messenger';
@@ -32,6 +32,7 @@ export class WarrantyService {
     @InjectConnection() private readonly connection: Connection,
     @InjectModel('WarrantyRequest') private readonly reports: Model<WarrantyRequest>,
     @InjectModel('Order') private readonly orders: Model<Order>,
+    @InjectModel('Product') private readonly products: Model<Product>,
     @InjectModel('User') private readonly users: Model<User>,
     @InjectModel('CustomerMessage') private readonly customerMessages: Model<CustomerMessage>,
     @InjectModel('AuditLog') private readonly audits: Model<AuditLog>,
@@ -54,6 +55,13 @@ export class WarrantyService {
     if (!order) throw new NotFoundException('Order not found');
     const existing = await this.reports.findOne({ orderId, status: { $in: ACTIVE_REPORT_STATUSES } }).lean();
     if (existing) { await this.ensureOpeningMessage(existing); return createResponse(existing, true); }
+
+    const product = await this.products.findById(order.productId).select('warrantyDays warrantyHours').lean();
+    const durationHours = warrantyDurationHours(product?.warrantyDays, product?.warrantyHours);
+    const warrantyStart = order.deliveredAt ?? order.createdAt;
+    if (durationHours > 0 && warrantyStart && Date.now() >= warrantyStart.getTime() + durationHours * 60 * 60 * 1_000) {
+      throw new ConflictException('Warranty period has expired');
+    }
 
     const reportId = new Types.ObjectId();
     try {

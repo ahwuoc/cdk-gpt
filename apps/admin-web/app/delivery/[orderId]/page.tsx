@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { Download, KeyRound, ShieldCheck } from 'lucide-react';
+import { formatWarrantyDuration } from '@store/shared';
 import { deliveryTextFile, getPublicDelivery } from '@/lib/public-delivery';
 import { CopyButton } from './copy-button';
 
@@ -40,7 +41,7 @@ export default async function DeliveryPage({ params, searchParams }: {
 
           <section className="grid gap-4 lg:grid-cols-2">
             {data.instructions && <InfoBlock title="Hướng dẫn sử dụng" body={data.instructions} />}
-            {(data.warrantyPolicy || data.warrantyDays > 0) && <InfoBlock title="Bảo hành" body={[data.warrantyDays > 0 ? `Thời gian: ${data.warrantyDays} ngày` : '', data.warrantyPolicy].filter(Boolean).join('\n')} />}
+            {(data.warrantyPolicy || data.warrantyDays > 0 || data.warrantyHours > 0) && <InfoBlock title="Bảo hành" body={[formatWarrantyDuration(data.warrantyDays, data.warrantyHours) ? `Thời gian: ${formatWarrantyDuration(data.warrantyDays, data.warrantyHours)}` : '', data.warrantyPolicy].filter(Boolean).join('\n')} />}
           </section>
 
           <aside className="grid gap-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">

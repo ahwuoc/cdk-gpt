@@ -179,7 +179,7 @@ export class ProductService {
     const fieldDefinitions = input.fieldDefinitions.map((field) => ({ ...field, key: field.key.trim(), type: ProductFieldType.STRING }));
     const inventoryPattern = input.inventoryPattern?.trim() || [...fieldDefinitions]
       .sort((left, right) => left.sortOrder - right.sortOrder).map((field) => `{{${field.key}}}`).join('----');
-    return { ...input, fieldDefinitions, inventoryPattern };
+    return { ...input, fieldDefinitions, inventoryPattern, warrantyHours: input.warrantyHours ?? 0 };
   }
 
   private async assertCategory(categoryId?: string) {

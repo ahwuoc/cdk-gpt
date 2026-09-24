@@ -183,7 +183,7 @@ export class AnalyticsService {
 
     const [user, product, inventory, walletTransaction] = await Promise.all([
       this.userModel.findById(order.userId).select('telegramId username displayName status walletBalance purchaseCount createdAt').lean().exec(),
-      this.productModel.findById(order.productId).select('name slug description instructions warrantyPolicy warrantyDays price status').lean().exec(),
+      this.productModel.findById(order.productId).select('name slug description instructions warrantyPolicy warrantyDays warrantyHours price status').lean().exec(),
       this.inventoryModel.findById(order.inventoryItemId)
         .select('status maskedPreview importBatchId reservedAt reservationExpiresAt soldAt createdAt updatedAt').lean().exec(),
       order.walletTransactionId
@@ -205,7 +205,7 @@ export class AnalyticsService {
       product: product ? {
         id: product._id.toString(), name: product.name, slug: product.slug, description: product.description,
         price: product.price, status: product.status, instructions: product.instructions ?? null,
-        warrantyPolicy: product.warrantyPolicy ?? null, warrantyDays: product.warrantyDays,
+        warrantyPolicy: product.warrantyPolicy ?? null, warrantyDays: product.warrantyDays, warrantyHours: product.warrantyHours ?? 0,
       } : null,
       inventory: inventory ? {
         id: inventory._id.toString(), status: inventory.status, maskedPreview: inventory.maskedPreview,

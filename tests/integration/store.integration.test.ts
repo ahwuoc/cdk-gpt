@@ -15,7 +15,7 @@ import {
   OrderModel, OrderRepository, PaymentRequestModel, ProductModel, RoleModel, RuntimeLeaseModel, SettingModel, UserModel,
   UserRepository, WalletTransactionModel, WalletTransactionRepository, WarrantyRequestModel, DatabaseModule, customerMessageId,
 } from '@store/database';
-import { InventoryStatus, OutOfStockError, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
+import { DeliveryStatus, InventoryStatus, OrderStatus, OutOfStockError, PaymentRequestStatus, ProductStatus, UserStatus } from '@store/shared';
 import { PurchaseService } from '../../apps/api/src/purchase/purchase.service';
 import type { PurchaseAlertQueueClient } from '../../apps/api/src/purchase/purchase-alert.queue';
 import { DeliveryQueue } from '../../apps/api/src/delivery/delivery.queue';
@@ -66,7 +66,7 @@ function walletService() { return new WalletService(mongoose.connection, userRep
 function paymentService() { return new PaymentService(mongoose.connection, PaymentRequestModel, walletService()); }
 function analyticsService() { return new AnalyticsService(OrderModel, PaymentRequestModel, UserModel, ProductModel,
   InventoryItemModel, WalletTransactionModel, AuditLogModel); }
-function warrantyService() { return new WarrantyService(mongoose.connection, WarrantyRequestModel, OrderModel, UserModel,
+function warrantyService() { return new WarrantyService(mongoose.connection, WarrantyRequestModel, OrderModel, ProductModel, UserModel,
   CustomerMessageModel, AuditLogModel, { notify: async () => true } as never,
   { sendSupportMessage: async () => ({ message_id: 1 }) } as never); }
 
@@ -889,6 +889,20 @@ integration('digital store on a MongoDB replica set', () => {
       status: 'RESOLVED', resolutionNote: 'Không được xử lý lặp lại.',
     }, 'duplicate-resolution')).rejects.toThrow('Invalid report status transition');
     expect(await AuditLogModel.countDocuments({ requestId: 'duplicate-resolution' })).toBe(0);
+  });
+
+  test('warranty requests are blocked after an hour-based warranty expires', async () => {
+    const { product, user } = await fixture(1);
+    product.warrantyDays = 0;
+    product.warrantyHours = 2;
+    await product.save();
+    const order = await purchaseService().purchase({ userId: user._id.toString(), productId: product._id.toString(),
+      expectedUnitPrice: 100, idempotencyKey: 'expired-hour-warranty' });
+    await OrderModel.updateOne({ _id: order._id }, { $set: {
+      deliveredAt: new Date(Date.now() - 3 * 60 * 60_000), status: OrderStatus.DELIVERED, deliveryStatus: DeliveryStatus.DELIVERED,
+    } });
+    await expect(warrantyService().create({ userId: user._id.toString(), orderId: order._id.toString(),
+      category: 'WARRANTY', description: 'Tài khoản lỗi sau khi nhận hàng.' })).rejects.toThrow('Warranty period has expired');
   });
 
   test('direct support chat and broadcasts are durable and idempotent', async () => {

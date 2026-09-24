@@ -7,7 +7,7 @@ import {
   ProductModel, UserModel, type Order,
 } from '@store/database';
 import { EncryptionService } from '@store/encryption';
-import { DeliveryStatus, formatCustomerInventoryPayload, InventoryStatus, OrderStatus } from '@store/shared';
+import { DeliveryStatus, formatCustomerInventoryPayload, formatWarrantyDuration, InventoryStatus, OrderStatus } from '@store/shared';
 
 export interface DeliveryJob { orderId: string; }
 export interface TelegramBotClient {
@@ -59,7 +59,7 @@ export class DeliveryProcessor {
 
     const [user, product] = await Promise.all([
       UserModel.findById(claimed.userId).select('telegramId').lean(),
-      ProductModel.findById(claimed.productId).select('name deliveryTemplate inventoryPattern fieldDefinitions instructions warrantyPolicy warrantyDays').lean(),
+      ProductModel.findById(claimed.productId).select('name deliveryTemplate inventoryPattern fieldDefinitions instructions warrantyPolicy warrantyDays warrantyHours').lean(),
     ]);
     if (!user || !product) throw new UnrecoverableError('Order delivery data is incomplete');
 
@@ -100,7 +100,7 @@ export class DeliveryProcessor {
     const groupOrderCodes = groupOrders.map((order) => order.orderCode).join(', ');
     const fileText = deliveryText({ orderCode: groupOrderCodes, productName: product.name,
       message: lines.join('\n\n'), instructions: product.instructions, warrantyPolicy: product.warrantyPolicy,
-      warrantyDays: product.warrantyDays });
+      warrantyDays: product.warrantyDays, warrantyHours: product.warrantyHours });
     try {
       await OrderModel.updateMany({ _id: { $in: orderIds } }, { $set: {
         'metadata.deliveryAccessToken': accessToken,
@@ -238,11 +238,12 @@ function deliveryNotice(input: { productName: string; orderCode: string; deliver
   ].join('\n');
 }
 
-function deliveryText(input: { orderCode: string; productName: string; message: string; instructions?: string; warrantyPolicy?: string; warrantyDays?: number }) {
+function deliveryText(input: { orderCode: string; productName: string; message: string; instructions?: string; warrantyPolicy?: string; warrantyDays?: number; warrantyHours?: number }) {
   const blocks = [input.productName, `Mã đơn: ${input.orderCode}`, '', '=== TÀI KHOẢN ===', input.message];
   if (input.instructions?.trim()) blocks.push('', '=== HƯỚNG DẪN SỬ DỤNG ===', input.instructions.trim());
-  if (input.warrantyPolicy?.trim() || Number(input.warrantyDays) > 0) blocks.push('', '=== BẢO HÀNH ===', [
-    Number(input.warrantyDays) > 0 ? `Số ngày bảo hành: ${input.warrantyDays}` : '',
+  const warrantyDuration = formatWarrantyDuration(input.warrantyDays, input.warrantyHours);
+  if (input.warrantyPolicy?.trim() || warrantyDuration) blocks.push('', '=== BẢO HÀNH ===', [
+    warrantyDuration ? `Thời gian bảo hành: ${warrantyDuration}` : '',
     input.warrantyPolicy?.trim() ?? '',
   ].filter(Boolean).join('\n'));
   return `${blocks.join('\n')}\n`;

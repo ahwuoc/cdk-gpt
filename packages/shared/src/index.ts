@@ -5,6 +5,28 @@ export const InventoryStatus = {
 export type InventoryStatusValue = typeof InventoryStatus[keyof typeof InventoryStatus];
 
 export const ProductStatus = { DRAFT: 'DRAFT', ACTIVE: 'ACTIVE', INACTIVE: 'INACTIVE', ARCHIVED: 'ARCHIVED' } as const;
+
+/** Maximum duration accepted by the product warranty form (10 years). */
+export const MAX_WARRANTY_HOURS = 3650 * 24;
+
+/**
+ * Converts the current day/hour fields into one duration while accepting
+ * legacy products that only have warrantyDays.
+ */
+export function warrantyDurationHours(warrantyDays?: number | null, warrantyHours?: number | null) {
+  const days = typeof warrantyDays === 'number' && Number.isSafeInteger(warrantyDays) && warrantyDays > 0 ? warrantyDays : 0;
+  const hours = typeof warrantyHours === 'number' && Number.isSafeInteger(warrantyHours) && warrantyHours > 0 ? warrantyHours : 0;
+  return days * 24 + hours;
+}
+
+export function formatWarrantyDuration(warrantyDays?: number | null, warrantyHours?: number | null) {
+  const totalHours = warrantyDurationHours(warrantyDays, warrantyHours);
+  if (!totalHours) return '';
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return [days ? `${days} ngày` : '', hours ? `${hours} giờ` : ''].filter(Boolean).join(' ');
+}
+
 export const UserStatus = { ACTIVE: 'ACTIVE', SUSPENDED: 'SUSPENDED', BLOCKED: 'BLOCKED' } as const;
 export const OrderStatus = {
   PENDING_DELIVERY: 'PENDING_DELIVERY', DELIVERING: 'DELIVERING', DELIVERED: 'DELIVERED',

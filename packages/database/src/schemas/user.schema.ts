@@ -5,6 +5,7 @@ import { baseSchemaOptions, objectId, softDelete } from './common';
 
 export interface User {
   telegramId: string; username?: string; displayName?: string;
+  language?: 'vi' | 'en';
   status: typeof UserStatus[keyof typeof UserStatus]; walletBalance: number;
   referralCode: string; referredByUserId?: Types.ObjectId; purchaseCount: number; checkoutLockVersion: number;
   createdAt: Date; updatedAt: Date; deletedAt: Date | null;
@@ -13,6 +14,7 @@ export type UserDocument = HydratedDocument<User>;
 export const UserSchema = new Schema<User>({
   telegramId: { type: String, required: true, trim: true, match: /^-?\d+$/ },
   username: { type: String, trim: true, maxlength: 64 }, displayName: { type: String, trim: true, maxlength: 128 },
+  language: { type: String, enum: ['vi', 'en'], default: 'vi' },
   status: { type: String, enum: Object.values(UserStatus), default: UserStatus.ACTIVE, required: true },
   walletBalance: { type: Number, required: true, default: 0, min: 0, validate: Number.isSafeInteger },
   referralCode: { type: String, required: true, uppercase: true, trim: true, minlength: 6, maxlength: 32 },

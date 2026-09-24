@@ -1,6 +1,6 @@
 import { Schema, model, models } from 'mongoose';
 import type { HydratedDocument, Types, Model } from 'mongoose';
-import { ProductStatus } from '@store/shared';
+import { MAX_WARRANTY_HOURS, ProductStatus } from '@store/shared';
 import { baseSchemaOptions, objectId, softDelete } from './common';
 
 export const ProductFieldType = { STRING: 'STRING', NUMBER: 'NUMBER', BOOLEAN: 'BOOLEAN', EMAIL: 'EMAIL', URL: 'URL' } as const;
@@ -12,7 +12,7 @@ export interface Product {
   name: string; slug: string; description: string; price: number; originalPrice?: number;
   categoryId?: Types.ObjectId;
   status: typeof ProductStatus[keyof typeof ProductStatus]; imageUrls: string[]; instructions?: string;
-  warrantyPolicy?: string; warrantyDays: number; deliveryTemplate: string; fieldDefinitions: ProductFieldDefinition[];
+  warrantyPolicy?: string; warrantyDays: number; warrantyHours?: number; deliveryTemplate: string; fieldDefinitions: ProductFieldDefinition[];
   /** Column keys and separator used by the one-line inventory importer, e.g. email----password. */
   inventoryPattern?: string;
   purchaseLimitPerUser: number; lowStockThreshold: number; sortOrder: number;
@@ -37,6 +37,7 @@ export const ProductSchema = new Schema<Product>({
   imageUrls: [{ type: String, trim: true, maxlength: 2048 }], instructions: { type: String, maxlength: 20_000 },
   warrantyPolicy: { type: String, maxlength: 20_000 },
   warrantyDays: { type: Number, min: 0, max: 3650, default: 0, validate: Number.isSafeInteger },
+  warrantyHours: { type: Number, min: 0, max: MAX_WARRANTY_HOURS, default: 0, validate: Number.isSafeInteger },
   deliveryTemplate: { type: String, required: true, maxlength: 20_000, default: '{{payload}}' },
   fieldDefinitions: { type: [ProductFieldDefinitionSchema], default: [] },
   inventoryPattern: { type: String, trim: true, maxlength: 500 },

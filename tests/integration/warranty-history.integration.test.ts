@@ -29,7 +29,7 @@ integration('indexed warranty history pages against isolated MongoDB', () => {
     const products = connection.model('Product', ProductSchema, 'products');
     const messages = connection.model('CustomerMessage', CustomerMessageSchema, 'customer_messages');
     const audits = connection.model('AuditLog', AuditLogSchema, 'audit_logs');
-    service = new WarrantyService(connection, reports, orders, users, messages, audits, {} as never, {} as never);
+    service = new WarrantyService(connection, reports, orders, products, users, messages, audits, {} as never, {} as never);
     await reports.createIndexes();
     await users.collection.insertOne({ _id: buyer, telegramId: '10001', username: 'reportbuyer', displayName: 'Report Buyer',
       status: 'ACTIVE', walletBalance: 500, referralCode: 'FAKEBUYER', deletedAt: null, createdAt: day, updatedAt: day });

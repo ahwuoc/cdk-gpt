@@ -20,6 +20,7 @@ import {
   WalletCards,
   X,
 } from 'lucide-react';
+import { formatWarrantyDuration } from '@store/shared';
 import { TopSpenders } from './top-spenders';
 import { requestId } from './request-id';
 
@@ -72,7 +73,7 @@ interface OrderDetail extends OrderRecord {
   updatedAt: string;
   user?: (Person & { status?: string; walletBalance?: number; purchaseCount?: number; createdAt?: string }) | null;
   product?: ({ id?: string; name?: string; slug?: string; description?: string; price?: number; status?: string;
-    instructions?: string | null; warrantyPolicy?: string | null; warrantyDays?: number }) | null;
+    instructions?: string | null; warrantyPolicy?: string | null; warrantyDays?: number; warrantyHours?: number }) | null;
   inventory?: { id: string; status: string; maskedPreview?: Record<string, unknown>; importBatchId?: string | null;
     reservedAt?: string | null; reservationExpiresAt?: string | null; soldAt?: string | null; createdAt?: string; updatedAt?: string } | null;
   walletTransaction?: { id: string; amount: number; balanceBefore: number; balanceAfter: number; type: string;
@@ -482,7 +483,7 @@ function OrderDetailDialog({ order, close }: { order: OrderDetail; close(): void
           <DetailLine label="Bán lúc" value={dateTime(order.inventory?.soldAt ?? undefined)} />
           {preview.length > 0 && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Dữ liệu che bớt</p><div className="flex flex-wrap gap-2">{preview.map(([key, value]) => <code key={key} className="rounded-lg bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-300">{key}: {String(value)}</code>)}</div></div>}
         </DetailCard>
-        {(order.product?.instructions || order.product?.warrantyPolicy) && <div className="lg:col-span-2"><DetailCard title="Hướng dẫn & bảo hành" icon={<BookOpen size={17} />}>{order.product.instructions && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Hướng dẫn sử dụng</p><p className="whitespace-pre-wrap rounded-xl bg-slate-950/70 p-4 text-sm leading-6 text-slate-200">{order.product.instructions}</p></div>}{order.product.warrantyPolicy && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Chính sách bảo hành {order.product.warrantyDays ? `· ${order.product.warrantyDays} ngày` : ''}</p><p className="whitespace-pre-wrap rounded-xl bg-slate-950/70 p-4 text-sm leading-6 text-slate-200">{order.product.warrantyPolicy}</p></div>}</DetailCard></div>}
+        {(order.product?.instructions || order.product?.warrantyPolicy || order.product?.warrantyDays || order.product?.warrantyHours) && <div className="lg:col-span-2"><DetailCard title="Hướng dẫn & bảo hành" icon={<BookOpen size={17} />}>{order.product.instructions && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Hướng dẫn sử dụng</p><p className="whitespace-pre-wrap rounded-xl bg-slate-950/70 p-4 text-sm leading-6 text-slate-200">{order.product.instructions}</p></div>}{(order.product.warrantyPolicy || order.product.warrantyDays || order.product.warrantyHours) && <div><p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Chính sách bảo hành {formatWarrantyDuration(order.product.warrantyDays, order.product.warrantyHours) ? `· ${formatWarrantyDuration(order.product.warrantyDays, order.product.warrantyHours)}` : ''}</p><p className="whitespace-pre-wrap rounded-xl bg-slate-950/70 p-4 text-sm leading-6 text-slate-200">{order.product.warrantyPolicy}</p></div>}</DetailCard></div>}
       </div>
     </div>
   </div>;
