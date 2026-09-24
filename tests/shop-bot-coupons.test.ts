@@ -22,6 +22,8 @@ test('voucher menu shows currently available codes and product scope', async () 
   await f.callback('menu:coupons');
   const reply = f.replies.at(-1);
   expect(reply?.text).toContain('SAVE20');
+  expect(reply?.text).toContain('MÃ VOUCHER');
+  expect(reply?.text).toContain('`SAVE20`');
   expect(reply?.text).toContain('Demo');
   expect(reply?.text).toContain('Giảm 20%');
   expect(reply?.extra).toContain('menu:products');
